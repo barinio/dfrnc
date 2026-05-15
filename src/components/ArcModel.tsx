@@ -41,11 +41,6 @@ interface ArcModelProps {
 
 export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProps) {
   const { scene: modelScene } = useGLTF("/model.glb");
-
-  if (!shouldStart) {
-    return null;
-  }
-
   const { viewport } = useThree();
   const modelRef = useRef<THREE.Group>(null);
   const elapsed = useRef<number>(0);
@@ -216,6 +211,10 @@ export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProp
       }
     }
   });
+
+  if (!shouldStart) {
+    return null;
+  }
 
   return <primitive ref={modelRef} object={modelScene} />;
 }
