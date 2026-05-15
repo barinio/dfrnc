@@ -7,6 +7,7 @@ import * as THREE from 'three';
 export function flyArc(scene, duration = 3.5) {
   return new Promise((resolve) => {
     const { model, canvas } = scene;
+    if (!model) throw new Error('flyArc: scene.model is null — loadModel must complete first');
     const { width, height } = scene.getViewportBounds();
 
     const start  = new THREE.Vector3(-width / 2,  -height / 2, 0);

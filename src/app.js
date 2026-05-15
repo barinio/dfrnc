@@ -16,10 +16,12 @@ async function main() {
 
   // Phase 3: Show Three.js canvas and fly the arc
   scene.showModel();
-  await flyArc(scene, 3.5);
-
-  // Phase 4: Done — canvas faded out, Lottie background remains
-  scene.stopRenderLoop();
+  try {
+    await flyArc(scene, 3.5);
+  } finally {
+    // Phase 4: Stop render loop — runs even if flyArc throws
+    scene.stopRenderLoop();
+  }
 }
 
 main().catch(console.error);
