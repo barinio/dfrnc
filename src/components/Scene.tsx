@@ -53,6 +53,8 @@ export default function Scene() {
           <ChromaticAberration
             blendFunction={BlendFunction.NORMAL}
             offset={ABERRATION_OFFSET}
+            radialModulation={false}
+            modulationOffset={0}
           />
         </EffectComposer>
       </Canvas>
