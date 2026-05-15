@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 
 export class ThreeScene {
   constructor(canvasId) {
@@ -14,10 +15,15 @@ export class ThreeScene {
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.2;
+    this.renderer.toneMappingExposure = 1.4;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.scene = new THREE.Scene();
+
+    // Environment map — provides reflections for the glass material
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    this.scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    pmrem.dispose();
 
     this.camera = new THREE.PerspectiveCamera(
       60,
@@ -27,13 +33,18 @@ export class ThreeScene {
     );
     this.camera.position.set(0, 0, 8);
 
-    // Lights — ambient + directional for glass chromatics
-    const ambient = new THREE.AmbientLight(0xffffff, 0.4);
-    const directional = new THREE.DirectionalLight(0xffffff, 2.5);
-    directional.position.set(3, 5, 3);
-    const rimLight = new THREE.PointLight(0x8ab4f8, 3, 20);
-    rimLight.position.set(-4, 2, 4);
-    this.scene.add(ambient, directional, rimLight);
+    // Low ambient — environment handles most illumination
+    const ambient = new THREE.AmbientLight(0xffffff, 0.05);
+    // Cool blue key light
+    const key = new THREE.PointLight(0x4488ff, 8, 25);
+    key.position.set(-4, 3, 6);
+    // Warm white fill
+    const fill = new THREE.PointLight(0xffeedd, 4, 20);
+    fill.position.set(5, -2, 4);
+    // Purple rim
+    const rim = new THREE.PointLight(0x8833ff, 5, 18);
+    rim.position.set(0, 5, -4);
+    this.scene.add(ambient, key, fill, rim);
 
     this.model = null;
     this._animFrameId = null;
@@ -59,12 +70,29 @@ export class ThreeScene {
           const maxDim = Math.max(size.x, size.y, size.z);
           const scale = 1.5 / maxDim;
           this.model.scale.setScalar(scale);
+          this._applyGlassMaterial();
           this.scene.add(this.model);
           resolve(this.model);
         },
         undefined,
         reject
       );
+    });
+  }
+
+  _applyGlassMaterial() {
+    const mat = new THREE.MeshPhysicalMaterial({
+      color: new THREE.Color(0x050510),
+      metalness: 1.0,
+      roughness: 0.08,
+      iridescence: 1.0,
+      iridescenceIOR: 2.0,
+      iridescenceThicknessRange: [100, 800],
+      envMapIntensity: 3.0,
+      side: THREE.DoubleSide,
+    });
+    this.model.traverse((child) => {
+      if (child.isMesh) child.material = mat;
     });
   }
 

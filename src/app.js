@@ -5,21 +5,21 @@ import { flyArc } from './arc-animation.js';
 async function main() {
   const scene = new ThreeScene('three-layer');
 
-  // Phase 1: Lottie plays; preload model concurrently
-  const modelPromise = scene.loadModel('assets/model.glb');
-  await playLottie('lottie-layer', 'assets/animation.json');
+  // Load model first (10KB — fast)
+  await scene.loadModel('assets/model.glb');
 
-  // Phase 2: Ensure model is ready, position at arc start (hidden)
-  await modelPromise;
+  // Position at arc start and show canvas before Lottie begins
   const { width, height } = scene.getViewportBounds();
   scene.model.position.set(-width / 2, -height / 2, 0);
-
-  // Phase 3: Show Three.js canvas and fly the arc
   scene.showModel();
+
+  // Lottie and 3D arc run simultaneously — same ~8.6s duration
   try {
-    await flyArc(scene, 3.5);
+    await Promise.all([
+      playLottie('lottie-layer', 'assets/animation.json'),
+      flyArc(scene, 8.6),
+    ]);
   } finally {
-    // Phase 4: Stop render loop — runs even if flyArc throws
     scene.stopRenderLoop();
   }
 }
