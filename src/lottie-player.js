@@ -10,13 +10,12 @@ export function playLottie(containerId, animationPath) {
 
     const anim = lottie.loadAnimation({
       container,
-      renderer: 'canvas',
+      renderer: 'svg',
       loop: false,
       autoplay: true,
       path: animationPath,
       rendererSettings: {
         preserveAspectRatio: 'xMidYMid meet',
-        clearCanvas: false,
       },
     });
 
