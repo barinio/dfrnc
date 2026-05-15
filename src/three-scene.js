@@ -12,6 +12,9 @@ export class ThreeScene {
     });
     this.renderer.setPixelRatio(window.devicePixelRatio);
     this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    this.renderer.toneMappingExposure = 1.2;
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.scene = new THREE.Scene();
 
@@ -27,7 +30,9 @@ export class ThreeScene {
     const ambient = new THREE.AmbientLight(0xffffff, 0.4);
     const directional = new THREE.DirectionalLight(0xffffff, 2.5);
     directional.position.set(3, 5, 3);
-    this.scene.add(ambient, directional);
+    const rimLight = new THREE.PointLight(0x8ab4f8, 3, 20);
+    rimLight.position.set(-4, 2, 4);
+    this.scene.add(ambient, directional, rimLight);
 
     this.model = null;
     this._animFrameId = null;
