@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 export class ThreeScene {
   constructor(canvasId) {
     this.canvas = document.getElementById(canvasId);
+    if (!this.canvas) throw new Error(`Canvas not found: ${canvasId}`);
     this.renderer = new THREE.WebGLRenderer({
       canvas: this.canvas,
       alpha: true,

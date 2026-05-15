@@ -16,4 +16,4 @@ async function main() {
   console.log('Model visible at center');
 }
 
-main();
+main().catch(console.error);
