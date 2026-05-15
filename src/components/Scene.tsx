@@ -17,6 +17,7 @@ function RendererConfig({ exposure }: { exposure: number }) {
 export default function Scene() {
   const [visible, setVisible] = useState(false)
   const [canvasOpacity, setCanvasOpacity] = useState<number>(1)
+  const [animationStarted, setAnimationStarted] = useState(false)
   const fadingRef = useRef<boolean>(false)
 
   useEffect(() => {
@@ -71,6 +72,10 @@ export default function Scene() {
     setCanvasOpacity(1 - ft)
   }, [])
 
+  const handleAnimationStart = useCallback(() => {
+    setAnimationStarted(true)
+  }, [])
+
   return (
     <>
       <Leva hidden={!visible} />
@@ -100,8 +105,8 @@ export default function Scene() {
           <pointLight color={pt1Color} intensity={pt1Intensity} distance={pt1Distance} position={[-2, 3, 4]} />
           <pointLight color={pt2Color} intensity={pt2Intensity} distance={pt2Distance} position={[3, -1, 4]} />
           <Environment preset="studio" />
-          <LottiePlane />
-          <ArcModel onFadeOut={handleFadeOut} />
+          <LottiePlane onAnimationStart={handleAnimationStart} />
+          <ArcModel shouldStart={animationStarted} onFadeOut={handleFadeOut} />
         </Canvas>
       </div>
     </>
