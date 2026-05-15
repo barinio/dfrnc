@@ -129,8 +129,8 @@ export default function ArcModel({ onFadeOut }: ArcModelProps) {
 
   // When paused, time slider scrubs the animation position
   useEffect(() => {
-    if (pausedRef.current) elapsed.current = time
-  }, [time])
+    if (paused) elapsed.current = time
+  }, [time, paused])
 
   useEffect(() => {
     if (!modelScene) return
