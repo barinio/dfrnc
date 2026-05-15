@@ -44,7 +44,10 @@ export default function ArcModel({ onFadeOut }: ArcModelProps) {
   const fadeElapsed = useRef<number>(0)
   const isFading = useRef<boolean>(false)
   const isDone = useRef<boolean>(false)
+  const pausedRef = useRef<boolean>(false)
+  const speedRef = useRef<number>(1.0)
 
+  // Material controls
   const {
     color,
     metalness,
@@ -113,6 +116,22 @@ export default function ArcModel({ onFadeOut }: ArcModelProps) {
     iridescence, iridescenceIOR, thicknessMin, thicknessMax,
   ])
 
+  // Animation controls — function form returns [values, set] for programmatic updates
+  const [{ paused, time, speed }, setAnim] = useControls('Animation', () => ({
+    paused: false,
+    time: { value: 0, min: 0, max: DURATION, step: 0.01 },
+    speed: { value: 1.0, min: 0.1, max: 3, step: 0.05 },
+  }))
+
+  // Keep refs in sync so useFrame always reads current values without stale closures
+  useEffect(() => { pausedRef.current = paused }, [paused])
+  useEffect(() => { speedRef.current = speed }, [speed])
+
+  // When paused, time slider scrubs the animation position
+  useEffect(() => {
+    if (pausedRef.current) elapsed.current = time
+  }, [time])
+
   useEffect(() => {
     if (!modelScene) return
     const box = new THREE.Box3().setFromObject(modelScene)
@@ -145,15 +164,18 @@ export default function ArcModel({ onFadeOut }: ArcModelProps) {
     if (isDone.current || !modelRef.current) return
 
     if (!isFading.current) {
-      elapsed.current = Math.min(elapsed.current + delta, DURATION)
+      if (!pausedRef.current) {
+        elapsed.current = Math.min(elapsed.current + delta * speedRef.current, DURATION)
+        setAnim({ time: elapsed.current })
+        if (elapsed.current >= DURATION) {
+          isFading.current = true
+        }
+      }
+
       const t = easeInOutSine(elapsed.current / DURATION)
       const pos = curve.getPoint(t)
       modelRef.current.position.copy(pos)
       modelRef.current.rotation.y = t * Math.PI * 1.5
-
-      if (elapsed.current >= DURATION) {
-        isFading.current = true
-      }
     } else {
       fadeElapsed.current = Math.min(fadeElapsed.current + delta, FADE_DURATION)
       const ft = fadeElapsed.current / FADE_DURATION
