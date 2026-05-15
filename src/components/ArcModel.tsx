@@ -2,6 +2,7 @@ import { useRef, useEffect, useMemo } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { useGLTF } from '@react-three/drei'
 import * as THREE from 'three'
+import { useControls, folder } from 'leva'
 
 useGLTF.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/')
 
@@ -13,16 +14,21 @@ const DURATION = 8.6
 const FADE_DURATION = 0.4
 
 const glassMaterial = new THREE.MeshPhysicalMaterial({
-  color: new THREE.Color(0x000000),
+  color: new THREE.Color(0xffffff),
   metalness: 0.0,
-  roughness: 0.1,
-  iridescence: 1.0,
-  iridescenceIOR: 1.5,
-  iridescenceThicknessRange: [300, 700],
-  envMapIntensity: 2.5,
+  roughness: 0.15,
   transmission: 1.0,
-  ior: 1.2,
-  thickness: 0.3,
+  thickness: 1.2,
+  ior: 1.45,
+  dispersion: 1.5,
+  attenuationColor: new THREE.Color(0xdde6ff),
+  attenuationDistance: 4.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.05,
+  iridescence: 0.6,
+  iridescenceIOR: 1.7,
+  iridescenceThicknessRange: [200, 600],
+  envMapIntensity: 1.2,
   side: THREE.DoubleSide,
 })
 
@@ -39,14 +45,80 @@ export default function ArcModel({ onFadeOut }: ArcModelProps) {
   const isFading = useRef<boolean>(false)
   const isDone = useRef<boolean>(false)
 
+  const {
+    color,
+    metalness,
+    roughness,
+    transmission,
+    thickness,
+    ior,
+    envMapIntensity,
+    dispersion,
+    attenuationColor,
+    attenuationDistance,
+    clearcoat,
+    clearcoatRoughness,
+    iridescence,
+    iridescenceIOR,
+    thicknessMin,
+    thicknessMax,
+  } = useControls('Material', {
+    Core: folder({
+      color: '#ffffff',
+      metalness: { value: 0.0, min: 0, max: 1, step: 0.01 },
+      roughness: { value: 0.15, min: 0, max: 1, step: 0.01 },
+      transmission: { value: 1.0, min: 0, max: 1, step: 0.01 },
+      thickness: { value: 1.2, min: 0, max: 5, step: 0.05 },
+      ior: { value: 1.45, min: 1.0, max: 2.5, step: 0.01 },
+      envMapIntensity: { value: 1.2, min: 0, max: 5, step: 0.05 },
+    }),
+    Glass: folder({
+      dispersion: { value: 1.5, min: 0, max: 10, step: 0.1 },
+      attenuationColor: '#dde6ff',
+      attenuationDistance: { value: 4.0, min: 0, max: 20, step: 0.1 },
+    }),
+    Clearcoat: folder({
+      clearcoat: { value: 1.0, min: 0, max: 1, step: 0.01 },
+      clearcoatRoughness: { value: 0.05, min: 0, max: 1, step: 0.01 },
+    }),
+    Iridescence: folder({
+      iridescence: { value: 0.6, min: 0, max: 1, step: 0.01 },
+      iridescenceIOR: { value: 1.7, min: 1.0, max: 2.5, step: 0.01 },
+      thicknessMin: { value: 200, min: 50, max: 1000, step: 1 },
+      thicknessMax: { value: 600, min: 50, max: 1000, step: 1 },
+    }),
+  })
+
+  useEffect(() => {
+    glassMaterial.color.set(color)
+    glassMaterial.metalness = metalness
+    glassMaterial.roughness = roughness
+    glassMaterial.transmission = transmission
+    glassMaterial.thickness = thickness
+    glassMaterial.ior = ior
+    glassMaterial.envMapIntensity = envMapIntensity
+    glassMaterial.dispersion = dispersion
+    glassMaterial.attenuationColor.set(attenuationColor)
+    glassMaterial.attenuationDistance = attenuationDistance
+    glassMaterial.clearcoat = clearcoat
+    glassMaterial.clearcoatRoughness = clearcoatRoughness
+    glassMaterial.iridescence = iridescence
+    glassMaterial.iridescenceIOR = iridescenceIOR
+    glassMaterial.iridescenceThicknessRange = [thicknessMin, thicknessMax]
+    glassMaterial.needsUpdate = true
+  }, [
+    color, metalness, roughness, transmission, thickness, ior, envMapIntensity,
+    dispersion, attenuationColor, attenuationDistance,
+    clearcoat, clearcoatRoughness,
+    iridescence, iridescenceIOR, thicknessMin, thicknessMax,
+  ])
+
   useEffect(() => {
     if (!modelScene) return
-
     const box = new THREE.Box3().setFromObject(modelScene)
     const size = box.getSize(new THREE.Vector3())
     const maxDim = Math.max(size.x, size.y, size.z)
     modelScene.scale.setScalar(1.5 / maxDim)
-
     modelScene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.material = glassMaterial
@@ -86,7 +158,6 @@ export default function ArcModel({ onFadeOut }: ArcModelProps) {
       fadeElapsed.current = Math.min(fadeElapsed.current + delta, FADE_DURATION)
       const ft = fadeElapsed.current / FADE_DURATION
       onFadeOut?.(ft)
-
       if (fadeElapsed.current >= FADE_DURATION) {
         isDone.current = true
         modelRef.current.visible = false
