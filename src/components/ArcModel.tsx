@@ -39,7 +39,10 @@ interface ArcModelProps {
   shouldStart?: boolean;
 }
 
-export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProps) {
+export default function ArcModel({
+  onFadeOut,
+  shouldStart = true,
+}: ArcModelProps) {
   const { scene: modelScene } = useGLTF("/model.glb");
   const { viewport } = useThree();
   const modelRef = useRef<THREE.Group>(null);
@@ -49,6 +52,8 @@ export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProp
   const isDone = useRef<boolean>(false);
   const pausedRef = useRef<boolean>(false);
   const speedRef = useRef<number>(1.0);
+  const swingAmplitudeRef = useRef<number>(0.35);
+  const swingFrequencyRef = useRef<number>(1.8);
 
   // Material controls
   const {
@@ -135,8 +140,25 @@ export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProp
   const [{ paused, time, speed }, setAnim] = useControls("Animation", () => ({
     paused: false,
     time: { value: 0, min: 0, max: DURATION, step: 0.01 },
-    speed: { value: 0.7, min: 0.1, max: 3, step: 0.05 },
+    speed: { value: 0.8, min: 0.1, max: 3, step: 0.05 },
   }));
+
+  const { swingAmplitude, swingFrequency } = useControls("Pendulum", {
+    swingAmplitude: {
+      value: 0.35,
+      min: 0,
+      max: 1.5,
+      step: 0.01,
+      label: "Amplitude",
+    },
+    swingFrequency: {
+      value: 1.8,
+      min: 0.1,
+      max: 10,
+      step: 0.05,
+      label: "Frequency",
+    },
+  });
 
   // Keep refs in sync so useFrame always reads current values without stale closures
   useEffect(() => {
@@ -145,6 +167,12 @@ export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProp
   useEffect(() => {
     speedRef.current = speed;
   }, [speed]);
+  useEffect(() => {
+    swingAmplitudeRef.current = swingAmplitude;
+  }, [swingAmplitude]);
+  useEffect(() => {
+    swingFrequencyRef.current = swingFrequency;
+  }, [swingFrequency]);
 
   // When paused, time slider scrubs the animation position
   useEffect(() => {
@@ -156,7 +184,7 @@ export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProp
     const box = new THREE.Box3().setFromObject(modelScene);
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
-    modelScene.scale.setScalar(1.5 / maxDim);
+    modelScene.scale.setScalar(2.5 / maxDim);
     modelScene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.material = glassMaterial;
@@ -166,9 +194,9 @@ export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProp
 
   const curve = useMemo(() => {
     const { width, height } = viewport;
-    const start = new THREE.Vector3(-width / 2, -height / 2, 0);
-    const peak = new THREE.Vector3(0, height * 0.9, 0);
-    const end = new THREE.Vector3(width / 1.5, -height / 2, 0);
+    const start = new THREE.Vector3((-width / 2) * 0.5, (-height / 2) * 0.9, 0);
+    const peak = new THREE.Vector3(0, height * 1.5, 0);
+    const end = new THREE.Vector3((width / 1.5) * 0.8, (-height / 2) * 1.2, 0);
     return new THREE.QuadraticBezierCurve3(start, peak, end);
   }, [viewport.width, viewport.height]);
 
@@ -197,7 +225,10 @@ export default function ArcModel({ onFadeOut, shouldStart = true }: ArcModelProp
       const t = easeInOutSine(elapsed.current / DURATION);
       const pos = curve.getPoint(t);
       modelRef.current.position.copy(pos);
-      modelRef.current.rotation.y = t * Math.PI * 1.5;
+      modelRef.current.rotation.y = t * Math.PI * 0.3;
+      modelRef.current.rotation.x =
+        Math.sin(elapsed.current * swingFrequencyRef.current) *
+        swingAmplitudeRef.current;
     } else {
       fadeElapsed.current = Math.min(
         fadeElapsed.current + delta,
