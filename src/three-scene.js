@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
 export class ThreeScene {
   constructor(canvasId) {
@@ -43,7 +44,10 @@ export class ThreeScene {
   // Preload GLB — call this during Lottie phase so it's ready immediately
   loadModel(path) {
     return new Promise((resolve, reject) => {
+      const dracoLoader = new DRACOLoader();
+      dracoLoader.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.6/');
       const loader = new GLTFLoader();
+      loader.setDRACOLoader(dracoLoader);
       loader.load(
         path,
         (gltf) => {
