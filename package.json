@@ -13,18 +13,19 @@
     "@react-three/drei": "^9.115.0",
     "@react-three/fiber": "^8.17.10",
     "@react-three/postprocessing": "^2.16.3",
-    "leva": "^0.10.1",
-    "lottie-react": "^2.4.0",
+    "lottie-web": "^5.13.0",
     "postprocessing": "^6.36.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.170.0"
   },
   "devDependencies": {
+    "@types/node": "^25.9.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/three": "^0.170.0",
     "@vitejs/plugin-react": "^4.3.1",
+    "leva": "^0.10.1",
     "typescript": "^6.0.3",
     "vite": "^5.4.0"
   }

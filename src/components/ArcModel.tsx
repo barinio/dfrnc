@@ -2,7 +2,7 @@ import { useRef, useEffect, useMemo } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
-import { useControls, folder } from "leva";
+import { useControls, folder } from "@debug/controls";
 
 useGLTF.setDecoderPath(
   "https://www.gstatic.com/draco/versioned/decoders/1.5.6/",
@@ -12,7 +12,7 @@ function easeInOutSine(t: number): number {
   return -(Math.cos(Math.PI * t) - 1) / 2;
 }
 
-const DURATION = 8.6;
+export const DURATION = 8.6;
 const FADE_DURATION = 0.4;
 
 const glassMaterial = new THREE.MeshPhysicalMaterial({
@@ -36,14 +36,22 @@ const glassMaterial = new THREE.MeshPhysicalMaterial({
 
 interface ArcModelProps {
   onFadeOut?: (ft: number) => void;
+  onTimeChange?: (time: number) => void;
   shouldStart?: boolean;
+  paused?: boolean;
+  time?: number;
+  speed?: number;
 }
 
 export default function ArcModel({
   onFadeOut,
+  onTimeChange,
   shouldStart = true,
+  paused = false,
+  time = 0,
+  speed = 0.8,
 }: ArcModelProps) {
-  const { scene: modelScene } = useGLTF("/model.glb");
+  const { scene: modelScene } = useGLTF(import.meta.env.BASE_URL + "model.glb");
   const { viewport } = useThree();
   const modelRef = useRef<THREE.Group>(null);
   const elapsed = useRef<number>(0);
@@ -73,32 +81,36 @@ export default function ArcModel({
     iridescenceIOR,
     thicknessMin,
     thicknessMax,
-  } = useControls("Material", {
-    Core: folder({
-      color: "#a2a2a2",
-      metalness: { value: 0.0, min: 0, max: 1, step: 0.01 },
-      roughness: { value: 0.15, min: 0, max: 1, step: 0.01 },
-      transmission: { value: 1.0, min: 0, max: 1, step: 0.01 },
-      thickness: { value: 1.2, min: 0, max: 5, step: 0.05 },
-      ior: { value: 1.45, min: 1.0, max: 2.5, step: 0.01 },
-      envMapIntensity: { value: 1.2, min: 0, max: 5, step: 0.05 },
-    }),
-    Glass: folder({
-      dispersion: { value: 1.5, min: 0, max: 10, step: 0.1 },
-      attenuationColor: "#dde6ff",
-      attenuationDistance: { value: 4.0, min: 0, max: 20, step: 0.1 },
-    }),
-    Clearcoat: folder({
-      clearcoat: { value: 1.0, min: 0, max: 1, step: 0.01 },
-      clearcoatRoughness: { value: 0.05, min: 0, max: 1, step: 0.01 },
-    }),
-    Iridescence: folder({
-      iridescence: { value: 0.6, min: 0, max: 1, step: 0.01 },
-      iridescenceIOR: { value: 1.7, min: 1.0, max: 2.5, step: 0.01 },
-      thicknessMin: { value: 200, min: 50, max: 1000, step: 1 },
-      thicknessMax: { value: 600, min: 50, max: 1000, step: 1 },
-    }),
-  });
+  } = useControls(
+    "Material",
+    {
+      Core: folder({
+        color: "#a2a2a2",
+        metalness: { value: 0.0, min: 0, max: 1, step: 0.01 },
+        roughness: { value: 0.15, min: 0, max: 1, step: 0.01 },
+        transmission: { value: 1.0, min: 0, max: 1, step: 0.01 },
+        thickness: { value: 1.2, min: 0, max: 5, step: 0.05 },
+        ior: { value: 1.45, min: 1.0, max: 2.5, step: 0.01 },
+        envMapIntensity: { value: 1.2, min: 0, max: 5, step: 0.05 },
+      }),
+      Glass: folder({
+        dispersion: { value: 1.5, min: 0, max: 10, step: 0.1 },
+        attenuationColor: "#dde6ff",
+        attenuationDistance: { value: 4.0, min: 0, max: 20, step: 0.1 },
+      }),
+      Clearcoat: folder({
+        clearcoat: { value: 1.0, min: 0, max: 1, step: 0.01 },
+        clearcoatRoughness: { value: 0.05, min: 0, max: 1, step: 0.01 },
+      }),
+      Iridescence: folder({
+        iridescence: { value: 0.6, min: 0, max: 1, step: 0.01 },
+        iridescenceIOR: { value: 1.7, min: 1.0, max: 2.5, step: 0.01 },
+        thicknessMin: { value: 200, min: 50, max: 1000, step: 1 },
+        thicknessMax: { value: 600, min: 50, max: 1000, step: 1 },
+      }),
+    },
+    { collapsed: true },
+  );
 
   useEffect(() => {
     glassMaterial.color.set(color);
@@ -136,23 +148,16 @@ export default function ArcModel({
     thicknessMax,
   ]);
 
-  // Animation controls — function form returns [values, set] for programmatic updates
-  const [{ paused, time, speed }, setAnim] = useControls("Animation", () => ({
-    paused: false,
-    time: { value: 0, min: 0, max: DURATION, step: 0.01 },
-    speed: { value: 0.8, min: 0.1, max: 3, step: 0.05 },
-  }));
-
   const { swingAmplitude, swingFrequency } = useControls("Pendulum", {
     swingAmplitude: {
-      value: 0.35,
+      value: 0.1,
       min: 0,
       max: 1.5,
       step: 0.01,
       label: "Amplitude",
     },
     swingFrequency: {
-      value: 1.8,
+      value: 2,
       min: 0.1,
       max: 10,
       step: 0.05,
@@ -179,12 +184,9 @@ export default function ArcModel({
     if (paused) elapsed.current = time;
   }, [time, paused]);
 
+  // Assign the glass material to every mesh once the model is loaded.
   useEffect(() => {
     if (!modelScene) return;
-    const box = new THREE.Box3().setFromObject(modelScene);
-    const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    modelScene.scale.setScalar(2.5 / maxDim);
     modelScene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
         child.material = glassMaterial;
@@ -192,12 +194,38 @@ export default function ArcModel({
     });
   }, [modelScene]);
 
+  // Responsive scale: keep the model from dominating narrow/portrait viewports.
+  // Reset scale before measuring so repeated runs don't compound. The target
+  // size scales with viewport width (capped on desktop, floored on tiny phones)
+  // so the model shrinks noticeably on narrow screens.
+  useEffect(() => {
+    if (!modelScene) return;
+    modelScene.scale.setScalar(1);
+    const box = new THREE.Box3().setFromObject(modelScene);
+    const size = box.getSize(new THREE.Vector3());
+    const maxDim = Math.max(size.x, size.y, size.z);
+    const targetSize = Math.max(1.2, Math.min(2.5, viewport.width * 0.4));
+    modelScene.scale.setScalar(targetSize / maxDim);
+  }, [modelScene, viewport.width, viewport.height]);
+
+  // Contained arc: bottom-left corner → screen center → bottom-right corner.
+  // The control point sits at top-center so the quadratic Bézier passes exactly
+  // through (0,0) at its midpoint (t=0.5) and stays within y ∈ [-b, 0] — the
+  // model never flies off the top, on any aspect ratio.
   const curve = useMemo(() => {
     const { width, height } = viewport;
-    const start = new THREE.Vector3((-width / 2) * 0.5, (-height / 2) * 0.9, 0);
-    const peak = new THREE.Vector3(0, height * 1.5, 0);
-    const end = new THREE.Vector3((width / 1.5) * 0.8, (-height / 2) * 1.2, 0);
-    return new THREE.QuadraticBezierCurve3(start, peak, end);
+    const a = (width / 2) * 0.85;
+    const b = (height / 2) * 0.85;
+
+    // Push the arc further right on portrait screens (mobile + tablet); keep the
+    // gentler shift on landscape/desktop.
+    const aspect = width / height;
+    const offsetX = aspect < 1 ? width * 0.35 : width * 0.15;
+    const offsetY = height * 0.3;
+    const start = new THREE.Vector3(-a + offsetX, -b + offsetY, 0);
+    const control = new THREE.Vector3(offsetX, b + offsetY, 0);
+    const end = new THREE.Vector3(a + offsetX, -b + offsetY, 0);
+    return new THREE.QuadraticBezierCurve3(start, control, end);
   }, [viewport.width, viewport.height]);
 
   useEffect(() => {
@@ -216,7 +244,7 @@ export default function ArcModel({
           elapsed.current + delta * speedRef.current,
           DURATION,
         );
-        setAnim({ time: elapsed.current });
+        onTimeChange?.(elapsed.current);
         if (elapsed.current >= DURATION) {
           isFading.current = true;
         }
@@ -250,4 +278,4 @@ export default function ArcModel({
   return <primitive ref={modelRef} object={modelScene} />;
 }
 
-useGLTF.preload("/model.glb");
+useGLTF.preload(import.meta.env.BASE_URL + "model.glb");

@@ -1,19 +1,37 @@
-import { useEffect, useState, useMemo } from 'react'
+import { useEffect, useState, useMemo, useRef } from 'react'
 import { useThree, useFrame } from '@react-three/fiber'
 import * as THREE from 'three'
 import lottie from 'lottie-web'
+import type { AnimationItem } from 'lottie-web'
 import animationData from '../assets/animation.json'
+import { DURATION } from './ArcModel'
 
 const PLANE_Z = -1
 
 interface LottiePlaneProps {
   onComplete?: () => void
   onAnimationStart?: () => void
+  reducedMotion?: boolean
+  paused?: boolean
+  time?: number
+  speed?: number
 }
 
-export default function LottiePlane({ onComplete, onAnimationStart }: LottiePlaneProps) {
+export default function LottiePlane({
+  onComplete,
+  onAnimationStart,
+  reducedMotion = false,
+  paused = false,
+  time = 0,
+  speed = 1,
+}: LottiePlaneProps) {
   const { viewport, camera, size } = useThree()
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null)
+  // Once the animation is finished the canvas no longer changes, so we stop
+  // uploading the texture to the GPU every frame.
+  const doneRef = useRef<boolean>(false)
+  const animRef = useRef<AnimationItem | null>(null)
+  const texRef = useRef<THREE.CanvasTexture | null>(null)
 
   useEffect(() => {
     const wrapper = document.createElement('div')
@@ -29,7 +47,7 @@ export default function LottiePlane({ onComplete, onAnimationStart }: LottiePlan
       container: wrapper,
       renderer: 'canvas',
       loop: false,
-      autoplay: true,
+      autoplay: !reducedMotion,
       animationData,
       rendererSettings: {
         preserveAspectRatio: 'xMidYMid meet',
@@ -37,7 +55,16 @@ export default function LottiePlane({ onComplete, onAnimationStart }: LottiePlan
       },
     })
 
+    animRef.current = anim
+
     let tex: THREE.CanvasTexture | null = null
+    doneRef.current = false
+
+    const handleComplete = () => {
+      doneRef.current = true
+      if (tex) tex.needsUpdate = true // flush the final frame once
+      onComplete?.()
+    }
 
     const handleLoaded = () => {
       const cnv = wrapper.querySelector('canvas') as HTMLCanvasElement | null
@@ -46,22 +73,56 @@ export default function LottiePlane({ onComplete, onAnimationStart }: LottiePlan
       tex.colorSpace = THREE.SRGBColorSpace
       tex.minFilter = THREE.LinearFilter
       tex.magFilter = THREE.LinearFilter
+      texRef.current = tex
       setTexture(tex)
       onAnimationStart?.()
+
+      if (reducedMotion) {
+        // Skip the animated flythrough: jump straight to the final frame.
+        anim.goToAndStop(Math.max(anim.totalFrames - 1, 0), true)
+        handleComplete()
+      }
     }
 
     anim.addEventListener('DOMLoaded', handleLoaded)
-    if (onComplete) anim.addEventListener('complete', onComplete)
+    anim.addEventListener('complete', handleComplete)
 
     return () => {
       anim.destroy()
+      animRef.current = null
       wrapper.remove()
       if (tex) tex.dispose()
+      texRef.current = null
     }
-  }, [size.width, size.height, onComplete, onAnimationStart])
+  }, [size.width, size.height, onComplete, onAnimationStart, reducedMotion])
+
+  // Shared "speed" control. Re-applied when the texture (and thus the anim
+  // instance) is recreated, e.g. after a resize.
+  useEffect(() => {
+    animRef.current?.setSpeed(speed)
+  }, [speed, texture])
+
+  // Shared "paused" control — pause/resume in lockstep with the 3D model.
+  useEffect(() => {
+    const anim = animRef.current
+    if (!anim) return
+    if (paused) anim.pause()
+    else if (!doneRef.current) anim.play()
+  }, [paused, texture])
+
+  // While paused, the shared "time" slider scrubs the Lottie frame. Mapped onto
+  // the model's timeline (0..DURATION) so both stay in sync when scrubbing.
+  useEffect(() => {
+    if (!paused) return
+    const anim = animRef.current
+    if (!anim) return
+    const frac = DURATION > 0 ? Math.min(Math.max(time / DURATION, 0), 1) : 0
+    anim.goToAndStop(frac * Math.max(anim.totalFrames - 1, 0), true)
+    if (texRef.current) texRef.current.needsUpdate = true
+  }, [paused, time, texture])
 
   useFrame(() => {
-    if (texture) texture.needsUpdate = true
+    if (texture && !doneRef.current) texture.needsUpdate = true
   })
 
   const { planeWidth, planeHeight } = useMemo(() => {

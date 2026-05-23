@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+
+# OS files
+.DS_Store
+.DS_Store?
+Thumbs.db
+
+# IDE / Editor
+.idea/
+.vscode/
+*.local
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Claude Code / AI tools
+.claude/
+.superpowers/
+
+# Design source files (not web assets)
+*.ai
+/assets/
+/5284_3d-background/
+/glasmorphizm-3d.glb
+
+# Scratch / untitled files
+Untitled\ file.*
+*копія*
