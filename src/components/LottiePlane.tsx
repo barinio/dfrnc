@@ -50,7 +50,7 @@ export default function LottiePlane({
       autoplay: !reducedMotion,
       animationData,
       rendererSettings: {
-        preserveAspectRatio: 'xMidYMid meet',
+        preserveAspectRatio: 'none',
         clearCanvas: true,
       },
     })

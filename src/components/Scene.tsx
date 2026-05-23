@@ -4,15 +4,15 @@ import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, useProgress } from "@react-three/drei";
 import {
   EffectComposer,
-  Bloom,
-  SMAA,
   ToneMapping,
+  Noise,
 } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
 import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel, { DURATION } from "./ArcModel";
 import LottiePlane from "./LottiePlane";
+import LoremSection from "./LoremSection";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgress } from "../hooks/useScrollProgress";
 import {
@@ -229,7 +229,7 @@ export default function Scene() {
         "park",
       ],
     },
-    envIntensity: { value: 0.65, min: 0, max: 3, step: 0.05 },
+    envIntensity: { value: 0.05, min: 0, max: 3, step: 0.05 },
   });
 
   const handleAnimationStart = useCallback(() => {
@@ -306,7 +306,7 @@ export default function Scene() {
         <Canvas
           frameloop="always"
           gl={{
-            antialias: false,
+            antialias: true,
             stencil: false,
             toneMapping: ACESFilmicToneMapping,
             toneMappingExposure: 1.1,
@@ -360,15 +360,9 @@ export default function Scene() {
               />
             )}
           </Suspense>
-          <EffectComposer multisampling={0}>
-            <Bloom
-              intensity={0.1}
-              luminanceThreshold={1.0}
-              luminanceSmoothing={0.2}
-              mipmapBlur
-            />
+          <EffectComposer multisampling={0} stencilBuffer={false}>
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-            <SMAA />
+            <Noise opacity={0.1} />
           </EffectComposer>
         </Canvas>
       </div>
@@ -382,6 +376,7 @@ export default function Scene() {
         }}
         aria-hidden
       />
+      <LoremSection visible={scrollProgress >= 1} />
     </>
   );
 }

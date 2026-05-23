@@ -1,11 +1,14 @@
 import { useEffect, useState } from "react";
+import { SCROLL_TRACK_VH } from "../constants";
 
+// Use the animation scroll-track height as the denominator so that content
+// placed after the track (e.g. a text section) doesn't dilute scrollProgress
+// and cause the animation to never reach 1.0.
 function readProgress(): number {
   if (typeof window === "undefined") return 0;
-  const doc = document.documentElement;
-  const max = (doc.scrollHeight || 0) - window.innerHeight;
-  if (max <= 0) return 0;
-  return Math.min(Math.max(window.scrollY / max, 0), 1);
+  const trackMax = ((SCROLL_TRACK_VH - 100) / 100) * window.innerHeight;
+  if (trackMax <= 0) return 0;
+  return Math.min(Math.max(window.scrollY / trackMax, 0), 1);
 }
 
 export function useScrollProgress(): number {
