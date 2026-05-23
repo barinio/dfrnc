@@ -1,10 +1,42 @@
+import { useLayoutEffect, useRef } from "react";
+import gsap from "gsap";
+import { ScrollTrigger } from "gsap/ScrollTrigger";
+
+gsap.registerPlugin(ScrollTrigger);
+
 type Props = {
   visible: boolean;
 };
 
+// Length of the invisible scroll buffer applied right after the animation
+// finishes and the text appears. During this distance the section is pinned at
+// the top of the viewport so the heading has time to settle before the page
+// starts scrolling the text away.
+const BUFFER_VH = 50;
+
 export default function LoremSection({ visible }: Props) {
+  const sectionRef = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    const el = sectionRef.current;
+    if (!el) return;
+    const ctx = gsap.context(() => {
+      ScrollTrigger.create({
+        trigger: el,
+        start: "top top",
+        end: () => "+=" + window.innerHeight * (BUFFER_VH / 100),
+        pin: true,
+        pinSpacing: true,
+        anticipatePin: 1,
+        invalidateOnRefresh: true,
+      });
+    });
+    return () => ctx.revert();
+  }, []);
+
   return (
     <section
+      ref={sectionRef}
       style={{
         position: "relative",
         zIndex: 2,
@@ -12,15 +44,18 @@ export default function LoremSection({ visible }: Props) {
         width: "100%",
         marginTop: "-100vh",
         opacity: visible ? 1 : 0,
+        filter: visible ? "blur(0px)" : "blur(24px)",
         pointerEvents: visible ? "auto" : "none",
-        transition: "opacity 300ms ease-out",
+        transition:
+          "opacity 900ms cubic-bezier(0.22, 1, 0.36, 1), filter 900ms cubic-bezier(0.22, 1, 0.36, 1)",
+        willChange: "opacity, filter",
       }}
     >
       <div
         style={{
           maxWidth: "680px",
           margin: "0 auto",
-          padding: "6rem 2rem",
+          padding: "2rem",
           color: "rgba(255,255,255,0.75)",
           fontFamily: "system-ui, sans-serif",
           fontSize: "1.0625rem",

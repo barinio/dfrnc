@@ -349,6 +349,7 @@ export default function Scene() {
               onAnimationStart={handleAnimationStart}
               paused={lottiePaused}
               time={lottieTime}
+              showWhitePadding={lottieTime < LOTTIE_TOTAL_S - 0.001}
               speed={1}
             />
             {!reducedMotion && modelMount && (

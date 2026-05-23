@@ -1,41 +1,44 @@
-*, *::before, *::after {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+*,
+*::before,
+*::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
 }
 
-html, body {
-  width: 100%;
-  background: #0a0a0a;
+html,
+body {
+    width: 100%;
+    background: #0a0a0a;
 }
 
 body.scroll-locked {
-  overflow: hidden;
+    overflow: hidden;
 }
 
 #root {
-  width: 100vw;
-  position: relative;
+    width: 100vw;
+    position: relative;
 }
 
 .dfrnc-spinner {
-  width: 36px;
-  height: 36px;
-  border: 3px solid rgba(255, 255, 255, 0.15);
-  border-top-color: rgba(255, 255, 255, 0.85);
-  border-radius: 50%;
-  animation: dfrnc-spin 0.9s linear infinite;
+    width: 36px;
+    height: 36px;
+    border: 3px solid rgba(255, 255, 255, 0.15);
+    border-top-color: rgba(255, 255, 255, 0.85);
+    border-radius: 50%;
+    animation: dfrnc-spin 0.9s linear infinite;
 }
 
 @keyframes dfrnc-spin {
-  to {
-    transform: rotate(360deg);
-  }
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .dfrnc-spinner {
-    animation: none;
-    border-top-color: rgba(255, 255, 255, 0.4);
-  }
+    .dfrnc-spinner {
+        animation: none;
+        border-top-color: rgba(255, 255, 255, 0.4);
+    }
 }
