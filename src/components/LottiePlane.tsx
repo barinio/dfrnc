@@ -4,7 +4,7 @@ import * as THREE from 'three'
 import lottie from 'lottie-web'
 import type { AnimationItem } from 'lottie-web'
 import animationData from '../assets/animation.json'
-import { DURATION } from './ArcModel'
+import { LOTTIE_TOTAL_S } from '../constants'
 
 const PLANE_Z = -1
 
@@ -110,13 +110,14 @@ export default function LottiePlane({
     else if (!doneRef.current) anim.play()
   }, [paused, texture])
 
-  // While paused, the shared "time" slider scrubs the Lottie frame. Mapped onto
-  // the model's timeline (0..DURATION) so both stay in sync when scrubbing.
+  // While paused, the "time" prop (in seconds within the Lottie timeline) scrubs
+  // the frame. Independent of the 3D model's timeline.
   useEffect(() => {
     if (!paused) return
     const anim = animRef.current
     if (!anim) return
-    const frac = DURATION > 0 ? Math.min(Math.max(time / DURATION, 0), 1) : 0
+    const frac =
+      LOTTIE_TOTAL_S > 0 ? Math.min(Math.max(time / LOTTIE_TOTAL_S, 0), 1) : 0
     anim.goToAndStop(frac * Math.max(anim.totalFrames - 1, 0), true)
     if (texRef.current) texRef.current.needsUpdate = true
   }, [paused, time, texture])

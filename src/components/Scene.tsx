@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect, Suspense } from "react";
+import { useState, useCallback, useEffect, Suspense } from "react";
 import type { ComponentProps } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, useProgress } from "@react-three/drei";
@@ -14,22 +14,37 @@ import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel, { DURATION } from "./ArcModel";
 import LottiePlane from "./LottiePlane";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
+import { useScrollProgress } from "../hooks/useScrollProgress";
+import {
+  LOTTIE_INTRO_S,
+  LOTTIE_INTRO_MS,
+  LOTTIE_TOTAL_S,
+  MODEL_PHASE_END,
+  SCROLL_TRACK_VH,
+} from "../constants";
+
+type Phase = "intro" | "scroll" | "done";
+
+// Width (in scroll-progress units) of the fade range that sits right after the
+// model phase. Outside it the model is fully visible or fully hidden, so the
+// transition is symmetric and reversible on reverse scroll.
+const FADE_RANGE = 0.05;
+const FADE_END = MODEL_PHASE_END + FADE_RANGE;
+
+// Duration of the time-based opacity fade-in that plays right after intro ends,
+// so the model doesn't snap into view at full opacity when Lottie pauses.
+const INTRO_FADE_IN_MS = 700;
+
+function smoothstep(x: number): number {
+  const t = Math.min(Math.max(x, 0), 1);
+  return t * t * (3 - 2 * t);
+}
 
 function RendererConfig({ exposure }: { exposure: number }) {
   const { gl } = useThree();
   useEffect(() => {
     gl.toneMappingExposure = exposure;
   }, [gl, exposure]);
-  return null;
-}
-
-// Paints exactly one frame after frameloop flips to "demand" so the final
-// static state is rendered before the loop stops.
-function InvalidateOnce({ active }: { active: boolean }) {
-  const invalidate = useThree((s) => s.invalidate);
-  useEffect(() => {
-    if (active) invalidate();
-  }, [active, invalidate]);
   return null;
 }
 
@@ -57,17 +72,13 @@ function Preloader({ visible }: { visible: boolean }) {
 
 export default function Scene() {
   const reducedMotion = usePrefersReducedMotion();
-  const [visible, setVisible] = useState(false);
+  const [levaVisible, setLevaVisible] = useState(false);
   const [animationStarted, setAnimationStarted] = useState(false);
-  const [lottieDone, setLottieDone] = useState(false);
-  const [modelDone, setModelDone] = useState(false);
-  // Drive the fade through the DOM directly so it never re-renders the React
-  // tree (and the EffectComposer) every frame.
-  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [phase, setPhase] = useState<Phase>("intro");
+  const [introFadeT, setIntroFadeT] = useState(0);
+  const scrollProgress = useScrollProgress();
 
-  // Preloader: hide once the GLTF/Draco assets are loaded and Lottie has started.
-  // In reduced-motion mode the 3D model is never mounted, so nothing loads
-  // through the GLTF manager — gate only on Lottie having started there.
+  // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
   const { active, progress } = useProgress();
   const [hidePreloader, setHidePreloader] = useState(false);
   useEffect(() => {
@@ -75,30 +86,58 @@ export default function Scene() {
     if (assetsReady && animationStarted) setHidePreloader(true);
   }, [active, progress, animationStarted, reducedMotion]);
 
+  // Reduced motion: skip the whole scroll flow — Lottie jumps straight to the
+  // last frame inside LottiePlane, nothing to animate.
+  useEffect(() => {
+    if (reducedMotion) setPhase("done");
+  }, [reducedMotion]);
+
+  // Intro phase: lock body scroll for 3 s while Lottie autoplays. After the
+  // timer fires, unlock and hand control over to scroll. Skipped in reduced-motion.
+  useEffect(() => {
+    if (reducedMotion) return;
+    if (phase !== "intro") return;
+    window.scrollTo(0, 0);
+    document.body.classList.add("scroll-locked");
+    const id = window.setTimeout(() => {
+      setPhase("scroll");
+      document.body.classList.remove("scroll-locked");
+    }, LOTTIE_INTRO_MS);
+    return () => {
+      window.clearTimeout(id);
+      document.body.classList.remove("scroll-locked");
+    };
+  }, [phase, reducedMotion]);
+
+  // Time-based fade-in for the 3D model right after intro ends. Without this
+  // the model would pop in at full opacity the moment Lottie pauses.
+  useEffect(() => {
+    if (phase !== "scroll") {
+      setIntroFadeT(0);
+      return;
+    }
+    let raf = 0;
+    const start = performance.now();
+    const tick = (now: number) => {
+      const t = Math.min((now - start) / INTRO_FADE_IN_MS, 1);
+      setIntroFadeT(t);
+      if (t < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [phase]);
+
   useEffect(() => {
     if (!import.meta.env.DEV) return;
     const handler = (e: KeyboardEvent) => {
       if (e.metaKey && e.key === "l") {
         e.preventDefault();
-        setVisible((v) => !v);
+        setLevaVisible((v) => !v);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
-
-  // Shared playback controls — drive both the 3D model and the Lottie text so
-  // pause/scrub/speed affect them together. Function form returns [values, set]
-  // so the model can push its elapsed time back into the slider as it plays.
-  const [{ paused, time, speed }, setAnim] = useControls("Animation", () => ({
-    paused: false,
-    time: { value: 0, min: 0, max: DURATION, step: 0.01 },
-    speed: { value: 0.8, min: 0.1, max: 3, step: 0.05 },
-  }));
-  const handleTime = useCallback(
-    (t: number) => setAnim({ time: t }),
-    [setAnim],
-  );
 
   const {
     ambientIntensity,
@@ -193,44 +232,80 @@ export default function Scene() {
     envIntensity: { value: 0.65, min: 0, max: 3, step: 0.05 },
   });
 
-  const handleFadeOut = useCallback((ft: number) => {
-    const el = wrapperRef.current;
-    if (el) el.style.opacity = String(1 - ft);
-    if (ft >= 1) setModelDone(true);
-  }, []);
-
   const handleAnimationStart = useCallback(() => {
     setAnimationStarted(true);
   }, []);
 
-  const handleLottieComplete = useCallback(() => {
-    setLottieDone(true);
-  }, []);
+  // Derive playback props from phase + scroll. After intro everything is purely
+  // a function of scrollProgress, so reverse scrolling rewinds every part of the
+  // experience (arc, fade, Lottie) symmetrically.
+  let lottiePaused: boolean;
+  let lottieTime: number;
+  let modelMount: boolean;
+  let modelTime: number;
+  let modelOpacity: number;
 
-  // Once everything has settled into its final static state, stop the render
-  // loop entirely (demand) — nothing is animating, so there is nothing to redraw.
-  const settled = reducedMotion ? lottieDone : lottieDone && modelDone;
+  if (phase === "intro") {
+    lottiePaused = false;
+    lottieTime = 0;
+    modelMount = false;
+    modelTime = 0;
+    modelOpacity = 1;
+  } else if (phase === "done") {
+    lottiePaused = true;
+    lottieTime = LOTTIE_TOTAL_S;
+    modelMount = false;
+    modelTime = DURATION;
+    modelOpacity = 0;
+  } else {
+    // Scroll-driven main flow.
+    lottiePaused = true;
+    const sp = scrollProgress;
+
+    // Arc position: 0..1 across the model phase, then pinned at the end.
+    modelTime = Math.min(sp / MODEL_PHASE_END, 1) * DURATION;
+
+    // Scroll-driven opacity: 1 before MODEL_PHASE_END, lerps to 0 across
+    // FADE_RANGE, then 0. Combined (min) with the time-based intro fade-in so
+    // the model proves in smoothly right after intro ends.
+    let scrollOp: number;
+    if (sp <= MODEL_PHASE_END) {
+      scrollOp = 1;
+    } else if (sp >= FADE_END) {
+      scrollOp = 0;
+    } else {
+      scrollOp = 1 - (sp - MODEL_PHASE_END) / FADE_RANGE;
+    }
+    modelOpacity = Math.min(scrollOp, smoothstep(introFadeT));
+
+    // Mount only while it can be seen — cheap to remount since the model is
+    // preloaded and elapsed is rewritten from `time` on each prop change.
+    modelMount = modelOpacity > 0.001;
+
+    // Lottie holds at 3 s until the model has fully faded; then scrubs to the end.
+    if (sp <= FADE_END) {
+      lottieTime = LOTTIE_INTRO_S;
+    } else {
+      const t = (sp - FADE_END) / (1 - FADE_END);
+      lottieTime = LOTTIE_INTRO_S + t * (LOTTIE_TOTAL_S - LOTTIE_INTRO_S);
+    }
+  }
 
   return (
     <>
-      <Leva hidden={!visible} />
+      <Leva hidden={!levaVisible} />
       <Preloader visible={!hidePreloader} />
       <div
-        ref={wrapperRef}
         style={{
           position: "fixed",
           inset: 0,
           zIndex: 1,
           pointerEvents: "none",
-          opacity: 1,
         }}
       >
         <Canvas
-          frameloop={settled ? "demand" : "always"}
+          frameloop="always"
           gl={{
-            // AA is handled by SMAA in the composer. stencil:false avoids the
-            // packed DEPTH_STENCIL buffer that three's MSAA transmission target
-            // blits — the source of the glBlitFramebuffer error.
             antialias: false,
             stencil: false,
             toneMapping: ACESFilmicToneMapping,
@@ -241,7 +316,6 @@ export default function Scene() {
         >
           <color attach="background" args={["#000000"]} />
           <RendererConfig exposure={toneMappingExposure} />
-          <InvalidateOnce active={settled} />
           <ambientLight color={0xffffff} intensity={ambientIntensity} />
           <directionalLight
             color={dir1Color}
@@ -273,33 +347,22 @@ export default function Scene() {
             <LottiePlane
               reducedMotion={reducedMotion}
               onAnimationStart={handleAnimationStart}
-              onComplete={handleLottieComplete}
-              paused={paused}
-              time={time}
+              paused={lottiePaused}
+              time={lottieTime}
               speed={1}
             />
-            {!reducedMotion && (
+            {!reducedMotion && modelMount && (
               <ArcModel
-                shouldStart={animationStarted}
-                onFadeOut={handleFadeOut}
-                onTimeChange={handleTime}
-                paused={paused}
-                time={time}
-                speed={speed}
+                shouldStart
+                paused
+                time={modelTime}
+                opacity={modelOpacity}
               />
             )}
           </Suspense>
-          {/* multisampling={0}: the composer's MSAA resolve clashes with the
-              transmission material's depth-stencil buffer (glBlitFramebuffer
-              error). SMAA restores anti-aliasing as a cheap fullscreen pass. */}
           <EffectComposer multisampling={0}>
-            {/* HDR-threshold bloom: the scene renders to a HalfFloat buffer, so
-                the glass model's specular highlights exceed 1.0 while the (unlit)
-                white Lottie text sits at exactly 1.0. threshold 1.0 blooms only
-                the glass, never the text. Values are fixed — live-editing them in
-                Leva re-instantiated the effect and dropped the glow until reload. */}
             <Bloom
-              intensity={0.9}
+              intensity={0.1}
               luminanceThreshold={1.0}
               luminanceSmoothing={0.2}
               mipmapBlur
@@ -309,6 +372,16 @@ export default function Scene() {
           </EffectComposer>
         </Canvas>
       </div>
+      {/* Scroll-track: provides the scrollable height that drives the model and
+          Lottie phases. The Canvas itself is pinned via position: fixed above. */}
+      <div
+        style={{
+          height: `${SCROLL_TRACK_VH}vh`,
+          width: "100%",
+          pointerEvents: "none",
+        }}
+        aria-hidden
+      />
     </>
   );
 }

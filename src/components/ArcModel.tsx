@@ -13,7 +13,6 @@ function easeInOutSine(t: number): number {
 }
 
 export const DURATION = 8.6;
-const FADE_DURATION = 0.4;
 
 const glassMaterial = new THREE.MeshPhysicalMaterial({
   color: new THREE.Color(0xffffff),
@@ -35,33 +34,33 @@ const glassMaterial = new THREE.MeshPhysicalMaterial({
 });
 
 interface ArcModelProps {
-  onFadeOut?: (ft: number) => void;
   onTimeChange?: (time: number) => void;
   shouldStart?: boolean;
   paused?: boolean;
   time?: number;
   speed?: number;
+  opacity?: number;
 }
 
 export default function ArcModel({
-  onFadeOut,
   onTimeChange,
   shouldStart = true,
   paused = false,
   time = 0,
   speed = 0.8,
+  opacity = 1,
 }: ArcModelProps) {
   const { scene: modelScene } = useGLTF(import.meta.env.BASE_URL + "model.glb");
-  const { viewport } = useThree();
+  const { viewport, pointer } = useThree();
   const modelRef = useRef<THREE.Group>(null);
   const elapsed = useRef<number>(0);
-  const fadeElapsed = useRef<number>(0);
-  const isFading = useRef<boolean>(false);
-  const isDone = useRef<boolean>(false);
   const pausedRef = useRef<boolean>(false);
   const speedRef = useRef<number>(1.0);
-  const swingAmplitudeRef = useRef<number>(0.35);
-  const swingFrequencyRef = useRef<number>(1.8);
+  const opacityRef = useRef<number>(1);
+  const swingAmountRef = useRef<number>(0.25);
+  const swingCyclesRef = useRef<number>(1);
+  const mouseRotX = useRef<number>(0);
+  const mouseRotY = useRef<number>(0);
 
   // Material controls
   const {
@@ -148,20 +147,20 @@ export default function ArcModel({
     thicknessMax,
   ]);
 
-  const { swingAmplitude, swingFrequency } = useControls("Pendulum", {
-    swingAmplitude: {
-      value: 0.1,
+  const { swingAmount, swingCycles } = useControls("Tilt", {
+    swingAmount: {
+      value: 0.12,
       min: 0,
-      max: 1.5,
+      max: 1.0,
       step: 0.01,
-      label: "Amplitude",
+      label: "Swing Amount",
     },
-    swingFrequency: {
-      value: 2,
-      min: 0.1,
+    swingCycles: {
+      value: 1,
+      min: 1,
       max: 10,
-      step: 0.05,
-      label: "Frequency",
+      step: 0.5,
+      label: "Swing Cycles",
     },
   });
 
@@ -173,11 +172,14 @@ export default function ArcModel({
     speedRef.current = speed;
   }, [speed]);
   useEffect(() => {
-    swingAmplitudeRef.current = swingAmplitude;
-  }, [swingAmplitude]);
+    opacityRef.current = opacity;
+  }, [opacity]);
   useEffect(() => {
-    swingFrequencyRef.current = swingFrequency;
-  }, [swingFrequency]);
+    swingAmountRef.current = swingAmount;
+  }, [swingAmount]);
+  useEffect(() => {
+    swingCyclesRef.current = swingCycles;
+  }, [swingCycles]);
 
   // When paused, time slider scrubs the animation position
   useEffect(() => {
@@ -214,17 +216,21 @@ export default function ArcModel({
   // model never flies off the top, on any aspect ratio.
   const curve = useMemo(() => {
     const { width, height } = viewport;
-    const a = (width / 2) * 0.85;
-    const b = (height / 2) * 0.85;
+    const a = (width / 2) * 0.95;
+    const b = (height / 2) * 0.95;
 
     // Push the arc further right on portrait screens (mobile + tablet); keep the
     // gentler shift on landscape/desktop.
     const aspect = width / height;
     const offsetX = aspect < 1 ? width * 0.35 : width * 0.15;
-    const offsetY = height * 0.3;
+    const offsetY = height * 0.25;
     const start = new THREE.Vector3(-a + offsetX, -b + offsetY, 0);
-    const control = new THREE.Vector3(offsetX, b + offsetY, 0);
-    const end = new THREE.Vector3(a + offsetX, -b + offsetY, 0);
+    const control = new THREE.Vector3(
+      (width / 2) * 0.55 + offsetX,
+      b + offsetY,
+      0,
+    );
+    const end = new THREE.Vector3(a + width * 0.2, -b + height * 0.1, 0);
     return new THREE.QuadraticBezierCurve3(start, control, end);
   }, [viewport.width, viewport.height]);
 
@@ -236,39 +242,42 @@ export default function ArcModel({
   }, [curve]);
 
   useFrame((_state, delta: number) => {
-    if (isDone.current || !modelRef.current) return;
+    if (!modelRef.current) return;
 
-    if (!isFading.current) {
-      if (!pausedRef.current) {
-        elapsed.current = Math.min(
-          elapsed.current + delta * speedRef.current,
-          DURATION,
-        );
-        onTimeChange?.(elapsed.current);
-        if (elapsed.current >= DURATION) {
-          isFading.current = true;
-        }
-      }
-
-      const t = easeInOutSine(elapsed.current / DURATION);
-      const pos = curve.getPoint(t);
-      modelRef.current.position.copy(pos);
-      modelRef.current.rotation.y = t * Math.PI * 0.3;
-      modelRef.current.rotation.x =
-        Math.sin(elapsed.current * swingFrequencyRef.current) *
-        swingAmplitudeRef.current;
-    } else {
-      fadeElapsed.current = Math.min(
-        fadeElapsed.current + delta,
-        FADE_DURATION,
+    if (!pausedRef.current) {
+      elapsed.current = Math.min(
+        elapsed.current + delta * speedRef.current,
+        DURATION,
       );
-      const ft = fadeElapsed.current / FADE_DURATION;
-      onFadeOut?.(ft);
-      if (fadeElapsed.current >= FADE_DURATION) {
-        isDone.current = true;
-        modelRef.current.visible = false;
-      }
+      onTimeChange?.(elapsed.current);
     }
+
+    const t = easeInOutSine(elapsed.current / DURATION);
+    const pos = curve.getPoint(t);
+    modelRef.current.position.copy(pos);
+
+    // Smooth mouse parallax — ~4° max, framerate-independent lerp
+    const MOUSE_MAX = 0.07;
+    const lerpK = 1 - Math.exp(-delta * 4);
+    mouseRotY.current += (pointer.x * MOUSE_MAX - mouseRotY.current) * lerpK;
+    mouseRotX.current += (-pointer.y * MOUSE_MAX - mouseRotX.current) * lerpK;
+
+    modelRef.current.rotation.y = mouseRotY.current;
+    modelRef.current.rotation.z = 0;
+    // Pitch oscillation: top forward → top back, swingCycles times across the flight.
+    modelRef.current.rotation.x =
+      swingAmountRef.current *
+      Math.sin(t * swingCyclesRef.current * -Math.PI * -0.9) +
+      mouseRotX.current;
+
+    // Scroll-driven opacity: 0 hides, 1 is fully opaque. Bidirectional so the
+    // model fades back in if the user scrolls upward through the fade range.
+    const op = Math.min(Math.max(opacityRef.current, 0), 1);
+    const visible = op > 0.001;
+    if (modelRef.current.visible !== visible)
+      modelRef.current.visible = visible;
+    glassMaterial.transparent = op < 1;
+    glassMaterial.opacity = op;
   });
 
   if (!shouldStart) {
