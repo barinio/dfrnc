@@ -19,17 +19,17 @@ const glassMaterial = new THREE.MeshPhysicalMaterial({
   metalness: 0.0,
   roughness: 0.15,
   transmission: 1.0,
-  thickness: 1.2,
-  ior: 1.45,
+  thickness: 0.85,
+  ior: 1.2,
   dispersion: 1.5,
   attenuationColor: new THREE.Color(0xdde6ff),
-  attenuationDistance: 4.0,
+  attenuationDistance: 5.5,
   clearcoat: 1.0,
   clearcoatRoughness: 0.05,
-  iridescence: 0.6,
+  iridescence: 0.1,
   iridescenceIOR: 1.7,
   iridescenceThicknessRange: [200, 600],
-  envMapIntensity: 1.2,
+  envMapIntensity: 0.1,
   side: THREE.DoubleSide,
 });
 
@@ -88,21 +88,21 @@ export default function ArcModel({
         metalness: { value: 0.0, min: 0, max: 1, step: 0.01 },
         roughness: { value: 0.15, min: 0, max: 1, step: 0.01 },
         transmission: { value: 1.0, min: 0, max: 1, step: 0.01 },
-        thickness: { value: 1.2, min: 0, max: 5, step: 0.05 },
-        ior: { value: 1.45, min: 1.0, max: 2.5, step: 0.01 },
-        envMapIntensity: { value: 1.2, min: 0, max: 5, step: 0.05 },
+        thickness: { value: 0.85, min: 0, max: 5, step: 0.05 },
+        ior: { value: 1.2, min: 1.0, max: 2.5, step: 0.01 },
+        envMapIntensity: { value: 0.1, min: 0, max: 5, step: 0.05 },
       }),
       Glass: folder({
         dispersion: { value: 1.5, min: 0, max: 10, step: 0.1 },
         attenuationColor: "#dde6ff",
-        attenuationDistance: { value: 4.0, min: 0, max: 20, step: 0.1 },
+        attenuationDistance: { value: 5.5, min: 0, max: 20, step: 0.1 },
       }),
       Clearcoat: folder({
         clearcoat: { value: 1.0, min: 0, max: 1, step: 0.01 },
         clearcoatRoughness: { value: 0.05, min: 0, max: 1, step: 0.01 },
       }),
       Iridescence: folder({
-        iridescence: { value: 0.6, min: 0, max: 1, step: 0.01 },
+        iridescence: { value: 0.1, min: 0, max: 1, step: 0.01 },
         iridescenceIOR: { value: 1.7, min: 1.0, max: 2.5, step: 0.01 },
         thicknessMin: { value: 200, min: 50, max: 1000, step: 1 },
         thicknessMax: { value: 600, min: 50, max: 1000, step: 1 },
@@ -216,23 +216,39 @@ export default function ArcModel({
   // model never flies off the top, on any aspect ratio.
   const curve = useMemo(() => {
     const { width, height } = viewport;
+
     const a = (width / 2) * 0.95;
     const b = (height / 2) * 0.95;
 
-    // Push the arc further right on portrait screens (mobile + tablet); keep the
-    // gentler shift on landscape/desktop.
     const aspect = width / height;
-    const offsetX = aspect < 1 ? width * 0.35 : width * 0.15;
+    const isPortrait = aspect < 1;
+
+    // START
+    const offsetX = isPortrait ? width * 0.35 : width * 0.15;
     const offsetY = height * 0.25;
     const start = new THREE.Vector3(-a + offsetX, -b + offsetY, 0);
+
+    // CONTROL
     const control = new THREE.Vector3(
-      (width / 2) * 0.55 + offsetX,
+      width * (isPortrait ? 0.75 : 0.25),
       b + offsetY,
       0,
     );
-    const end = new THREE.Vector3(a + width * 0.2, -b + height * 0.1, 0);
+
+    // END
+    const endX = isPortrait ? a + width * 0.75 : a + width * 0.2;
+    const endY = isPortrait ? -b - height * 0.05 : -b + height * 0.1;
+    const end = new THREE.Vector3(endX, endY, 0);
+
     return new THREE.QuadraticBezierCurve3(start, control, end);
   }, [viewport.width, viewport.height]);
+
+  useEffect(() => {
+    if (modelRef.current) {
+      const pos = curve.getPoint(0);
+      modelRef.current.position.copy(pos);
+    }
+  }, [curve]);
 
   useEffect(() => {
     if (modelRef.current) {
@@ -267,7 +283,7 @@ export default function ArcModel({
     // Pitch oscillation: top forward → top back, swingCycles times across the flight.
     modelRef.current.rotation.x =
       swingAmountRef.current *
-      Math.sin(t * swingCyclesRef.current * -Math.PI * -0.9) +
+        Math.sin(t * swingCyclesRef.current * -Math.PI * -0.9) +
       mouseRotX.current;
 
     // Scroll-driven opacity: 0 hides, 1 is fully opaque. Bidirectional so the
