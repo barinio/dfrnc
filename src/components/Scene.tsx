@@ -158,7 +158,7 @@ export default function Scene() {
         pt2Color: { label: "color", value: "#aaccff" },
         pt2Intensity: {
           label: "intensity",
-          value: 20,
+          value: 0,
           min: 0,
           max: 100,
           step: 1,
