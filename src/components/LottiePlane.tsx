@@ -45,7 +45,7 @@ export default function LottiePlane({
     wrapper.style.top = '0'
     wrapper.style.width = `${size.width}px`
     wrapper.style.height = `${size.height}px`
-    wrapper.style.background = '#000'
+    wrapper.style.background = 'transparent'
     document.body.appendChild(wrapper)
 
     const anim = lottie.loadAnimation({
@@ -155,7 +155,9 @@ export default function LottiePlane({
   return (
     <mesh position={[0, 0, PLANE_Z]}>
       <planeGeometry args={[planeWidth, planeHeight]} />
-      <meshBasicMaterial map={texture} toneMapped={false} />
+      {/* transparent so the canvas's zero-alpha areas (everything but the
+          text) let the gradient background show through. */}
+      <meshBasicMaterial map={texture} toneMapped={false} transparent />
     </mesh>
   )
 }

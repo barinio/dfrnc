@@ -295,6 +295,22 @@ export default function Scene() {
     <>
       <Leva hidden={!levaVisible} />
       <Preloader visible={!hidePreloader} />
+      {/* Animated gradient background (WebGL) rendered as the bottom layer.
+          Everything above is transparent so this shows through. */}
+      <iframe
+        src="/bg_dunkel.html"
+        title="background"
+        style={{
+          position: "fixed",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          border: "none",
+          zIndex: 0,
+          pointerEvents: "none",
+        }}
+        aria-hidden
+      />
       <div
         style={{
           position: "fixed",
@@ -308,13 +324,13 @@ export default function Scene() {
           gl={{
             antialias: true,
             stencil: false,
+            alpha: true,
             toneMapping: ACESFilmicToneMapping,
             toneMappingExposure: 1.1,
           }}
           camera={{ fov: 60, near: 0.1, far: 100, position: [0, 0, 8] }}
-          style={{ width: "100%", height: "100%" }}
+          style={{ width: "100%", height: "100%", background: "transparent" }}
         >
-          <color attach="background" args={["#000000"]} />
           <RendererConfig exposure={toneMappingExposure} />
           <ambientLight color={0xffffff} intensity={ambientIntensity} />
           <directionalLight
