@@ -1,43 +1,47 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef } from "react";
+import type { MutableRefObject } from "react";
 import { SCROLL_TRACK_VH } from "../constants";
 
 // Use the animation scroll-track height as the denominator so that content
-// placed after the track (e.g. a text section) doesn't dilute scrollProgress
-// and cause the animation to never reach 1.0.
-function readProgress(): number {
+// placed after the track (e.g. the text section) doesn't dilute progress.
+function computeTrackMax(): number {
   if (typeof window === "undefined") return 0;
-  const trackMax = ((SCROLL_TRACK_VH - 100) / 100) * window.innerHeight;
-  if (trackMax <= 0) return 0;
-  return Math.min(Math.max(window.scrollY / trackMax, 0), 1);
+  return ((SCROLL_TRACK_VH - 100) / 100) * window.innerHeight;
 }
 
-export function useScrollProgress(): number {
-  const [progress, setProgress] = useState<number>(() => readProgress());
+// Latest scroll progress (0..1) exposed as a ref — updated on scroll WITHOUT a
+// React state update, so the animation can be driven imperatively from useFrame
+// instead of re-rendering the whole scene on every scroll tick.
+export function useScrollProgressRef(): MutableRefObject<number> {
+  const progress = useRef<number>(0);
 
   useEffect(() => {
-    let raf = 0;
-    let queued = false;
+    // Cache the track height and only refresh it when the viewport WIDTH changes
+    // (orientation / desktop resize). On mobile the URL bar collapsing changes
+    // innerHeight mid-scroll — recomputing then would jump progress and stutter.
+    let trackMax = computeTrackMax();
+    let lastWidth = window.innerWidth;
 
-    const tick = () => {
-      queued = false;
-      setProgress(readProgress());
+    const read = () => {
+      progress.current =
+        trackMax > 0 ? Math.min(Math.max(window.scrollY / trackMax, 0), 1) : 0;
     };
 
-    const onScroll = () => {
-      if (queued) return;
-      queued = true;
-      raf = window.requestAnimationFrame(tick);
+    const onResize = () => {
+      if (window.innerWidth !== lastWidth) {
+        lastWidth = window.innerWidth;
+        trackMax = computeTrackMax();
+      }
+      read();
     };
 
-    window.addEventListener("scroll", onScroll, { passive: true });
-    window.addEventListener("resize", onScroll);
-    // Sync once on mount in case the document already scrolled before hydration.
-    onScroll();
+    window.addEventListener("scroll", read, { passive: true });
+    window.addEventListener("resize", onResize);
+    read();
 
     return () => {
-      window.removeEventListener("scroll", onScroll);
-      window.removeEventListener("resize", onScroll);
-      if (raf) window.cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", read);
+      window.removeEventListener("resize", onResize);
     };
   }, []);
 

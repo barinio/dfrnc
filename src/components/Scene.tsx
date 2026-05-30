@@ -10,32 +10,15 @@ import {
 import { ToneMappingMode } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
 import { Leva, useControls, folder } from "@debug/controls";
-import ArcModel, { DURATION } from "./ArcModel";
+import ArcModel from "./ArcModel";
 import LottiePlane from "./LottiePlane";
 import LoremSection from "./LoremSection";
 import GradientBackground from "./GradientBackground";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
-import { useScrollProgress } from "../hooks/useScrollProgress";
-import {
-  LOTTIE_INTRO_S,
-  LOTTIE_INTRO_END,
-  LOTTIE_TOTAL_S,
-  MODEL_PHASE_END,
-  SCROLL_TRACK_VH,
-} from "../constants";
-
-type Phase = "scroll" | "done";
-
-// Width (in scroll-progress units) of the fade range used as the 3D model
-// enters and leaves its phase. Symmetric so the transition is reversible on
-// reverse scroll.
-const FADE_RANGE = 0.05;
-const FADE_END = MODEL_PHASE_END + FADE_RANGE;
-
-function smoothstep(x: number): number {
-  const t = Math.min(Math.max(x, 0), 1);
-  return t * t * (3 - 2 * t);
-}
+import { useScrollProgressRef } from "../hooks/useScrollProgress";
+import { modelVisibleFor, showPaddingFor } from "../playback";
+import type { Phase } from "../playback";
+import { SCROLL_TRACK_VH } from "../constants";
 
 function RendererConfig({ exposure }: { exposure: number }) {
   const { gl } = useThree();
@@ -72,7 +55,12 @@ export default function Scene() {
   const [levaVisible, setLevaVisible] = useState(false);
   const [animationStarted, setAnimationStarted] = useState(false);
   const [phase, setPhase] = useState<Phase>("scroll");
-  const scrollProgress = useScrollProgress();
+  // Scroll progress is a ref (no per-frame React renders); LottiePlane/ArcModel
+  // read it inside useFrame. Only discrete transitions below use state.
+  const scrollRef = useScrollProgressRef();
+  const [modelVisible, setModelVisible] = useState(false);
+  const [loremVisible, setLoremVisible] = useState(false);
+  const [showPadding, setShowPadding] = useState(true);
 
   // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
   const { active, progress } = useProgress();
@@ -87,6 +75,28 @@ export default function Scene() {
   useEffect(() => {
     if (reducedMotion) setPhase("done");
   }, [reducedMotion]);
+
+  // Discrete state derived from scroll — flips only when a threshold is crossed,
+  // so scrolling itself causes no per-frame React renders (the setState calls
+  // bail out when the value is unchanged).
+  useEffect(() => {
+    const update = () => {
+      const sp = scrollRef.current;
+      const mv = !reducedMotion && modelVisibleFor(sp, phase);
+      const lv = sp >= 1;
+      const spad = showPaddingFor(sp, phase);
+      setModelVisible((p) => (p !== mv ? mv : p));
+      setLoremVisible((p) => (p !== lv ? lv : p));
+      setShowPadding((p) => (p !== spad ? spad : p));
+    };
+    update();
+    window.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [scrollRef, reducedMotion, phase]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -197,63 +207,6 @@ export default function Scene() {
     setAnimationStarted(true);
   }, []);
 
-  // Everything is a pure function of scrollProgress — nothing autoplays — so
-  // reverse scrolling rewinds every part of the experience (Lottie intro, arc,
-  // fade, Lottie outro) symmetrically.
-  let lottiePaused: boolean;
-  let lottieTime: number;
-  let modelMount: boolean;
-  let modelTime: number;
-  let modelOpacity: number;
-
-  if (phase === "done") {
-    lottiePaused = true;
-    lottieTime = LOTTIE_TOTAL_S;
-    modelMount = false;
-    modelTime = DURATION;
-    modelOpacity = 0;
-  } else {
-    lottiePaused = true;
-    const sp = scrollProgress;
-
-    // Lottie timeline: scrub the intro (0 → LOTTIE_INTRO_S), hold on the intro
-    // frame while the arc plays, then scrub the remainder to the end.
-    if (sp <= LOTTIE_INTRO_END) {
-      lottieTime = (sp / LOTTIE_INTRO_END) * LOTTIE_INTRO_S;
-    } else if (sp <= FADE_END) {
-      lottieTime = LOTTIE_INTRO_S;
-    } else {
-      const t = (sp - FADE_END) / (1 - FADE_END);
-      lottieTime = LOTTIE_INTRO_S + t * (LOTTIE_TOTAL_S - LOTTIE_INTRO_S);
-    }
-
-    // Arc position: 0..1 across the model phase, then pinned at the end.
-    const arcT = Math.min(
-      Math.max(
-        (sp - LOTTIE_INTRO_END) / (MODEL_PHASE_END - LOTTIE_INTRO_END),
-        0,
-      ),
-      1,
-    );
-    modelTime = arcT * DURATION;
-
-    // Opacity: fade in as the arc enters its phase, fade out as it leaves.
-    // Outside the phase the model is fully hidden.
-    if (sp <= LOTTIE_INTRO_END || sp >= FADE_END) {
-      modelOpacity = 0;
-    } else if (sp < LOTTIE_INTRO_END + FADE_RANGE) {
-      modelOpacity = smoothstep((sp - LOTTIE_INTRO_END) / FADE_RANGE);
-    } else if (sp <= MODEL_PHASE_END) {
-      modelOpacity = 1;
-    } else {
-      modelOpacity = smoothstep(1 - (sp - MODEL_PHASE_END) / FADE_RANGE);
-    }
-
-    // Mount only while it can be seen — cheap to remount since the model is
-    // preloaded and elapsed is rewritten from `time` on each prop change.
-    modelMount = modelOpacity > 0.001;
-  }
-
   return (
     <>
       <Leva hidden={!levaVisible} />
@@ -268,6 +221,7 @@ export default function Scene() {
       >
         <Canvas
           frameloop="always"
+          dpr={[1, 2]}
           gl={{
             antialias: true,
             stencil: false,
@@ -311,18 +265,12 @@ export default function Scene() {
             <LottiePlane
               reducedMotion={reducedMotion}
               onAnimationStart={handleAnimationStart}
-              paused={lottiePaused}
-              time={lottieTime}
-              showPadding={lottieTime < LOTTIE_TOTAL_S - 0.001}
-              speed={1}
+              scrollRef={scrollRef}
+              phase={phase}
+              showPadding={showPadding}
             />
-            {!reducedMotion && modelMount && (
-              <ArcModel
-                shouldStart
-                paused
-                time={modelTime}
-                opacity={modelOpacity}
-              />
+            {!reducedMotion && modelVisible && (
+              <ArcModel shouldStart scrollRef={scrollRef} phase={phase} />
             )}
           </Suspense>
           <EffectComposer multisampling={0} stencilBuffer={false}>
@@ -341,7 +289,7 @@ export default function Scene() {
         }}
         aria-hidden
       />
-      <LoremSection visible={scrollProgress >= 1} />
+      <LoremSection visible={loremVisible} />
     </>
   );
 }

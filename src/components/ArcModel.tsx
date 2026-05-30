@@ -1,8 +1,12 @@
 import { useRef, useEffect, useMemo } from "react";
+import type { MutableRefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { useControls, folder } from "@debug/controls";
+import { DURATION } from "../constants";
+import { modelStateFor } from "../playback";
+import type { Phase } from "../playback";
 
 useGLTF.setDecoderPath(
   "https://www.gstatic.com/draco/versioned/decoders/1.5.6/",
@@ -12,7 +16,7 @@ function easeInOutSine(t: number): number {
   return -(Math.cos(Math.PI * t) - 1) / 2;
 }
 
-export const DURATION = 8.6;
+export { DURATION };
 
 const glassMaterial = new THREE.MeshPhysicalMaterial({
   color: new THREE.Color(0xffffff),
@@ -34,21 +38,15 @@ const glassMaterial = new THREE.MeshPhysicalMaterial({
 });
 
 interface ArcModelProps {
-  onTimeChange?: (time: number) => void;
   shouldStart?: boolean;
-  paused?: boolean;
-  time?: number;
-  speed?: number;
-  opacity?: number;
+  scrollRef: MutableRefObject<number>;
+  phase: Phase;
 }
 
 export default function ArcModel({
-  onTimeChange,
   shouldStart = true,
-  paused = false,
-  time = 0,
-  speed = 0.8,
-  opacity = 1,
+  scrollRef,
+  phase,
 }: ArcModelProps) {
   const { scene: modelScene } = useGLTF(import.meta.env.BASE_URL + "model.glb");
   const { viewport, pointer } = useThree();
@@ -57,8 +55,6 @@ export default function ArcModel({
   // center (cursor parallax) instead of the GLB's off-center origin.
   const centerRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const elapsed = useRef<number>(0);
-  const pausedRef = useRef<boolean>(false);
-  const speedRef = useRef<number>(1.0);
   const opacityRef = useRef<number>(1);
   const swingAmountRef = useRef<number>(0.25);
   const swingCyclesRef = useRef<number>(1);
@@ -169,25 +165,11 @@ export default function ArcModel({
 
   // Keep refs in sync so useFrame always reads current values without stale closures
   useEffect(() => {
-    pausedRef.current = paused;
-  }, [paused]);
-  useEffect(() => {
-    speedRef.current = speed;
-  }, [speed]);
-  useEffect(() => {
-    opacityRef.current = opacity;
-  }, [opacity]);
-  useEffect(() => {
     swingAmountRef.current = swingAmount;
   }, [swingAmount]);
   useEffect(() => {
     swingCyclesRef.current = swingCycles;
   }, [swingCycles]);
-
-  // When paused, time slider scrubs the animation position
-  useEffect(() => {
-    if (paused) elapsed.current = time;
-  }, [time, paused]);
 
   // Assign the glass material to every mesh once the model is loaded.
   useEffect(() => {
@@ -263,13 +245,11 @@ export default function ArcModel({
   useFrame((_state, delta: number) => {
     if (!modelRef.current) return;
 
-    if (!pausedRef.current) {
-      elapsed.current = Math.min(
-        elapsed.current + delta * speedRef.current,
-        DURATION,
-      );
-      onTimeChange?.(elapsed.current);
-    }
+    // Drive playback straight from scroll progress (read via ref — no React
+    // re-render). Position eased below; opacity applied at the end.
+    const { time, opacity } = modelStateFor(scrollRef.current, phase);
+    elapsed.current = time;
+    opacityRef.current = opacity;
 
     const t = easeInOutSine(elapsed.current / DURATION);
     const pos = curve.getPoint(t);

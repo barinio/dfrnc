@@ -12,3 +12,9 @@ export const LOTTIE_TOTAL_S = 8.6;
 export const LOTTIE_INTRO_END = 0.18;
 export const MODEL_PHASE_END = 0.6;
 export const SCROLL_TRACK_VH = 600;
+
+// Length of the 3D arc playback (seconds); matches the Lottie total.
+export const DURATION = 8.6;
+// Width (in scroll-progress units) of the model fade in/out — symmetric so the
+// transition is reversible on reverse scroll.
+export const FADE_RANGE = 0.05;
