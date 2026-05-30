@@ -7,9 +7,9 @@ import animationData from '../assets/animation.json'
 import { LOTTIE_TOTAL_S } from '../constants'
 
 const PLANE_Z = -1
-const PADDING_PLANE_Z = PLANE_Z - 0.01
-const WHITE_PADDING_RATIO = 0.02
-const LOTTIE_EDGE_CROP_RATIO = 0.004
+// Transparent inset applied on every side while the animation plays, so the
+// dark page background shows through as a uniform margin (no white plane).
+const PADDING_RATIO = 0.02
 
 interface LottiePlaneProps {
   onComplete?: () => void
@@ -17,7 +17,7 @@ interface LottiePlaneProps {
   reducedMotion?: boolean
   paused?: boolean
   time?: number
-  showWhitePadding?: boolean
+  showPadding?: boolean
   speed?: number
 }
 
@@ -27,7 +27,7 @@ export default function LottiePlane({
   reducedMotion = false,
   paused = false,
   time = 0,
-  showWhitePadding = false,
+  showPadding = false,
   speed = 1,
 }: LottiePlaneProps) {
   const { viewport, camera, size } = useThree()
@@ -131,64 +131,31 @@ export default function LottiePlane({
     if (texture && !doneRef.current) texture.needsUpdate = true
   })
 
-  useEffect(() => {
-    if (!texture) return
-
+  const { planeWidth, planeHeight } = useMemo(() => {
+    const cam = camera as THREE.PerspectiveCamera
     const aspect = viewport.width / viewport.height
-    const isLandscape = aspect >= 1
-    const cropX = showWhitePadding && !isLandscape ? LOTTIE_EDGE_CROP_RATIO : 0
-    const cropY = showWhitePadding && isLandscape ? LOTTIE_EDGE_CROP_RATIO : 0
+    const distance = cam.position.z - PLANE_Z
+    const h = 2 * distance * Math.tan((cam.fov * Math.PI) / 360)
+    const fullWidth = h * aspect
+    const fullHeight = h
+    // Same absolute inset on all four sides (based on the smaller dimension) so
+    // the transparent margin reads as a uniform 2%, not 2%-of-width vs 2%-of-height.
+    const margin = showPadding
+      ? PADDING_RATIO * Math.min(fullWidth, fullHeight)
+      : 0
 
-    texture.wrapS = THREE.ClampToEdgeWrapping
-    texture.wrapT = THREE.ClampToEdgeWrapping
-    texture.offset.set(cropX, cropY)
-    texture.repeat.set(1 - cropX * 2, 1 - cropY * 2)
-    texture.needsUpdate = true
-  }, [texture, showWhitePadding, viewport.width, viewport.height])
-
-  const { planeWidth, planeHeight, paddingPlaneWidth, paddingPlaneHeight } =
-    useMemo(() => {
-      const cam = camera as THREE.PerspectiveCamera
-      const aspect = viewport.width / viewport.height
-      const getPlaneSize = (z: number) => {
-        const distance = cam.position.z - z
-        const h = 2 * distance * Math.tan((cam.fov * Math.PI) / 360)
-        return { width: h * aspect, height: h }
-      }
-
-      const lottiePlane = getPlaneSize(PLANE_Z)
-      const paddingPlane = getPlaneSize(PADDING_PLANE_Z)
-      const isLandscape = aspect >= 1
-      const insetScale = 1 - WHITE_PADDING_RATIO * 2
-
-      return {
-        planeWidth:
-          showWhitePadding && !isLandscape
-            ? lottiePlane.width * insetScale
-            : lottiePlane.width,
-        planeHeight:
-          showWhitePadding && isLandscape
-            ? lottiePlane.height * insetScale
-            : lottiePlane.height,
-        paddingPlaneWidth: paddingPlane.width,
-        paddingPlaneHeight: paddingPlane.height,
-      }
-    }, [camera, viewport.width, viewport.height, showWhitePadding])
+    return {
+      planeWidth: fullWidth - margin * 2,
+      planeHeight: fullHeight - margin * 2,
+    }
+  }, [camera, viewport.width, viewport.height, showPadding])
 
   if (!texture) return null
 
   return (
-    <group>
-      {showWhitePadding && (
-        <mesh position={[0, 0, PADDING_PLANE_Z]}>
-          <planeGeometry args={[paddingPlaneWidth, paddingPlaneHeight]} />
-          <meshBasicMaterial color="#ffffff" toneMapped={false} />
-        </mesh>
-      )}
-      <mesh position={[0, 0, PLANE_Z]}>
-        <planeGeometry args={[planeWidth, planeHeight]} />
-        <meshBasicMaterial map={texture} toneMapped={false} />
-      </mesh>
-    </group>
+    <mesh position={[0, 0, PLANE_Z]}>
+      <planeGeometry args={[planeWidth, planeHeight]} />
+      <meshBasicMaterial map={texture} toneMapped={false} />
+    </mesh>
   )
 }
