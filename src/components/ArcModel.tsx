@@ -53,6 +53,9 @@ export default function ArcModel({
   const { scene: modelScene } = useGLTF(import.meta.env.BASE_URL + "model.glb");
   const { viewport, pointer } = useThree();
   const modelRef = useRef<THREE.Group>(null);
+  // Scaled bounding-box center, used to make the model rotate about its visual
+  // center (cursor parallax) instead of the GLB's off-center origin.
+  const centerRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const elapsed = useRef<number>(0);
   const pausedRef = useRef<boolean>(false);
   const speedRef = useRef<number>(1.0);
@@ -202,12 +205,20 @@ export default function ArcModel({
   // so the model shrinks noticeably on narrow screens.
   useEffect(() => {
     if (!modelScene) return;
+    modelScene.position.set(0, 0, 0);
     modelScene.scale.setScalar(1);
     const box = new THREE.Box3().setFromObject(modelScene);
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z);
     const targetSize = Math.max(1.2, Math.min(2.5, viewport.width * 0.4));
-    modelScene.scale.setScalar(targetSize / maxDim);
+    const s = targetSize / maxDim;
+    modelScene.scale.setScalar(s);
+    // Offset the geometry so its bounding-box center lands on the parent group's
+    // origin; the parent's position is then compensated by the same center so
+    // the composition is unchanged but rotation pivots about the visual center.
+    const center = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
+    centerRef.current.copy(center);
+    modelScene.position.set(-center.x, -center.y, -center.z);
   }, [modelScene, viewport.width, viewport.height]);
 
   // Contained arc: bottom-left corner → screen center → bottom-right corner.
@@ -245,15 +256,7 @@ export default function ArcModel({
 
   useEffect(() => {
     if (modelRef.current) {
-      const pos = curve.getPoint(0);
-      modelRef.current.position.copy(pos);
-    }
-  }, [curve]);
-
-  useEffect(() => {
-    if (modelRef.current) {
-      const pos = curve.getPoint(0);
-      modelRef.current.position.copy(pos);
+      modelRef.current.position.copy(curve.getPoint(0)).add(centerRef.current);
     }
   }, [curve]);
 
@@ -270,7 +273,7 @@ export default function ArcModel({
 
     const t = easeInOutSine(elapsed.current / DURATION);
     const pos = curve.getPoint(t);
-    modelRef.current.position.copy(pos);
+    modelRef.current.position.copy(pos).add(centerRef.current);
 
     // Smooth mouse parallax — ~4° max, framerate-independent lerp
     const MOUSE_MAX = 0.07;
@@ -300,7 +303,11 @@ export default function ArcModel({
     return null;
   }
 
-  return <primitive ref={modelRef} object={modelScene} />;
+  return (
+    <group ref={modelRef}>
+      <primitive object={modelScene} />
+    </group>
+  );
 }
 
 useGLTF.preload(import.meta.env.BASE_URL + "model.glb");
