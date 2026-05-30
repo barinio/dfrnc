@@ -211,14 +211,7 @@ export default function Scene() {
     <>
       <Leva hidden={!levaVisible} />
       <Preloader visible={!hidePreloader} />
-      <div
-        style={{
-          position: "fixed",
-          inset: 0,
-          zIndex: 1,
-          pointerEvents: "none",
-        }}
-      >
+      <div className="canvas-layer">
         <Canvas
           frameloop="always"
           dpr={[1, 2]}

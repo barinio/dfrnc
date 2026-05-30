@@ -21,6 +21,22 @@ body.scroll-locked {
     position: relative;
 }
 
+/* Full-screen WebGL layer. Locked to the LARGE viewport height (lvh), which by
+   spec does not change when the mobile URL bar hides/shows. With `inset: 0` the
+   layer tracked the dynamic viewport, so each URL-bar toggle resized the canvas
+   and re-fit the whole Lottie/scene — causing the scroll jumps. On desktop
+   lvh == vh, so this is identical there. */
+.canvas-layer {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh; /* fallback */
+    height: 100lvh;
+    z-index: 1;
+    pointer-events: none;
+}
+
 .dfrnc-spinner {
     width: 36px;
     height: 36px;
