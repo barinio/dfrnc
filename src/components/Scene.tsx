@@ -17,23 +17,19 @@ import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgress } from "../hooks/useScrollProgress";
 import {
   LOTTIE_INTRO_S,
-  LOTTIE_INTRO_MS,
+  LOTTIE_INTRO_END,
   LOTTIE_TOTAL_S,
   MODEL_PHASE_END,
   SCROLL_TRACK_VH,
 } from "../constants";
 
-type Phase = "intro" | "scroll" | "done";
+type Phase = "scroll" | "done";
 
-// Width (in scroll-progress units) of the fade range that sits right after the
-// model phase. Outside it the model is fully visible or fully hidden, so the
-// transition is symmetric and reversible on reverse scroll.
+// Width (in scroll-progress units) of the fade range used as the 3D model
+// enters and leaves its phase. Symmetric so the transition is reversible on
+// reverse scroll.
 const FADE_RANGE = 0.05;
 const FADE_END = MODEL_PHASE_END + FADE_RANGE;
-
-// Duration of the time-based opacity fade-in that plays right after intro ends,
-// so the model doesn't snap into view at full opacity when Lottie pauses.
-const INTRO_FADE_IN_MS = 700;
 
 function smoothstep(x: number): number {
   const t = Math.min(Math.max(x, 0), 1);
@@ -74,8 +70,7 @@ export default function Scene() {
   const reducedMotion = usePrefersReducedMotion();
   const [levaVisible, setLevaVisible] = useState(false);
   const [animationStarted, setAnimationStarted] = useState(false);
-  const [phase, setPhase] = useState<Phase>("intro");
-  const [introFadeT, setIntroFadeT] = useState(0);
+  const [phase, setPhase] = useState<Phase>("scroll");
   const scrollProgress = useScrollProgress();
 
   // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
@@ -91,41 +86,6 @@ export default function Scene() {
   useEffect(() => {
     if (reducedMotion) setPhase("done");
   }, [reducedMotion]);
-
-  // Intro phase: lock body scroll for 3 s while Lottie autoplays. After the
-  // timer fires, unlock and hand control over to scroll. Skipped in reduced-motion.
-  useEffect(() => {
-    if (reducedMotion) return;
-    if (phase !== "intro") return;
-    window.scrollTo(0, 0);
-    document.body.classList.add("scroll-locked");
-    const id = window.setTimeout(() => {
-      setPhase("scroll");
-      document.body.classList.remove("scroll-locked");
-    }, LOTTIE_INTRO_MS);
-    return () => {
-      window.clearTimeout(id);
-      document.body.classList.remove("scroll-locked");
-    };
-  }, [phase, reducedMotion]);
-
-  // Time-based fade-in for the 3D model right after intro ends. Without this
-  // the model would pop in at full opacity the moment Lottie pauses.
-  useEffect(() => {
-    if (phase !== "scroll") {
-      setIntroFadeT(0);
-      return;
-    }
-    let raf = 0;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const t = Math.min((now - start) / INTRO_FADE_IN_MS, 1);
-      setIntroFadeT(t);
-      if (t < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [phase]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -236,59 +196,61 @@ export default function Scene() {
     setAnimationStarted(true);
   }, []);
 
-  // Derive playback props from phase + scroll. After intro everything is purely
-  // a function of scrollProgress, so reverse scrolling rewinds every part of the
-  // experience (arc, fade, Lottie) symmetrically.
+  // Everything is a pure function of scrollProgress — nothing autoplays — so
+  // reverse scrolling rewinds every part of the experience (Lottie intro, arc,
+  // fade, Lottie outro) symmetrically.
   let lottiePaused: boolean;
   let lottieTime: number;
   let modelMount: boolean;
   let modelTime: number;
   let modelOpacity: number;
 
-  if (phase === "intro") {
-    lottiePaused = false;
-    lottieTime = 0;
-    modelMount = false;
-    modelTime = 0;
-    modelOpacity = 1;
-  } else if (phase === "done") {
+  if (phase === "done") {
     lottiePaused = true;
     lottieTime = LOTTIE_TOTAL_S;
     modelMount = false;
     modelTime = DURATION;
     modelOpacity = 0;
   } else {
-    // Scroll-driven main flow.
     lottiePaused = true;
     const sp = scrollProgress;
 
-    // Arc position: 0..1 across the model phase, then pinned at the end.
-    modelTime = Math.min(sp / MODEL_PHASE_END, 1) * DURATION;
-
-    // Scroll-driven opacity: 1 before MODEL_PHASE_END, lerps to 0 across
-    // FADE_RANGE, then 0. Combined (min) with the time-based intro fade-in so
-    // the model proves in smoothly right after intro ends.
-    let scrollOp: number;
-    if (sp <= MODEL_PHASE_END) {
-      scrollOp = 1;
-    } else if (sp >= FADE_END) {
-      scrollOp = 0;
-    } else {
-      scrollOp = 1 - (sp - MODEL_PHASE_END) / FADE_RANGE;
-    }
-    modelOpacity = Math.min(scrollOp, smoothstep(introFadeT));
-
-    // Mount only while it can be seen — cheap to remount since the model is
-    // preloaded and elapsed is rewritten from `time` on each prop change.
-    modelMount = modelOpacity > 0.001;
-
-    // Lottie holds at 3 s until the model has fully faded; then scrubs to the end.
-    if (sp <= FADE_END) {
+    // Lottie timeline: scrub the intro (0 → LOTTIE_INTRO_S), hold on the intro
+    // frame while the arc plays, then scrub the remainder to the end.
+    if (sp <= LOTTIE_INTRO_END) {
+      lottieTime = (sp / LOTTIE_INTRO_END) * LOTTIE_INTRO_S;
+    } else if (sp <= FADE_END) {
       lottieTime = LOTTIE_INTRO_S;
     } else {
       const t = (sp - FADE_END) / (1 - FADE_END);
       lottieTime = LOTTIE_INTRO_S + t * (LOTTIE_TOTAL_S - LOTTIE_INTRO_S);
     }
+
+    // Arc position: 0..1 across the model phase, then pinned at the end.
+    const arcT = Math.min(
+      Math.max(
+        (sp - LOTTIE_INTRO_END) / (MODEL_PHASE_END - LOTTIE_INTRO_END),
+        0,
+      ),
+      1,
+    );
+    modelTime = arcT * DURATION;
+
+    // Opacity: fade in as the arc enters its phase, fade out as it leaves.
+    // Outside the phase the model is fully hidden.
+    if (sp <= LOTTIE_INTRO_END || sp >= FADE_END) {
+      modelOpacity = 0;
+    } else if (sp < LOTTIE_INTRO_END + FADE_RANGE) {
+      modelOpacity = smoothstep((sp - LOTTIE_INTRO_END) / FADE_RANGE);
+    } else if (sp <= MODEL_PHASE_END) {
+      modelOpacity = 1;
+    } else {
+      modelOpacity = smoothstep(1 - (sp - MODEL_PHASE_END) / FADE_RANGE);
+    }
+
+    // Mount only while it can be seen — cheap to remount since the model is
+    // preloaded and elapsed is rewritten from `time` on each prop change.
+    modelMount = modelOpacity > 0.001;
   }
 
   return (

@@ -52,7 +52,9 @@ export default function LottiePlane({
       container: wrapper,
       renderer: 'canvas',
       loop: false,
-      autoplay: !reducedMotion,
+      // Never autoplay — the timeline is entirely scroll-driven (scrubbed via
+      // the `time` prop). Reduced motion jumps straight to the final frame.
+      autoplay: false,
       animationData,
       rendererSettings: {
         preserveAspectRatio: 'none',
