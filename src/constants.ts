@@ -9,7 +9,9 @@ export const LOTTIE_TOTAL_S = 8.6;
 //   [0, LOTTIE_INTRO_END]                Lottie reveals the intro (0 → LOTTIE_INTRO_S)
 //   [LOTTIE_INTRO_END, MODEL_PHASE_END]  3D arc plays; Lottie held on its intro frame
 //   [MODEL_PHASE_END, …]                 arc fades out, then Lottie plays to the end
-export const LOTTIE_INTRO_END = 0.18;
+// Scroll fraction spent on the Lottie intro reveal (0 → LOTTIE_INTRO_S). Wider
+// range = slower reveal per unit scroll. 0.225 ≈ 0.8× the previous 0.18 speed.
+export const LOTTIE_INTRO_END = 0.225;
 export const MODEL_PHASE_END = 0.6;
 export const SCROLL_TRACK_VH = 600;
 
