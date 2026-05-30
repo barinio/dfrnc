@@ -157,11 +157,11 @@ export default function LottiePlane({
   return (
     <mesh position={[0, 0, PLANE_Z]}>
       <planeGeometry args={[planeWidth, planeHeight]} />
-      {/* alphaTest (not `transparent`) discards the canvas's zero-alpha areas so
-          the gradient shows through the letter gaps, while keeping the material
-          OPAQUE — transmissive materials only refract opaque objects, so this is
-          what lets the glass model refract the text behind it. */}
-      <meshBasicMaterial map={texture} toneMapped={false} alphaTest={0} />
+      {/* Small alphaTest discards only the near-zero-alpha letter gaps so the
+          in-scene GradientBackground shows through, while keeping the material
+          OPAQUE — transmissive materials only refract opaque objects, so the
+          glass still refracts the text (on the dark gradient backdrop). */}
+      <meshBasicMaterial map={texture} toneMapped={false} alphaTest={0.1} />
     </mesh>
   );
 }

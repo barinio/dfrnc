@@ -13,6 +13,7 @@ import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel, { DURATION } from "./ArcModel";
 import LottiePlane from "./LottiePlane";
 import LoremSection from "./LoremSection";
+import GradientBackground from "./GradientBackground";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgress } from "../hooks/useScrollProgress";
 import {
@@ -257,22 +258,6 @@ export default function Scene() {
     <>
       <Leva hidden={!levaVisible} />
       <Preloader visible={!hidePreloader} />
-      {/* Animated gradient background (WebGL) rendered as the bottom layer.
-          Everything above is transparent so this shows through. */}
-      <iframe
-        src="/bg_dunkel.html"
-        title="background"
-        style={{
-          position: "fixed",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          border: "none",
-          zIndex: 0,
-          pointerEvents: "none",
-        }}
-        aria-hidden
-      />
       <div
         style={{
           position: "fixed",
@@ -294,6 +279,7 @@ export default function Scene() {
           style={{ width: "100%", height: "100%", background: "transparent" }}
         >
           <RendererConfig exposure={toneMappingExposure} />
+          <GradientBackground />
           <ambientLight color={0xffffff} intensity={ambientIntensity} />
           <directionalLight
             color={dir1Color}
