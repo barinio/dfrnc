@@ -10,8 +10,9 @@ import { lottieTimeFor } from "../playback";
 import type { Phase } from "../playback";
 
 const PLANE_Z = -1;
-// Transparent inset applied on every side while the animation plays, so the
-// dark page background shows through as a uniform margin (no white plane).
+// Uniform transparent inset on all four sides (2% of the smaller dimension) so
+// the dark page background frames the Lottie. Always applied — the margins are
+// a deliberate design choice and must stay consistent on every pass/device.
 const PADDING_RATIO = 0.02;
 
 interface LottiePlaneProps {
@@ -20,7 +21,6 @@ interface LottiePlaneProps {
   reducedMotion?: boolean;
   scrollRef: MutableRefObject<number>;
   phase: Phase;
-  showPadding?: boolean;
 }
 
 export default function LottiePlane({
@@ -29,7 +29,6 @@ export default function LottiePlane({
   reducedMotion = false,
   scrollRef,
   phase,
-  showPadding = false,
 }: LottiePlaneProps) {
   const { viewport, camera, size } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
@@ -129,16 +128,14 @@ export default function LottiePlane({
     const fullWidth = h * aspect;
     const fullHeight = h;
     // Same absolute inset on all four sides (based on the smaller dimension) so
-    // the transparent margin reads as a uniform 2%, not 2%-of-width vs 2%-of-height.
-    const margin = showPadding
-      ? PADDING_RATIO * Math.min(fullWidth, fullHeight)
-      : 0;
-
+    // the transparent margin reads as a uniform 2%. Unconditional, so it never
+    // disappears between scroll passes.
+    const margin = PADDING_RATIO * Math.min(fullWidth, fullHeight);
     return {
       planeWidth: fullWidth - margin * 2,
       planeHeight: fullHeight - margin * 2,
     };
-  }, [camera, viewport.width, viewport.height, showPadding]);
+  }, [camera, viewport.width, viewport.height]);
 
   if (!texture) return null;
 

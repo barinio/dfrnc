@@ -7,6 +7,7 @@ import { useControls, folder } from "@debug/controls";
 import { DURATION } from "../constants";
 import { modelStateFor } from "../playback";
 import type { Phase } from "../playback";
+import { makeArc, BLUE_ARC } from "../arc";
 
 useGLTF.setDecoderPath(
   "https://www.gstatic.com/draco/versioned/decoders/1.5.6/",
@@ -51,13 +52,18 @@ export default function ArcModel({
   const { scene: modelScene } = useGLTF(import.meta.env.BASE_URL + "model.glb");
   const { viewport, pointer } = useThree();
   const modelRef = useRef<THREE.Group>(null);
+  // Outer group: carries the curve position + a screen-space roll applied OUTSIDE
+  // the spin (so the roll rotates the projected image, not the model's local Z).
+  const rollGroupRef = useRef<THREE.Group>(null);
   // Scaled bounding-box center, used to make the model rotate about its visual
   // center (cursor parallax) instead of the GLB's off-center origin.
   const centerRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const elapsed = useRef<number>(0);
   const opacityRef = useRef<number>(1);
-  const swingAmountRef = useRef<number>(0.25);
+  const swingAmountRef = useRef<number>(0.56);
   const swingCyclesRef = useRef<number>(1);
+  const rollPeakRef = useRef<number>(0.52);
+  const spinTurnsRef = useRef<number>(0.55);
   const mouseRotX = useRef<number>(0);
   const mouseRotY = useRef<number>(0);
 
@@ -146,9 +152,9 @@ export default function ArcModel({
     thicknessMax,
   ]);
 
-  const { swingAmount, swingCycles } = useControls("Tilt", {
+  const { swingAmount, swingCycles, rollPeak } = useControls("Tilt", {
     swingAmount: {
-      value: 0.12,
+      value: 0.56,
       min: 0,
       max: 1.0,
       step: 0.01,
@@ -161,6 +167,13 @@ export default function ArcModel({
       step: 0.5,
       label: "Swing Cycles",
     },
+    rollPeak: {
+      value: 0.52,
+      min: -1.5,
+      max: 1.5,
+      step: 0.01,
+      label: "Roll @ peak",
+    },
   });
 
   // Keep refs in sync so useFrame always reads current values without stale closures
@@ -170,6 +183,55 @@ export default function ArcModel({
   useEffect(() => {
     swingCyclesRef.current = swingCycles;
   }, [swingCycles]);
+  useEffect(() => {
+    rollPeakRef.current = rollPeak;
+  }, [rollPeak]);
+
+  // Scroll-driven spin: total turn swept across the flight, ending face-on at
+  // t=1 (the apex sits at half the turn). The model counter-rotates as it flies;
+  // pair it with "Roll @ peak" for the 11→5 o'clock tilt at the apex. Negative
+  // flips the spin direction.
+  const { spinTurns } = useControls("Spin", {
+    spinTurns: {
+      value: 0.55,
+      min: -3,
+      max: 3,
+      step: 0.05,
+      label: "Turns",
+    },
+  });
+  useEffect(() => {
+    spinTurnsRef.current = spinTurns;
+  }, [spinTurns]);
+
+  // Blue-dome trajectory shape (live-tunable so the arc can be matched to the
+  // reference precisely). Future models supply their own ArcConfig.
+  const { peakHeight, legSpreadLandscape, legSpreadPortrait } = useControls(
+    "Arc",
+    {
+      peakHeight: {
+        value: BLUE_ARC.peakHeight,
+        min: 0,
+        max: 1.2,
+        step: 0.01,
+        label: "Peak Height",
+      },
+      legSpreadLandscape: {
+        value: BLUE_ARC.legSpreadLandscape,
+        min: 0.2,
+        max: 1.2,
+        step: 0.01,
+        label: "Spread (desktop)",
+      },
+      legSpreadPortrait: {
+        value: BLUE_ARC.legSpreadPortrait,
+        min: 0.2,
+        max: 1.2,
+        step: 0.01,
+        label: "Spread (mobile)",
+      },
+    },
+  );
 
   // Assign the glass material to every mesh once the model is loaded.
   useEffect(() => {
@@ -203,42 +265,34 @@ export default function ArcModel({
     modelScene.position.set(-center.x, -center.y, -center.z);
   }, [modelScene, viewport.width, viewport.height]);
 
-  // Contained arc: bottom-left corner → screen center → bottom-right corner.
-  // The control point sits at top-center so the quadratic Bézier passes exactly
-  // through (0,0) at its midpoint (t=0.5) and stays within y ∈ [-b, 0] — the
-  // model never flies off the top, on any aspect ratio.
-  const curve = useMemo(() => {
-    const { width, height } = viewport;
-
-    const a = (width / 2) * 0.95;
-    const b = (height / 2) * 0.95;
-
-    const aspect = width / height;
-    const isPortrait = aspect < 1;
-
-    // START
-    const offsetX = isPortrait ? width * 0.35 : width * 0.15;
-    const offsetY = height * 0.25;
-    const start = new THREE.Vector3(-a + offsetX, -b + offsetY, 0);
-
-    // CONTROL
-    const control = new THREE.Vector3(
-      width * (isPortrait ? 0.75 : 0.25),
-      b + offsetY,
-      0,
-    );
-
-    // END
-    const endX = isPortrait ? a + width * 0.75 : a + width * 0.2;
-    const endY = isPortrait ? -b - height * 0.05 : -b + height * 0.1;
-    const end = new THREE.Vector3(endX, endY, 0);
-
-    return new THREE.QuadraticBezierCurve3(start, control, end);
-  }, [viewport.width, viewport.height]);
+  // Symmetric blue dome: enters bottom-left, peaks top-center, exits
+  // bottom-right (see makeArc). The apex lands exactly at the curve midpoint
+  // (t = 0.5) — which is where the scroll-driven spin reaches face-on.
+  const curve = useMemo(
+    () =>
+      makeArc(viewport.width, viewport.height, {
+        ...BLUE_ARC,
+        peakHeight,
+        legSpreadLandscape,
+        legSpreadPortrait,
+      }),
+    [
+      viewport.width,
+      viewport.height,
+      peakHeight,
+      legSpreadLandscape,
+      legSpreadPortrait,
+    ],
+  );
 
   useEffect(() => {
-    if (modelRef.current) {
-      modelRef.current.position.copy(curve.getPoint(0)).add(centerRef.current);
+    if (rollGroupRef.current) {
+      const p0 = curve.getPoint(0);
+      rollGroupRef.current.position.set(
+        p0.x,
+        p0.y + centerRef.current.y,
+        p0.z + centerRef.current.z,
+      );
     }
   }, [curve]);
 
@@ -253,7 +307,23 @@ export default function ArcModel({
 
     const t = easeInOutSine(elapsed.current / DURATION);
     const pos = curve.getPoint(t);
-    modelRef.current.position.copy(pos).add(centerRef.current);
+    // The GLB's bounding-box center is offset from its origin (centerRef). Apply
+    // that compensation on Y/Z to keep the tuned composition, but NOT on X — the
+    // model's visual center then tracks the curve horizontally, so the dome
+    // stays centered on screen (otherwise the large X offset drags it left).
+    // Position lives on the outer group so the roll below pivots about it.
+    if (rollGroupRef.current) {
+      rollGroupRef.current.position.set(
+        pos.x,
+        pos.y + centerRef.current.y,
+        pos.z + centerRef.current.z,
+      );
+      // Screen-space roll: applied outside the spin, so it rotates the projected
+      // image. Peaks at the apex (zero at both ends); positive is counter-
+      // clockwise, tipping the model's top toward ~11 o'clock (bottom → 5).
+      rollGroupRef.current.rotation.z =
+        rollPeakRef.current * Math.sin(t * Math.PI);
+    }
 
     // Smooth mouse parallax — ~4° max, framerate-independent lerp
     const MOUSE_MAX = 0.07;
@@ -261,8 +331,12 @@ export default function ArcModel({
     mouseRotY.current += (pointer.x * MOUSE_MAX - mouseRotY.current) * lerpK;
     mouseRotX.current += (-pointer.y * MOUSE_MAX - mouseRotX.current) * lerpK;
 
-    modelRef.current.rotation.y = mouseRotY.current;
-    modelRef.current.rotation.z = 0;
+    // Scroll-driven spin about the vertical axis, synced to the arc: edge-on at
+    // the start, three-quarter at the apex, face-on at the end. spinTurns is the
+    // total turn across the flight; 0.25 ⇒ 90° edge-on (t=0) → 45° at the apex
+    // (t=0.5) → 0° face-on (t=1). Reverses on scroll-up because t tracks scroll.
+    const spinY = (1 - t) * spinTurnsRef.current * Math.PI * 2;
+    modelRef.current.rotation.y = spinY + mouseRotY.current;
     // Pitch oscillation: top forward → top back, swingCycles times across the flight.
     modelRef.current.rotation.x =
       swingAmountRef.current *
@@ -284,8 +358,10 @@ export default function ArcModel({
   }
 
   return (
-    <group ref={modelRef}>
-      <primitive object={modelScene} />
+    <group ref={rollGroupRef}>
+      <group ref={modelRef}>
+        <primitive object={modelScene} />
+      </group>
     </group>
   );
 }

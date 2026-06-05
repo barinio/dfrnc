@@ -16,7 +16,7 @@ import LoremSection from "./LoremSection";
 import GradientBackground from "./GradientBackground";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
-import { modelVisibleFor, showPaddingFor } from "../playback";
+import { modelVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
 
@@ -60,7 +60,6 @@ export default function Scene() {
   const scrollRef = useScrollProgressRef();
   const [modelVisible, setModelVisible] = useState(false);
   const [loremVisible, setLoremVisible] = useState(false);
-  const [showPadding, setShowPadding] = useState(true);
 
   // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
   const { active, progress } = useProgress();
@@ -84,10 +83,8 @@ export default function Scene() {
       const sp = scrollRef.current;
       const mv = !reducedMotion && modelVisibleFor(sp, phase);
       const lv = sp >= 1;
-      const spad = showPaddingFor(sp, phase);
       setModelVisible((p) => (p !== mv ? mv : p));
       setLoremVisible((p) => (p !== lv ? lv : p));
-      setShowPadding((p) => (p !== spad ? spad : p));
     };
     update();
     window.addEventListener("scroll", update, { passive: true });
@@ -260,7 +257,6 @@ export default function Scene() {
               onAnimationStart={handleAnimationStart}
               scrollRef={scrollRef}
               phase={phase}
-              showPadding={showPadding}
             />
             {!reducedMotion && modelVisible && (
               <ArcModel shouldStart scrollRef={scrollRef} phase={phase} />
