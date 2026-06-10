@@ -27,8 +27,13 @@ function clamp01(x: number): number {
 // Lottie timeline (seconds). The reveal starts at DEFT_DROP_S — the loader has
 // already auto-played [0, DEFT_DROP_S], and because the mapping never returns
 // less than DEFT_DROP_S, scrolling back to the top can never re-enter the drop.
+// Reduced-motion ("done") phase: hold the readable intro frame until the lottie
+// phase ends (FIGURES_END), then snap to the final frame which the video tail
+// covers. The discrete swap at FIGURES_END is intentional — no animation plays
+// for these users; the typography stays readable through the figures phase.
 export function lottieTimeFor(sp: number, phase: Phase): number {
-  if (phase === "done") return LOTTIE_TOTAL_S;
+  if (phase === "done")
+    return sp < FIGURES_END ? LOTTIE_INTRO_S : LOTTIE_TOTAL_S;
   if (sp <= REVEAL_END)
     return DEFT_DROP_S + (sp / REVEAL_END) * (LOTTIE_INTRO_S - DEFT_DROP_S);
   if (sp <= FIGURES_END) return LOTTIE_INTRO_S;

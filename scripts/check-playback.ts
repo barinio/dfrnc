@@ -28,7 +28,8 @@ eq(lottieTimeFor(REVEAL_END, "scroll"), LOTTIE_INTRO_S, "lottie @REVEAL_END");
 eq(lottieTimeFor(FIGURES_END, "scroll"), LOTTIE_INTRO_S, "lottie hold");
 eq(lottieTimeFor(LOTTIE_END, "scroll"), LOTTIE_TOTAL_S, "lottie @LOTTIE_END");
 eq(lottieTimeFor(1, "scroll"), LOTTIE_TOTAL_S, "lottie clamped after end");
-eq(lottieTimeFor(0.5, "done"), LOTTIE_TOTAL_S, "lottie done");
+eq(lottieTimeFor(0.5, "done"), LOTTIE_INTRO_S, "lottie done: readable frame held");
+eq(lottieTimeFor(0.9, "done"), LOTTIE_TOTAL_S, "lottie done: final frame at tail");
 let prev = -1;
 for (let sp = 0; sp <= 1.0001; sp += 0.001) {
   const t = lottieTimeFor(sp, "scroll");

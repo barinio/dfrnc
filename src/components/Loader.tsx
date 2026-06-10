@@ -39,7 +39,7 @@ export default function Loader({
   const firedRef = useRef(false);
 
   useEffect(() => {
-    if (reducedMotion) return;
+    if (reducedMotion || hidden) return;
     if (firedRef.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -98,7 +98,7 @@ export default function Loader({
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
     };
-  }, [reducedMotion]);
+  }, [reducedMotion, hidden]);
 
   // Reduced motion: no ball animation — release as soon as assets are ready.
   useEffect(() => {
@@ -113,7 +113,7 @@ export default function Loader({
       className={`loader-overlay${hidden ? " loader-overlay--hidden" : ""}`}
       aria-hidden
     >
-      {!reducedMotion && <canvas ref={canvasRef} className="loader-canvas" />}
+      {!reducedMotion && !hidden && <canvas ref={canvasRef} className="loader-canvas" />}
     </div>
   );
 }

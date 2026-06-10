@@ -83,6 +83,9 @@ export default function LottiePlane({
     });
 
     animRef.current = anim;
+    // Reset the scrub cache so the new instance isn't stuck on frame 0 until
+    // the next scroll change (a resize destroys and recreates the lottie).
+    lastTimeRef.current = -1;
 
     let tex: THREE.CanvasTexture | null = null;
 

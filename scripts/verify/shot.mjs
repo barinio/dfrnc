@@ -1,7 +1,7 @@
 // Scroll-position screenshot harness for headless visual verification.
 // Usage:
 //   node scripts/verify/shot.mjs --url http://localhost:5173 --sp 0,0.3,0.5 \
-//     --out /tmp/shots --viewport 1280x800 --track 600 --wait 9000
+//     --out /tmp/shots --viewport 1280x800 --track 800 --wait 9000
 //   (requires: npm i puppeteer-core --no-save)
 // Notes:
 //   - Drives SYSTEM Chrome with SwiftShader so WebGL works headlessly.

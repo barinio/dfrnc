@@ -27,5 +27,5 @@ export const VIDEO_FADE = 0.05;
 // figures from both being mid-fade at once.
 export const FIGURE_FADE = 0.18;
 
-// Total scrollable track height (vh). 800 gives the video phase ~175vh.
+// Total scrollable track height (vh). 800 gives the video phase ~154vh.
 export const SCROLL_TRACK_VH = 800;
