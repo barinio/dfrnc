@@ -272,6 +272,31 @@ per the established workflow:
 Raw pixel diffs are unusable (animated noise + `uTime` gradient) — compare
 structure, not pixels.
 
+## As built — authorized drift (2026-06-10)
+
+Implementation deviations approved during execution review; intent unchanged:
+
+- **Crossfade is one-sided.** The video (DOM layer, z-index 2) fades in over the
+  held Lottie frame; there is no in-scene Lottie fade. Visually equivalent
+  because the Lottie's final frame is the empty zoom-through frame.
+- **`DEFT_DROP_S` = 1.0 s stand-in** (current animation) rather than "~2 s" —
+  re-measure when the real Lottie export lands.
+- **Lottie supersampling is 1.25× desktop / 1.0× phone-class** (short axis
+  ≤ 480 px), not 1.5–2× — tuned down after the FPS check (texture-upload cost).
+- **Figure centering compensates all three axes**: the curve point drives the
+  figure's visual center on X, Y and Z (the GLB pivots sit far from the
+  geometry; the spec's Y/Z-only rule was an artifact of the original model).
+  `peakHeight` therefore reads directly as the apex height of the visual center.
+- **Loader settle trigger** is "assets ready AND ≥ 1 full travel pass AND
+  screen momentarily empty" — the empty window begins exactly at the travel
+  end, so this equals the spec's "next cycle boundary" in practice.
+- **Reduced motion holds the readable intro frame** (`LOTTIE_INTRO_S`) until
+  `FIGURES_END`, then swaps discretely to the final frame (covered by the
+  video tail). The spec's "jump straight to the final frame" left the page
+  blank for ~78 % of the track because the final frame is empty.
+- **Figure GLBs are the real user exports** (tokyo/gba/awwwards delivered
+  2026-06-10); `public/figures/*` remains drop-in.
+
 ## Out of scope
 
 - Producing the GLB / Lottie / re-encoded video exports themselves (user-provided).
