@@ -286,8 +286,9 @@ Implementation deviations approved during execution review; intent unchanged:
   (pan strictly portrait-only). The scene's film grain now covers the video
   too. Failure mode: a video error latches the plane invisible (dark gradient
   stays); the poster file was removed with the DOM layer.
-- **`DEFT_DROP_S` = 1.0 s stand-in** (current animation) rather than "~2 s" —
-  re-measure when the real Lottie export lands.
+- **`DEFT_DROP_S` = 0.4 s stand-in** (current animation) rather than "~2 s" —
+  chosen so the post-drop hold shows ONLY the DEFT word (MACHT enters at
+  ≈0.5 s). Re-measure when the real Lottie export lands.
 - **Lottie supersampling is 1.25× desktop / 1.0× phone-class** (short axis
   ≤ 480 px), not 1.5–2× — tuned down after the FPS check (texture-upload cost).
 - **Figure centering compensates all three axes**: the curve point drives the
