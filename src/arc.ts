@@ -39,6 +39,14 @@ export interface FigureDef {
   // a GLB needs no code change.
   url: string;
   arc: ArcConfig;
+  // Optional per-figure deviations from the shared glass material, applied on
+  // top of the Leva-synced base values. Thin/elongated geometry (long internal
+  // light paths) saturates the Beer-Lambert attenuation tint — weaken it here.
+  material?: {
+    attenuationColor?: string;
+    attenuationDistance?: number;
+    thickness?: number;
+  };
 }
 
 // Launch order: and → tokyo → gba → awwwards, alternating entry sides, one
@@ -72,6 +80,7 @@ export const FIGURES: FigureDef[] = [
       spinTurns: -0.5,
       window: [0.25, 0.5],
     },
+    material: { attenuationDistance: 16, attenuationColor: "#eef3ff" },
   },
   {
     name: "gba",

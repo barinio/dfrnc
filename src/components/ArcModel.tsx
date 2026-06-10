@@ -142,6 +142,13 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
     material.iridescence = iridescence;
     material.iridescenceIOR = iridescenceIOR;
     material.iridescenceThicknessRange = [thicknessMin, thicknessMax];
+    // Per-figure overrides (manifest) win over the shared Leva values — thin
+    // figures need weaker attenuation so edge-on views don't saturate blue.
+    const ov = figure.material;
+    if (ov?.attenuationColor) material.attenuationColor.set(ov.attenuationColor);
+    if (ov?.attenuationDistance !== undefined)
+      material.attenuationDistance = ov.attenuationDistance;
+    if (ov?.thickness !== undefined) material.thickness = ov.thickness;
     material.needsUpdate = true;
   }, [
     material,
@@ -161,6 +168,7 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
     iridescenceIOR,
     thicknessMin,
     thicknessMax,
+    figure.material,
   ]);
 
   // Per-figure flight tuning, one Leva folder per figure. Defaults come from
