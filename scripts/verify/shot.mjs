@@ -26,7 +26,7 @@ if (sps.some(Number.isNaN)) {
 }
 const out = opt("out", "/tmp/shots");
 const [w, h] = opt("viewport", "1280x800").split("x").map(Number);
-const track = Number(opt("track", "600")); // keep in sync with SCROLL_TRACK_VH
+const track = Number(opt("track", "800")); // keep in sync with SCROLL_TRACK_VH
 const wait = Number(opt("wait", "9000"));
 
 mkdirSync(out, { recursive: true });

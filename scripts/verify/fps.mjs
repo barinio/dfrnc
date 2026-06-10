@@ -3,7 +3,7 @@
 // absolute number is meaningless; ONLY compare before vs after a change at
 // the same viewport/sp on the same machine.
 // Usage: node scripts/verify/fps.mjs --url http://localhost:5173 --sp 0.1 \
-//          --viewport 390x844 --track 600 --wait 9000 --ms 3000
+//          --viewport 390x844 --track 800 --wait 9000 --ms 3000
 // Always pass --track matching src/constants.ts SCROLL_TRACK_VH.
 //   (requires: npm i puppeteer-core --no-save)
 import puppeteer from "puppeteer-core";
@@ -19,7 +19,7 @@ const CHROME =
 const url = opt("url", "http://localhost:5173");
 const sp = Number(opt("sp", "0.1"));
 const [w, h] = opt("viewport", "390x844").split("x").map(Number);
-const track = Number(opt("track", "600"));
+const track = Number(opt("track", "800"));
 const wait = Number(opt("wait", "9000"));
 const windowMs = Number(opt("ms", "3000"));
 
