@@ -6,6 +6,7 @@ import {
   EffectComposer,
   ToneMapping,
   Noise,
+  SMAA,
 } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
@@ -264,6 +265,7 @@ export default function Scene() {
           </Suspense>
           <EffectComposer multisampling={0} stencilBuffer={false}>
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+            <SMAA />
             <Noise opacity={0.1} />
           </EffectComposer>
         </Canvas>

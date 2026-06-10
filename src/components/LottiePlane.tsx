@@ -30,7 +30,7 @@ export default function LottiePlane({
   scrollRef,
   phase,
 }: LottiePlaneProps) {
-  const { viewport, camera, size } = useThree();
+  const { viewport, camera, size, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
   // Once the animation is finished the canvas no longer changes, so we stop
   // uploading the texture to the GPU every frame.
@@ -48,6 +48,20 @@ export default function LottiePlane({
     wrapper.style.background = "transparent";
     document.body.appendChild(wrapper);
 
+    // Supersample the offscreen canvas: render the typography at up to 1.25×
+    // the device DPR (hard-capped so the texture never exceeds 4096px) so the
+    // alphaTest letter edges resolve crisply after linear filtering.
+    // On small viewports (mobile, ≤480px wide) the cap is tighter (1.0×) to
+    // avoid a frame-rate regression on SwiftShader / lower-end GPUs.
+    const ssMax = size.width <= 480 ? 1.0 : 1.25;
+    const ssDpr = Math.max(
+      1,
+      Math.min(
+        (window.devicePixelRatio || 1) * ssMax,
+        4096 / Math.max(size.width, size.height),
+      ),
+    );
+
     const anim = lottie.loadAnimation({
       container: wrapper,
       renderer: "canvas",
@@ -59,6 +73,7 @@ export default function LottiePlane({
       rendererSettings: {
         preserveAspectRatio: "none",
         clearCanvas: true,
+        dpr: ssDpr,
       },
     });
 
@@ -80,6 +95,7 @@ export default function LottiePlane({
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
+      tex.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
       texRef.current = tex;
       setTexture(tex);
       onAnimationStart?.();
@@ -101,7 +117,7 @@ export default function LottiePlane({
       if (tex) tex.dispose();
       texRef.current = null;
     };
-  }, [size.width, size.height, onComplete, onAnimationStart, reducedMotion]);
+  }, [size.width, size.height, onComplete, onAnimationStart, reducedMotion, gl]);
 
   // Scrub the frame from scroll progress every frame, reading the scroll ref
   // (no React re-render involved). Only re-upload the texture when the target
