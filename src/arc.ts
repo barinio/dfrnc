@@ -121,5 +121,3 @@ export function makeArc(
   return new THREE.QuadraticBezierCurve3(start, control, end);
 }
 
-// Temporary back-compat for ArcModel until Task 5 parameterizes it.
-export const BLUE_ARC: ArcConfig = FIGURES[0].arc;

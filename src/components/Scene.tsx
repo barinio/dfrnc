@@ -20,6 +20,7 @@ import { useScrollProgressRef } from "../hooks/useScrollProgress";
 import { figureVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
+import { FIGURES } from "../arc";
 
 function RendererConfig({ exposure }: { exposure: number }) {
   const { gl } = useThree();
@@ -82,7 +83,8 @@ export default function Scene() {
   useEffect(() => {
     const update = () => {
       const sp = scrollRef.current;
-      const mv = !reducedMotion && figureVisibleFor(sp, [0, 1], phase);
+      const mv =
+        !reducedMotion && figureVisibleFor(sp, FIGURES[0].arc.window, phase);
       const lv = sp >= 1;
       setModelVisible((p) => (p !== mv ? mv : p));
       setLoremVisible((p) => (p !== lv ? lv : p));
@@ -260,7 +262,7 @@ export default function Scene() {
               phase={phase}
             />
             {!reducedMotion && modelVisible && (
-              <ArcModel shouldStart scrollRef={scrollRef} phase={phase} />
+              <ArcModel figure={FIGURES[0]} scrollRef={scrollRef} phase={phase} />
             )}
           </Suspense>
           <EffectComposer multisampling={0} stencilBuffer={false}>
