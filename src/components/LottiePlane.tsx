@@ -6,7 +6,7 @@ import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import animationData from "../assets/animation.json";
 import { LOTTIE_TOTAL_S, DEFT_DROP_S } from "../constants";
-import { lottieTimeFor } from "../playback";
+import { lottieTimeFor, lottieBleedFor } from "../playback";
 import type { Phase } from "../playback";
 
 export type IntroStage = "loader" | "drop" | "free";
@@ -41,6 +41,7 @@ export default function LottiePlane({
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
   const animRef = useRef<AnimationItem | null>(null);
   const texRef = useRef<THREE.CanvasTexture | null>(null);
+  const meshRef = useRef<THREE.Mesh>(null);
 
   useEffect(() => {
     const wrapper = document.createElement("div");
@@ -142,6 +143,18 @@ export default function LottiePlane({
   useFrame((_state, delta) => {
     const anim = animRef.current;
     if (!anim || !texture) return;
+
+    // Frame dissolve: scale the padded plane up to full-bleed as the zoom +
+    // video reveal begin (lottieBleedFor ramps over [VIDEO_START, +VIDEO_FADE]).
+    // Applied every frame BEFORE the tSec dedup so the scale tracks scroll
+    // even when the Lottie frame itself isn't changing.
+    const bleed = lottieBleedFor(scrollRef.current);
+    if (meshRef.current) {
+      const sx = 1 + bleed * (bleedRatioXRef.current - 1);
+      const sy = 1 + bleed * (bleedRatioYRef.current - 1);
+      meshRef.current.scale.set(sx, sy, 1);
+    }
+
     let tSec: number;
     if (introStage === "loader") {
       // Behind the loader overlay: hold the very first frame.
@@ -169,7 +182,7 @@ export default function LottiePlane({
     if (texRef.current) texRef.current.needsUpdate = true;
   });
 
-  const { planeWidth, planeHeight } = useMemo(() => {
+  const { planeWidth, planeHeight, fullWidth, fullHeight } = useMemo(() => {
     const cam = camera as THREE.PerspectiveCamera;
     const aspect = viewport.width / viewport.height;
     const distance = cam.position.z - PLANE_Z;
@@ -183,13 +196,26 @@ export default function LottiePlane({
     return {
       planeWidth: fullWidth - margin * 2,
       planeHeight: fullHeight - margin * 2,
+      fullWidth,
+      fullHeight,
     };
   }, [camera, viewport.width, viewport.height]);
+
+  // Stash the bleed-scale ratio in refs so the useFrame closure always sees the
+  // freshest values after a resize re-render (R3F keeps the useFrame callback
+  // current via its own mechanism, but memo values captured in a closure from a
+  // previous render cycle would be stale on the first frame after resize).
+  const bleedRatioXRef = useRef(1);
+  const bleedRatioYRef = useRef(1);
+  useEffect(() => {
+    bleedRatioXRef.current = fullWidth / planeWidth;
+    bleedRatioYRef.current = fullHeight / planeHeight;
+  }, [fullWidth, planeWidth, fullHeight, planeHeight]);
 
   if (!texture) return null;
 
   return (
-    <mesh position={[0, 0, PLANE_Z]}>
+    <mesh ref={meshRef} position={[0, 0, PLANE_Z]}>
       <planeGeometry args={[planeWidth, planeHeight]} />
       {/* Small alphaTest discards only the near-zero-alpha letter gaps so the
           in-scene GradientBackground shows through, while keeping the material
