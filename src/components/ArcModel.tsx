@@ -187,10 +187,10 @@ export default function ArcModel({
     rollPeakRef.current = rollPeak;
   }, [rollPeak]);
 
-  // Scroll-driven spin: total turn swept across the flight, ending face-on at
-  // t=1 (the apex sits at half the turn). The model counter-rotates as it flies;
-  // pair it with "Roll @ peak" for the 11→5 o'clock tilt at the apex. Negative
-  // flips the spin direction.
+  // Scroll-driven spin: total turn swept across the flight, face-on at the apex
+  // (t = 0.5) and symmetric edge-on at both ends (t = 0 and t = 1). The model
+  // counter-rotates as it flies; pair it with "Roll @ peak" for the 11→5 o'clock
+  // tilt at the apex. Negative flips the spin direction.
   const { spinTurns } = useControls("Spin", {
     spinTurns: {
       value: 0.55,
@@ -331,11 +331,10 @@ export default function ArcModel({
     mouseRotY.current += (pointer.x * MOUSE_MAX - mouseRotY.current) * lerpK;
     mouseRotX.current += (-pointer.y * MOUSE_MAX - mouseRotX.current) * lerpK;
 
-    // Scroll-driven spin about the vertical axis, synced to the arc: edge-on at
-    // the start, three-quarter at the apex, face-on at the end. spinTurns is the
-    // total turn across the flight; 0.25 ⇒ 90° edge-on (t=0) → 45° at the apex
-    // (t=0.5) → 0° face-on (t=1). Reverses on scroll-up because t tracks scroll.
-    const spinY = (1 - t) * spinTurnsRef.current * Math.PI * 2;
+    // Apex-centred spin: zero (frontal) exactly at t = 0.5 — the dome apex —
+    // edge-on entering and leaving. spinTurns is the total turn across the
+    // flight; the sign flips direction.
+    const spinY = (0.5 - t) * spinTurnsRef.current * Math.PI * 2;
     modelRef.current.rotation.y = spinY + mouseRotY.current;
     // Pitch oscillation: top forward → top back, swingCycles times across the flight.
     modelRef.current.rotation.x =
