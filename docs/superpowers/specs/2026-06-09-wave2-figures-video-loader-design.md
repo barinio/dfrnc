@@ -163,7 +163,8 @@ no materials needed (glass is applied at runtime), roughly unit scale.
   `video.currentTime ∈ [0, duration]`.
 - Scrubbing is decoupled from React: a `useFrame`-equivalent rAF loop reads
   `scrollRef` and sets `currentTime` only when the target changes by more than a
-  frame (~1/30 s), seeking with `fastSeek` where available.
+  frame (~1/30 s). Seeks are precise `currentTime` assignments, not `fastSeek`
+  — fastSeek snaps to keyframes, which reads as visible jumps when scrubbing.
 - The page ends holding the video's final frame. `LoremSection` is removed.
 
 ### Mobile
