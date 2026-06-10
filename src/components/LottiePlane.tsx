@@ -39,9 +39,6 @@ export default function LottiePlane({
 }: LottiePlaneProps) {
   const { viewport, camera, size, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
-  // Once the animation is finished the canvas no longer changes, so we stop
-  // uploading the texture to the GPU every frame.
-  const doneRef = useRef<boolean>(false);
   const animRef = useRef<AnimationItem | null>(null);
   const texRef = useRef<THREE.CanvasTexture | null>(null);
 
@@ -88,10 +85,8 @@ export default function LottiePlane({
     animRef.current = anim;
 
     let tex: THREE.CanvasTexture | null = null;
-    doneRef.current = false;
 
     const handleComplete = () => {
-      doneRef.current = true;
       if (tex) tex.needsUpdate = true; // flush the final frame once
       onComplete?.();
     };
@@ -150,7 +145,9 @@ export default function LottiePlane({
       tSec = 0;
     } else if (introStage === "drop") {
       // The one scroll-independent segment: auto-play 0 → DEFT_DROP_S.
-      dropClockRef.current += delta;
+      // Clamp delta so a background-tab resume (rAF halts while hidden, then
+      // fires one huge delta on return) cannot skip past DEFT_DROP_S.
+      dropClockRef.current += Math.min(delta, 1 / 30);
       tSec = Math.min(dropClockRef.current, DEFT_DROP_S);
       if (tSec >= DEFT_DROP_S && !dropFiredRef.current) {
         dropFiredRef.current = true;

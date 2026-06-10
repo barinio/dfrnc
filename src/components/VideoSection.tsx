@@ -9,7 +9,7 @@ import type { Phase } from "../playback";
 // them centered.
 // Tuned from portrait screenshots (390×844) at sp 0.82-0.98:
 //   t≈2.6-5.2s  "WIR SIND EIN INTERNATIONALES KREATIVSTUDIO" sits right-of-center
-//   t≈8-12s     "ZUHAUSE IM HERZEN DER STADT" is heavily right-clipped
+//   t≈8-12s     "ZUHAUSE IM HERZEN DER SCHWEIZ" is heavily right-clipped
 // Increasing % shifts the visible window rightward (shows more right side of source).
 const PAN_KEYFRAMES: ReadonlyArray<readonly [number, number]> = [
   [0, 50],

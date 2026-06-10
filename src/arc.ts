@@ -31,8 +31,8 @@ export interface ArcConfig {
 
 export interface FigureDef {
   name: string;
-  // Relative to BASE_URL; the files under public/figures/ are drop-in — the
-  // user's real exports replace the stand-in copies with no code change.
+  // Relative to BASE_URL; files under public/figures/ are drop-in — swapping
+  // a GLB needs no code change.
   url: string;
   arc: ArcConfig;
 }
