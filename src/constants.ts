@@ -1,14 +1,14 @@
 // ── Lottie timeline (seconds) ────────────────────────────────────────────────
+// Real export: Animation - 1781083424055.json, 30 fps / 266 frames.
 // The loader auto-plays [0, DEFT_DROP_S] (the "DEFT drop"); scroll then drives
-// [DEFT_DROP_S, LOTTIE_TOTAL_S]. STAND-IN: the real Lottie export isn't in yet,
-// so the first ~0.4 s of the current animation plays the drop's role. Chosen so
-// the post-drop hold shows ONLY the DEFT word — MACHT is not yet visible at this
-// frame (it first appears at ~0.5 s). Re-measure when the real export lands.
-export const DEFT_DROP_S = 0.4;
-// End of the intro typography reveal — the frame the Lottie holds while the
-// figures fly.
-export const LOTTIE_INTRO_S = 3;
-export const LOTTIE_TOTAL_S = 8.6;
+// [DEFT_DROP_S, LOTTIE_TOTAL_S].
+// DEFT_DROP_S = 1.0s — DEFT has landed and settled at its final position;
+// MACHT is not yet visible (first appears at ~1.2s). Confirmed by probe.
+export const DEFT_DROP_S = 1.0;
+// LOTTIE_INTRO_S = 3.0s — full 4-word block (DEFT/MACHT/AUSGEZEICHNETES/DESIGN)
+// fully assembled and settled. The frame held while the figures fly (sp 0.17–0.5).
+export const LOTTIE_INTRO_S = 3.0;
+export const LOTTIE_TOTAL_S = 266 / 30; // 8.8667s — 30 fps, 266 frames
 
 // ── Scroll-progress partition (0..1) ─────────────────────────────────────────
 // Nothing autoplays after the loader releases:
@@ -31,12 +31,11 @@ export const FIGURES_END = 0.62;
 export const LOTTIE_END = 0.78;
 
 // Scroll progress where the video starts fading in BEHIND the typography —
-// the moment KONZEPTE has settled and the zoom-in begins (Lottie time ≈ 5.7s;
-// the zoom segment starts at ~5.9s). With the scrub on [0.5, 0.78] that Lottie
-// moment lands at sp ≈ 0.5 + (2.7/5.6)·0.28 ≈ 0.64. The letters occlude the
-// video; it shows through the alphaTest gaps, and owns the frame once the zoom
-// passes through.
-export const VIDEO_START = 0.64;
+// anchored to the moment KONZEPTE has settled (Lottie t ≈ 5.75s, sp ≈ 0.6312)
+// just before the zoom-in begins (~6.1s). The letters occlude the video; it
+// shows through the alphaTest gaps, and owns the frame once the zoom passes
+// through. Measured from real export (Animation - 1781083424055.json).
+export const VIDEO_START = 0.63;
 
 // Scroll-progress width of the video fade after VIDEO_START — fully in at
 // VIDEO_START + VIDEO_FADE = 0.69 ≈ Lottie 6.8s, well before the zoom ends
