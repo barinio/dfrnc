@@ -1,8 +1,9 @@
 // ── Lottie timeline (seconds) ────────────────────────────────────────────────
 // The loader auto-plays [0, DEFT_DROP_S] (the "DEFT drop"); scroll then drives
-// [DEFT_DROP_S, LOTTIE_TOTAL_S]. 0 until the loader lands (Task 11 sets the
-// stand-in 1.0); re-measure all three when the real Lottie export arrives.
-export const DEFT_DROP_S = 0;
+// [DEFT_DROP_S, LOTTIE_TOTAL_S]. STAND-IN: the real Lottie export isn't in yet,
+// so the first 1.0s of the current animation plays the drop's role. Re-measure
+// (with LOTTIE_INTRO_S / LOTTIE_TOTAL_S) when the export lands.
+export const DEFT_DROP_S = 1.0;
 // End of the intro typography reveal — the frame the Lottie holds while the
 // figures fly.
 export const LOTTIE_INTRO_S = 3;

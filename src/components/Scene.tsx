@@ -69,7 +69,13 @@ export default function Scene() {
     animationStarted && (reducedMotion || (!active && progress >= 100));
 
   const handleSettled = useCallback(() => {
-    // Task 11 inserts the "drop" stage here; until then release directly.
+    // Reduced motion skips the drop (the Lottie sits on its final frame).
+    setIntroStage((s) =>
+      s === "loader" ? (reducedMotion ? "free" : "drop") : s,
+    );
+  }, [reducedMotion]);
+
+  const handleDropDone = useCallback(() => {
     setIntroStage("free");
   }, []);
 
@@ -277,6 +283,8 @@ export default function Scene() {
               onAnimationStart={handleAnimationStart}
               scrollRef={scrollRef}
               phase={phase}
+              introStage={introStage}
+              onDropDone={handleDropDone}
             />
             {FIGURES.map(
               (f, i) =>

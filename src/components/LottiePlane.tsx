@@ -5,9 +5,11 @@ import * as THREE from "three";
 import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import animationData from "../assets/animation.json";
-import { LOTTIE_TOTAL_S } from "../constants";
+import { LOTTIE_TOTAL_S, DEFT_DROP_S } from "../constants";
 import { lottieTimeFor } from "../playback";
 import type { Phase } from "../playback";
+
+export type IntroStage = "loader" | "drop" | "free";
 
 const PLANE_Z = -1;
 // Uniform transparent inset on all four sides (2% of the smaller dimension) so
@@ -18,17 +20,22 @@ const PADDING_RATIO = 0.02;
 interface LottiePlaneProps {
   onComplete?: () => void;
   onAnimationStart?: () => void;
+  // Fired once when the auto-played drop reaches DEFT_DROP_S.
+  onDropDone?: () => void;
   reducedMotion?: boolean;
   scrollRef: MutableRefObject<number>;
   phase: Phase;
+  introStage: IntroStage;
 }
 
 export default function LottiePlane({
   onComplete,
   onAnimationStart,
+  onDropDone,
   reducedMotion = false,
   scrollRef,
   phase,
+  introStage,
 }: LottiePlaneProps) {
   const { viewport, camera, size, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
@@ -127,10 +134,33 @@ export default function LottiePlane({
   // frame actually changes, so an idle (non-scrolling) page does zero per-frame
   // GPU work.
   const lastTimeRef = useRef<number>(-1);
-  useFrame(() => {
+  const dropClockRef = useRef<number>(0);
+  const dropFiredRef = useRef<boolean>(false);
+  const onDropDoneRef = useRef(onDropDone);
+  useEffect(() => {
+    onDropDoneRef.current = onDropDone;
+  }, [onDropDone]);
+
+  useFrame((_state, delta) => {
     const anim = animRef.current;
     if (!anim || !texture) return;
-    const tSec = lottieTimeFor(scrollRef.current, phase);
+    let tSec: number;
+    if (introStage === "loader") {
+      // Behind the loader overlay: hold the very first frame.
+      tSec = 0;
+    } else if (introStage === "drop") {
+      // The one scroll-independent segment: auto-play 0 → DEFT_DROP_S.
+      dropClockRef.current += delta;
+      tSec = Math.min(dropClockRef.current, DEFT_DROP_S);
+      if (tSec >= DEFT_DROP_S && !dropFiredRef.current) {
+        dropFiredRef.current = true;
+        onDropDoneRef.current?.();
+      }
+    } else {
+      // Scroll-driven; lottieTimeFor never returns less than DEFT_DROP_S, so
+      // the drop can't replay on scroll-up.
+      tSec = lottieTimeFor(scrollRef.current, phase);
+    }
     if (tSec === lastTimeRef.current) return;
     lastTimeRef.current = tSec;
     const frac =
