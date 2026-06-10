@@ -58,6 +58,10 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.VideoTexture | null>(null);
   const lastTime = useRef<number>(-1);
+  // True once the video has a decodable first frame (loadeddata fired).
+  // Buffering starts at page load (component always mounted, preload=auto);
+  // this gate is the slow-network fallback so the plane never shows black.
+  const readyRef = useRef(false);
   // Degraded mode per the spec's error handling: latched on 404/decode/data-saver.
   const failedRef = useRef(false);
 
@@ -80,7 +84,7 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
     // VideoTexture auto-updates only while playing. Since we scrub a paused
     // video we must push needsUpdate manually after each seek settles.
     const onSeeked = () => { texture.needsUpdate = true; };
-    const onLoaded = () => { texture.needsUpdate = true; };
+    const onLoaded = () => { readyRef.current = true; texture.needsUpdate = true; };
     const onError = () => { failedRef.current = true; };
     video.addEventListener("seeked", onSeeked);
     video.addEventListener("loadeddata", onLoaded);
@@ -120,7 +124,11 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
 
     const { t, opacity } = videoStateFor(scrollRef.current, phase);
     mat.opacity = opacity;
-    mesh.visible = opacity > 0.001;
+    // Never show the plane before the video has a decodable first frame —
+    // sampling a not-yet-ready VideoTexture yields black. readyRef flips true
+    // in the loadeddata listener (early on fast connections; slow-network fallback
+    // keeps the GradientBackground visible until the first frame is decoded).
+    mesh.visible = readyRef.current && opacity > 0.001;
 
     if (!mesh.visible) return;
 

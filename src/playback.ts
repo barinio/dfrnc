@@ -104,7 +104,3 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
     opacity,
   };
 }
-
-export function videoVisibleFor(sp: number, phase: Phase): boolean {
-  return videoStateFor(sp, phase).opacity > 0.001;
-}
