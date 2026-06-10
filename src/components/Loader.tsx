@@ -40,14 +40,16 @@ export default function Loader({
 
   useEffect(() => {
     if (reducedMotion) return;
+    if (firedRef.current) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
     const resize = () => {
-      canvas.width = window.innerWidth;
-      canvas.height = window.innerHeight;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
     };
     window.addEventListener("resize", resize);
     resize();
@@ -81,10 +83,13 @@ export default function Loader({
         }
       } else {
         const done = drawSettleFrame(ctx, now - settleStart, w, h);
-        if (done && !firedRef.current) {
-          firedRef.current = true;
+        if (done) {
           cancelAnimationFrame(raf);
-          onSettledRef.current();
+          if (!firedRef.current) {
+            firedRef.current = true;
+            onSettledRef.current();
+          }
+          return;
         }
       }
     };
