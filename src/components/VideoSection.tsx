@@ -6,9 +6,22 @@ import type { Phase } from "../playback";
 // (videoTime seconds → object-position-x %) keyframes for the portrait crop.
 // The 16:9 frame is cover-cropped on phones; the baked-in taglines drift away
 // from frame-center during parts of the clip, so the crop window pans to keep
-// them centered. Tuned visually in the mobile task; identity (50%) until then.
+// them centered.
+// Tuned from portrait screenshots (390×844) at sp 0.82-0.98:
+//   t≈2.6-5.2s  "WIR SIND EIN INTERNATIONALES KREATIVSTUDIO" sits right-of-center
+//   t≈8-12s     "ZUHAUSE IM HERZEN DER STADT" is heavily right-clipped
+// Increasing % shifts the visible window rightward (shows more right side of source).
 const PAN_KEYFRAMES: ReadonlyArray<readonly [number, number]> = [
   [0, 50],
+  [2.0, 50],
+  [2.6, 52],  // "WIR SIND..." right-of-center; gentle rightward shift
+  [5.5, 51],  // tagline still slightly right; taper
+  [7.5, 50],  // no tagline (aerial bridge); return to center
+  [9.5, 50],  // transition into second tagline segment
+  [10.0, 72], // "ZUHAUSE IM HERZEN DER SCHWEIZ" — right-of-center
+  [11.5, 78], // text grows as drone flies into sign; keep shifting right
+  [12.5, 72], // taper as text begins to fade
+  [13.0, 50], // tagline fades; ease back to center
   [14.24, 50],
 ];
 
@@ -50,6 +63,12 @@ export default function VideoSection({ scrollRef, phase }: VideoSectionProps) {
       if (!Number.isFinite(dur) || dur <= 0) return; // metadata not ready: poster shows
       // Clamp short of the end so the held last frame never flickers black.
       const target = Math.min(t * dur, dur - 0.05);
+      // Always update the pan — cheap string write, fires on orientation changes
+      // even when the video is parked (no seek needed).
+      const portrait = window.innerHeight > window.innerWidth;
+      v.style.objectPosition = portrait
+        ? `${panXFor(target).toFixed(1)}% 50%`
+        : "50% 50%";
       // Re-seek only when the target moved by more than ~a frame.
       if (Math.abs(target - lastTime.current) < 1 / 30) return;
       lastTime.current = target;
@@ -59,10 +78,6 @@ export default function VideoSection({ scrollRef, phase }: VideoSectionProps) {
         // Seek failed (decoder hiccup / data-saver): poster or last decoded
         // frame stays up; scroll timeline is unaffected.
       }
-      const portrait = window.innerHeight > window.innerWidth;
-      v.style.objectPosition = portrait
-        ? `${panXFor(target).toFixed(1)}% 50%`
-        : "50% 50%";
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
