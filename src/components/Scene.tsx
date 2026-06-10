@@ -13,7 +13,6 @@ import { ACESFilmicToneMapping } from "three";
 import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel from "./ArcModel";
 import LottiePlane from "./LottiePlane";
-import LoremSection from "./LoremSection";
 import GradientBackground from "./GradientBackground";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
@@ -79,8 +78,6 @@ export default function Scene() {
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
   );
-  const [loremVisible, setLoremVisible] = useState(false);
-
   // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
   const { active, progress } = useProgress();
   const [hidePreloader, setHidePreloader] = useState(false);
@@ -107,8 +104,6 @@ export default function Scene() {
       setFiguresVisible((p) =>
         fv.length === p.length && fv.every((v, i) => v === p[i]) ? p : fv,
       );
-      const lv = sp >= 1;
-      setLoremVisible((p) => (p !== lv ? lv : p));
     };
     update();
     window.addEventListener("scroll", update, { passive: true });
@@ -311,7 +306,6 @@ export default function Scene() {
         }}
         aria-hidden
       />
-      <LoremSection visible={loremVisible} />
     </>
   );
 }
