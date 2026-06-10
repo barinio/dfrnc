@@ -3,7 +3,8 @@
 // absolute number is meaningless; ONLY compare before vs after a change at
 // the same viewport/sp on the same machine.
 // Usage: node scripts/verify/fps.mjs --url http://localhost:5173 --sp 0.1 \
-//          --viewport 390x844 --track 800 --wait 9000 --ms 3000
+//          --viewport 390x844 --track 600 --wait 9000 --ms 3000
+// Always pass --track matching src/constants.ts SCROLL_TRACK_VH.
 //   (requires: npm i puppeteer-core --no-save)
 import puppeteer from "puppeteer-core";
 

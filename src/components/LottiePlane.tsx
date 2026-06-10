@@ -51,9 +51,10 @@ export default function LottiePlane({
     // Supersample the offscreen canvas: render the typography at up to 1.25×
     // the device DPR (hard-capped so the texture never exceeds 4096px) so the
     // alphaTest letter edges resolve crisply after linear filtering.
-    // On small viewports (mobile, ≤480px wide) the cap is tighter (1.0×) to
-    // avoid a frame-rate regression on SwiftShader / lower-end GPUs.
-    const ssMax = size.width <= 480 ? 1.0 : 1.25;
+    // Phone-class viewports (short axis ≤ 480 CSS px, either orientation)
+    // skip the extra supersampling — texture uploads on every scrubbed frame
+    // are the mobile bottleneck (see 054779b).
+    const ssMax = Math.min(size.width, size.height) <= 480 ? 1.0 : 1.25;
     const ssDpr = Math.max(
       1,
       Math.min(
@@ -95,6 +96,8 @@ export default function LottiePlane({
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
+      // No visual effect while minFilter is LinearFilter (no mipmaps) —
+      // kept as preparation for a future mipmap upgrade.
       tex.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
       texRef.current = tex;
       setTexture(tex);
