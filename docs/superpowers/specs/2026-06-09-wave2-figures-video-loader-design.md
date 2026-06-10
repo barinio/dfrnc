@@ -276,9 +276,16 @@ structure, not pixels.
 
 Implementation deviations approved during execution review; intent unchanged:
 
-- **Crossfade is one-sided.** The video (DOM layer, z-index 2) fades in over the
-  held Lottie frame; there is no in-scene Lottie fade. Visually equivalent
-  because the Lottie's final frame is the empty zoom-through frame.
+- **The video is IN-SCENE, behind the typography (revised 2026-06-10 on user
+  request).** Not a DOM layer: an R3F `VideoPlane` (VideoTexture) sits at
+  z = −1.5 between the opaque alphaTest Lottie plane (z = −1) and the gradient
+  (z = −2). From `VIDEO_START = 0.66` (Lottie ≈ 5.7 s — KONZEPTE settled, zoom
+  beginning) the video fades in BEHIND the white letters, visible through the
+  letter gaps, and owns the frame once the zoom passes through. Cover-crop +
+  portrait pan are texture-transform equivalents of the old object-fit/position
+  (pan strictly portrait-only). The scene's film grain now covers the video
+  too. Failure mode: a video error latches the plane invisible (dark gradient
+  stays); the poster file was removed with the DOM layer.
 - **`DEFT_DROP_S` = 1.0 s stand-in** (current animation) rather than "~2 s" —
   re-measure when the real Lottie export lands.
 - **Lottie supersampling is 1.25× desktop / 1.0× phone-class** (short axis
