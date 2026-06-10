@@ -1,9 +1,10 @@
 // ── Lottie timeline (seconds) ────────────────────────────────────────────────
 // The loader auto-plays [0, DEFT_DROP_S] (the "DEFT drop"); scroll then drives
 // [DEFT_DROP_S, LOTTIE_TOTAL_S]. STAND-IN: the real Lottie export isn't in yet,
-// so the first 1.0s of the current animation plays the drop's role. Re-measure
-// (with LOTTIE_INTRO_S / LOTTIE_TOTAL_S) when the export lands.
-export const DEFT_DROP_S = 1.0;
+// so the first ~0.4 s of the current animation plays the drop's role. Chosen so
+// the post-drop hold shows ONLY the DEFT word — MACHT is not yet visible at this
+// frame (it first appears at ~0.5 s). Re-measure when the real export lands.
+export const DEFT_DROP_S = 0.4;
 // End of the intro typography reveal — the frame the Lottie holds while the
 // figures fly.
 export const LOTTIE_INTRO_S = 3;
