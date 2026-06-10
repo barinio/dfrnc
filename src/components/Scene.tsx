@@ -1,24 +1,43 @@
-import { useState, useCallback, useEffect, Suspense } from "react";
-import type { ComponentProps } from "react";
+import { Component, useState, useCallback, useEffect, Suspense } from "react";
+import type { ComponentProps, ReactNode } from "react";
+import Loader from "./Loader";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, useProgress } from "@react-three/drei";
 import {
   EffectComposer,
   ToneMapping,
   Noise,
+  SMAA,
 } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
 import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel from "./ArcModel";
 import LottiePlane from "./LottiePlane";
-import LoremSection from "./LoremSection";
 import GradientBackground from "./GradientBackground";
+import VideoPlane from "./VideoPlane";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
-import { modelVisibleFor } from "../playback";
+import { figureVisibleFor, videoVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
+import { FIGURES } from "../arc";
+
+class FigureBoundary extends Component<
+  { name: string; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(err: unknown) {
+    console.error(`[figure:${this.props.name}] failed to load`, err);
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 function RendererConfig({ exposure }: { exposure: number }) {
   const { gl } = useThree();
@@ -28,27 +47,6 @@ function RendererConfig({ exposure }: { exposure: number }) {
   return null;
 }
 
-function Preloader({ visible }: { visible: boolean }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 2,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#0a0a0a",
-        opacity: visible ? 1 : 0,
-        transition: "opacity 0.5s ease-in-out",
-        pointerEvents: visible ? "auto" : "none",
-      }}
-      aria-hidden={!visible}
-    >
-      <div className="dfrnc-spinner" />
-    </div>
-  );
-}
 
 export default function Scene() {
   const reducedMotion = usePrefersReducedMotion();
@@ -58,16 +56,38 @@ export default function Scene() {
   // Scroll progress is a ref (no per-frame React renders); LottiePlane/ArcModel
   // read it inside useFrame. Only discrete transitions below use state.
   const scrollRef = useScrollProgressRef();
-  const [modelVisible, setModelVisible] = useState(false);
-  const [loremVisible, setLoremVisible] = useState(false);
+  const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
+    FIGURES.map(() => false),
+  );
+  const [videoVisible, setVideoVisible] = useState(false);
+  // Intro sequence: loader (balls) → drop (auto-played DEFT fall, Task 11) →
+  // free (scroll-driven experience). Scroll stays locked until "free".
+  type IntroStage = "loader" | "drop" | "free";
+  const [introStage, setIntroStage] = useState<IntroStage>("loader");
 
-  // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
   const { active, progress } = useProgress();
-  const [hidePreloader, setHidePreloader] = useState(false);
+  const assetsReady =
+    animationStarted && (reducedMotion || (!active && progress >= 100));
+
+  const handleSettled = useCallback(() => {
+    // Reduced motion skips the drop (the Lottie sits on its final frame).
+    setIntroStage((s) =>
+      s === "loader" ? (reducedMotion ? "free" : "drop") : s,
+    );
+  }, [reducedMotion]);
+
+  const handleDropDone = useCallback(() => {
+    setIntroStage("free");
+  }, []);
+
+  // Scroll lock for the whole intro: the page must not scroll under the
+  // loader or the DEFT drop.
   useEffect(() => {
-    const assetsReady = reducedMotion || (!active && progress >= 100);
-    if (assetsReady && animationStarted) setHidePreloader(true);
-  }, [active, progress, animationStarted, reducedMotion]);
+    const locked = introStage !== "free";
+    document.body.classList.toggle("scroll-locked", locked);
+    if (locked) window.scrollTo(0, 0);
+    return () => document.body.classList.remove("scroll-locked");
+  }, [introStage]);
 
   // Reduced motion: skip the whole scroll flow — Lottie jumps straight to the
   // last frame inside LottiePlane, nothing to animate.
@@ -81,10 +101,13 @@ export default function Scene() {
   useEffect(() => {
     const update = () => {
       const sp = scrollRef.current;
-      const mv = !reducedMotion && modelVisibleFor(sp, phase);
-      const lv = sp >= 1;
-      setModelVisible((p) => (p !== mv ? mv : p));
-      setLoremVisible((p) => (p !== lv ? lv : p));
+      const fv = FIGURES.map(
+        (f) => !reducedMotion && figureVisibleFor(sp, f.arc.window, phase),
+      );
+      setFiguresVisible((p) =>
+        fv.length === p.length && fv.every((v, i) => v === p[i]) ? p : fv,
+      );
+      setVideoVisible(videoVisibleFor(sp, phase));
     };
     update();
     window.addEventListener("scroll", update, { passive: true });
@@ -207,7 +230,12 @@ export default function Scene() {
   return (
     <>
       <Leva hidden={!levaVisible} />
-      <Preloader visible={!hidePreloader} />
+      <Loader
+        assetsReady={assetsReady}
+        reducedMotion={reducedMotion}
+        hidden={introStage !== "loader"}
+        onSettled={handleSettled}
+      />
       <div className="canvas-layer">
         <Canvas
           frameloop="always"
@@ -257,13 +285,27 @@ export default function Scene() {
               onAnimationStart={handleAnimationStart}
               scrollRef={scrollRef}
               phase={phase}
+              introStage={introStage}
+              onDropDone={handleDropDone}
             />
-            {!reducedMotion && modelVisible && (
-              <ArcModel shouldStart scrollRef={scrollRef} phase={phase} />
+            {FIGURES.map(
+              (f, i) =>
+                !reducedMotion &&
+                figuresVisible[i] && (
+                  <FigureBoundary key={f.name} name={f.name}>
+                    <Suspense fallback={null}>
+                      <ArcModel figure={f} scrollRef={scrollRef} phase={phase} />
+                    </Suspense>
+                  </FigureBoundary>
+                ),
             )}
           </Suspense>
+          {videoVisible && (
+            <VideoPlane scrollRef={scrollRef} phase={phase} />
+          )}
           <EffectComposer multisampling={0} stencilBuffer={false}>
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+            <SMAA />
             <Noise opacity={0.1} />
           </EffectComposer>
         </Canvas>
@@ -278,7 +320,6 @@ export default function Scene() {
         }}
         aria-hidden
       />
-      <LoremSection visible={loremVisible} />
     </>
   );
 }

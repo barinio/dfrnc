@@ -5,9 +5,11 @@ import * as THREE from "three";
 import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import animationData from "../assets/animation.json";
-import { LOTTIE_TOTAL_S } from "../constants";
+import { LOTTIE_TOTAL_S, DEFT_DROP_S } from "../constants";
 import { lottieTimeFor } from "../playback";
 import type { Phase } from "../playback";
+
+export type IntroStage = "loader" | "drop" | "free";
 
 const PLANE_Z = -1;
 // Uniform transparent inset on all four sides (2% of the smaller dimension) so
@@ -18,23 +20,25 @@ const PADDING_RATIO = 0.02;
 interface LottiePlaneProps {
   onComplete?: () => void;
   onAnimationStart?: () => void;
+  // Fired once when the auto-played drop reaches DEFT_DROP_S.
+  onDropDone?: () => void;
   reducedMotion?: boolean;
   scrollRef: MutableRefObject<number>;
   phase: Phase;
+  introStage: IntroStage;
 }
 
 export default function LottiePlane({
   onComplete,
   onAnimationStart,
+  onDropDone,
   reducedMotion = false,
   scrollRef,
   phase,
+  introStage,
 }: LottiePlaneProps) {
-  const { viewport, camera, size } = useThree();
+  const { viewport, camera, size, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
-  // Once the animation is finished the canvas no longer changes, so we stop
-  // uploading the texture to the GPU every frame.
-  const doneRef = useRef<boolean>(false);
   const animRef = useRef<AnimationItem | null>(null);
   const texRef = useRef<THREE.CanvasTexture | null>(null);
 
@@ -48,6 +52,21 @@ export default function LottiePlane({
     wrapper.style.background = "transparent";
     document.body.appendChild(wrapper);
 
+    // Supersample the offscreen canvas: render the typography at up to 1.25×
+    // the device DPR (hard-capped so the texture never exceeds 4096px) so the
+    // alphaTest letter edges resolve crisply after linear filtering.
+    // Phone-class viewports (short axis ≤ 480 CSS px, either orientation)
+    // skip the extra supersampling — texture uploads on every scrubbed frame
+    // are the mobile bottleneck (see 054779b).
+    const ssMax = Math.min(size.width, size.height) <= 480 ? 1.0 : 1.25;
+    const ssDpr = Math.max(
+      1,
+      Math.min(
+        (window.devicePixelRatio || 1) * ssMax,
+        4096 / Math.max(size.width, size.height),
+      ),
+    );
+
     const anim = lottie.loadAnimation({
       container: wrapper,
       renderer: "canvas",
@@ -59,16 +78,18 @@ export default function LottiePlane({
       rendererSettings: {
         preserveAspectRatio: "none",
         clearCanvas: true,
+        dpr: ssDpr,
       },
     });
 
     animRef.current = anim;
+    // Reset the scrub cache so the new instance isn't stuck on frame 0 until
+    // the next scroll change (a resize destroys and recreates the lottie).
+    lastTimeRef.current = -1;
 
     let tex: THREE.CanvasTexture | null = null;
-    doneRef.current = false;
 
     const handleComplete = () => {
-      doneRef.current = true;
       if (tex) tex.needsUpdate = true; // flush the final frame once
       onComplete?.();
     };
@@ -80,6 +101,9 @@ export default function LottiePlane({
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.minFilter = THREE.LinearFilter;
       tex.magFilter = THREE.LinearFilter;
+      // No visual effect while minFilter is LinearFilter (no mipmaps) —
+      // kept as preparation for a future mipmap upgrade.
+      tex.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
       texRef.current = tex;
       setTexture(tex);
       onAnimationStart?.();
@@ -101,17 +125,42 @@ export default function LottiePlane({
       if (tex) tex.dispose();
       texRef.current = null;
     };
-  }, [size.width, size.height, onComplete, onAnimationStart, reducedMotion]);
+  }, [size.width, size.height, onComplete, onAnimationStart, reducedMotion, gl]);
 
   // Scrub the frame from scroll progress every frame, reading the scroll ref
   // (no React re-render involved). Only re-upload the texture when the target
   // frame actually changes, so an idle (non-scrolling) page does zero per-frame
   // GPU work.
   const lastTimeRef = useRef<number>(-1);
-  useFrame(() => {
+  const dropClockRef = useRef<number>(0);
+  const dropFiredRef = useRef<boolean>(false);
+  const onDropDoneRef = useRef(onDropDone);
+  useEffect(() => {
+    onDropDoneRef.current = onDropDone;
+  }, [onDropDone]);
+
+  useFrame((_state, delta) => {
     const anim = animRef.current;
     if (!anim || !texture) return;
-    const tSec = lottieTimeFor(scrollRef.current, phase);
+    let tSec: number;
+    if (introStage === "loader") {
+      // Behind the loader overlay: hold the very first frame.
+      tSec = 0;
+    } else if (introStage === "drop") {
+      // The one scroll-independent segment: auto-play 0 → DEFT_DROP_S.
+      // Clamp delta so a background-tab resume (rAF halts while hidden, then
+      // fires one huge delta on return) cannot skip past DEFT_DROP_S.
+      dropClockRef.current += Math.min(delta, 1 / 30);
+      tSec = Math.min(dropClockRef.current, DEFT_DROP_S);
+      if (tSec >= DEFT_DROP_S && !dropFiredRef.current) {
+        dropFiredRef.current = true;
+        onDropDoneRef.current?.();
+      }
+    } else {
+      // Scroll-driven; lottieTimeFor never returns less than DEFT_DROP_S, so
+      // the drop can't replay on scroll-up.
+      tSec = lottieTimeFor(scrollRef.current, phase);
+    }
     if (tSec === lastTimeRef.current) return;
     lastTimeRef.current = tSec;
     const frac =

@@ -37,24 +37,28 @@ body.scroll-locked {
     pointer-events: none;
 }
 
-.dfrnc-spinner {
-    width: 36px;
-    height: 36px;
-    border: 3px solid rgba(255, 255, 255, 0.15);
-    border-top-color: rgba(255, 255, 255, 0.85);
-    border-radius: 50%;
-    animation: dfrnc-spin 0.9s linear infinite;
+/* Bouncing-balls loader overlay. Mirrors the old preloader's fade-out: stays
+   mounted, opacity transitions to 0 once the intro releases. */
+.loader-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 3;
+    background: #0a0a0a;
+    opacity: 1;
+    transition: opacity 0.5s ease-in-out;
+    pointer-events: auto;
 }
 
-@keyframes dfrnc-spin {
-    to {
-        transform: rotate(360deg);
-    }
+.loader-overlay--hidden {
+    opacity: 0;
+    pointer-events: none;
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .dfrnc-spinner {
-        animation: none;
-        border-top-color: rgba(255, 255, 255, 0.4);
-    }
+.loader-canvas {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
 }
+
