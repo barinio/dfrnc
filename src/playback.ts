@@ -1,16 +1,18 @@
 import {
+  DEFT_DROP_S,
   LOTTIE_INTRO_S,
-  LOTTIE_INTRO_END,
   LOTTIE_TOTAL_S,
-  MODEL_PHASE_END,
-  FADE_RANGE,
-  DURATION,
+  REVEAL_END,
+  FIGURES_END,
+  LOTTIE_END,
+  VIDEO_FADE,
+  FIGURE_FADE,
 } from "./constants";
 
-// Single source of truth for the scroll-driven timeline. Both LottiePlane and
-// ArcModel derive their per-frame state from these pure functions (read inside
-// useFrame), so the experience is a function of scroll progress alone and never
-// requires a React re-render to advance.
+// Single source of truth for the scroll-driven timeline. LottiePlane, the
+// ArcModels and VideoSection all derive their per-frame state from these pure
+// functions (read inside useFrame/rAF), so the experience is a function of
+// scroll progress alone and never requires a React re-render to advance.
 export type Phase = "scroll" | "done";
 
 function smoothstep(x: number): number {
@@ -18,52 +20,77 @@ function smoothstep(x: number): number {
   return t * t * (3 - 2 * t);
 }
 
-// Lottie timeline (seconds): scrub the intro (0 → LOTTIE_INTRO_S), hold on the
-// intro frame while the arc plays, then scrub the remainder to the end. The arc
-// has fully faded out by MODEL_PHASE_END, so the Lottie resumes exactly there.
+function clamp01(x: number): number {
+  return Math.min(Math.max(x, 0), 1);
+}
+
+// Lottie timeline (seconds). The reveal starts at DEFT_DROP_S — the loader has
+// already auto-played [0, DEFT_DROP_S], and because the mapping never returns
+// less than DEFT_DROP_S, scrolling back to the top can never re-enter the drop.
 export function lottieTimeFor(sp: number, phase: Phase): number {
   if (phase === "done") return LOTTIE_TOTAL_S;
-  if (sp <= LOTTIE_INTRO_END) return (sp / LOTTIE_INTRO_END) * LOTTIE_INTRO_S;
-  if (sp <= MODEL_PHASE_END) return LOTTIE_INTRO_S;
-  const t = (sp - MODEL_PHASE_END) / (1 - MODEL_PHASE_END);
+  if (sp <= REVEAL_END)
+    return DEFT_DROP_S + (sp / REVEAL_END) * (LOTTIE_INTRO_S - DEFT_DROP_S);
+  if (sp <= FIGURES_END) return LOTTIE_INTRO_S;
+  const t = clamp01((sp - FIGURES_END) / (LOTTIE_END - FIGURES_END));
   return LOTTIE_INTRO_S + t * (LOTTIE_TOTAL_S - LOTTIE_INTRO_S);
 }
 
-export interface ModelState {
-  time: number;
+export interface FigureState {
+  // Local flight progress through this figure's window, 0..1 (clamped).
+  t: number;
   opacity: number;
 }
 
-// 3D arc playback time + opacity. Arc position runs 0..DURATION across the model
-// phase. The fade is SYMMETRIC within the phase: the model fades in over the
-// first FADE_RANGE as it climbs out of the bottom-left corner, and fades out
-// over the last FADE_RANGE as it descends into the bottom-right corner. So it
-// appears and disappears at mirror-image points on the arc — the flight reads as
-// a balanced dome instead of arriving at the clipped right corner fully opaque.
-export function modelStateFor(sp: number, phase: Phase): ModelState {
-  if (phase === "done") return { time: DURATION, opacity: 0 };
-
-  const arcT = Math.min(
-    Math.max((sp - LOTTIE_INTRO_END) / (MODEL_PHASE_END - LOTTIE_INTRO_END), 0),
-    1,
-  );
-
-  let opacity: number;
-  if (sp <= LOTTIE_INTRO_END || sp >= MODEL_PHASE_END) {
-    opacity = 0;
-  } else if (sp < LOTTIE_INTRO_END + FADE_RANGE) {
-    opacity = smoothstep((sp - LOTTIE_INTRO_END) / FADE_RANGE);
-  } else if (sp <= MODEL_PHASE_END - FADE_RANGE) {
-    opacity = 1;
-  } else {
-    opacity = smoothstep((MODEL_PHASE_END - sp) / FADE_RANGE);
+// Per-figure flight state. `window` is the figure's sub-range of the figures
+// phase, in normalized phase units [0,1]; windows overlap so ~2 figures are
+// airborne at once. The fade is SYMMETRIC within the window (first/last
+// FIGURE_FADE of local t), so each flight reads as a balanced dome and is
+// fully reversible on reverse scroll.
+export function figureStateFor(
+  sp: number,
+  window: readonly [number, number],
+  phase: Phase,
+): FigureState {
+  if (phase === "done") return { t: 1, opacity: 0 };
+  const phaseT = (sp - REVEAL_END) / (FIGURES_END - REVEAL_END);
+  const [w0, w1] = window;
+  const t = clamp01((phaseT - w0) / (w1 - w0));
+  let opacity = 0;
+  if (phaseT > w0 && phaseT < w1) {
+    if (t < FIGURE_FADE) opacity = smoothstep(t / FIGURE_FADE);
+    else if (t > 1 - FIGURE_FADE) opacity = smoothstep((1 - t) / FIGURE_FADE);
+    else opacity = 1;
   }
-
-  return { time: arcT * DURATION, opacity };
+  return { t, opacity };
 }
 
-// Discrete states — used by Scene to mount/unmount and toggle DOM, flipped only
-// when the threshold is crossed (never per frame).
-export function modelVisibleFor(sp: number, phase: Phase): boolean {
-  return modelStateFor(sp, phase).opacity > 0.001;
+// Discrete visibility — used by Scene to mount/unmount each figure, flipped
+// only when the threshold is crossed (never per frame).
+export function figureVisibleFor(
+  sp: number,
+  window: readonly [number, number],
+  phase: Phase,
+): boolean {
+  return figureStateFor(sp, window, phase).opacity > 0.001;
+}
+
+export interface VideoState {
+  // Normalized video time 0..1 across [LOTTIE_END, 1].
+  t: number;
+  opacity: number;
+}
+
+// Video phase: fades in over VIDEO_FADE after LOTTIE_END (covering the held
+// Lottie final frame) and scrubs linearly to the clip's last frame at sp = 1.
+// "done" (reduced motion): the clip never scrubs — it sits statically on its
+// final frame — but the crossfade still follows scroll, so the typography
+// isn't covered before the page tail.
+export function videoStateFor(sp: number, phase: Phase): VideoState {
+  const opacity = smoothstep((sp - LOTTIE_END) / VIDEO_FADE);
+  if (phase === "done") return { t: 1, opacity };
+  return {
+    t: clamp01((sp - LOTTIE_END) / (1 - LOTTIE_END)),
+    opacity,
+  };
 }

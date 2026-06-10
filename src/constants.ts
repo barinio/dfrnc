@@ -1,22 +1,30 @@
-// Boundary frame (in seconds) of the Lottie timeline that separates the intro
-// typography reveal from the rest of the animation. The 3D arc plays while
-// Lottie is held on this frame.
+// ── Lottie timeline (seconds) ────────────────────────────────────────────────
+// The loader auto-plays [0, DEFT_DROP_S] (the "DEFT drop"); scroll then drives
+// [DEFT_DROP_S, LOTTIE_TOTAL_S]. 0 until the loader lands (Task 11 sets the
+// stand-in 1.0); re-measure all three when the real Lottie export arrives.
+export const DEFT_DROP_S = 0;
+// End of the intro typography reveal — the frame the Lottie holds while the
+// figures fly.
 export const LOTTIE_INTRO_S = 3;
 export const LOTTIE_TOTAL_S = 8.6;
 
-// Scroll-progress breakpoints (0..1). The whole experience is scroll-driven —
-// nothing autoplays:
-//   [0, LOTTIE_INTRO_END]                Lottie reveals the intro (0 → LOTTIE_INTRO_S)
-//   [LOTTIE_INTRO_END, MODEL_PHASE_END]  3D arc plays; Lottie held on its intro frame
-//   [MODEL_PHASE_END, …]                 arc fades out, then Lottie plays to the end
-// Scroll fraction spent on the Lottie intro reveal (0 → LOTTIE_INTRO_S). Wider
-// range = slower reveal per unit scroll. 0.225 ≈ 0.8× the previous 0.18 speed.
-export const LOTTIE_INTRO_END = 0.225;
-export const MODEL_PHASE_END = 0.6;
-export const SCROLL_TRACK_VH = 600;
+// ── Scroll-progress partition (0..1) ─────────────────────────────────────────
+// Nothing autoplays after the loader releases:
+//   [0, REVEAL_END]              Lottie reveal (DEFT_DROP_S → LOTTIE_INTRO_S)
+//   [REVEAL_END, FIGURES_END]    4 figures fly overlapping domes; Lottie held
+//   [FIGURES_END, LOTTIE_END]    Lottie scrubs to the end
+//   [LOTTIE_END, 1]              video crossfades in and scrubs to its last frame
+export const REVEAL_END = 0.17;
+export const FIGURES_END = 0.55;
+export const LOTTIE_END = 0.78;
 
-// Length of the 3D arc playback (seconds); matches the Lottie total.
-export const DURATION = 8.6;
-// Width (in scroll-progress units) of the model fade in/out — symmetric so the
-// transition is reversible on reverse scroll.
-export const FADE_RANGE = 0.05;
+// Scroll-progress width of the video crossfade after LOTTIE_END.
+export const VIDEO_FADE = 0.05;
+
+// Fraction of a figure's own flight window spent fading in (and, mirrored,
+// fading out) — windows overlap by 0.2, so 0.18 keeps any two concurrent
+// figures from both being mid-fade at once.
+export const FIGURE_FADE = 0.18;
+
+// Total scrollable track height (vh). 800 gives the video phase ~175vh.
+export const SCROLL_TRACK_VH = 800;

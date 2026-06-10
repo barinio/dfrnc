@@ -4,8 +4,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
 import * as THREE from "three";
 import { useControls, folder } from "@debug/controls";
-import { DURATION } from "../constants";
-import { modelStateFor } from "../playback";
+import { figureStateFor } from "../playback";
 import type { Phase } from "../playback";
 import { makeArc, BLUE_ARC } from "../arc";
 
@@ -17,7 +16,6 @@ function easeInOutSine(t: number): number {
   return -(Math.cos(Math.PI * t) - 1) / 2;
 }
 
-export { DURATION };
 
 const glassMaterial = new THREE.MeshPhysicalMaterial({
   color: new THREE.Color(0xffffff),
@@ -58,7 +56,6 @@ export default function ArcModel({
   // Scaled bounding-box center, used to make the model rotate about its visual
   // center (cursor parallax) instead of the GLB's off-center origin.
   const centerRef = useRef<THREE.Vector3>(new THREE.Vector3());
-  const elapsed = useRef<number>(0);
   const opacityRef = useRef<number>(1);
   const swingAmountRef = useRef<number>(0.56);
   const swingCyclesRef = useRef<number>(1);
@@ -300,12 +297,16 @@ export default function ArcModel({
     if (!modelRef.current) return;
 
     // Drive playback straight from scroll progress (read via ref — no React
-    // re-render). Position eased below; opacity applied at the end.
-    const { time, opacity } = modelStateFor(scrollRef.current, phase);
-    elapsed.current = time;
+    // re-render). The full-window [0, 1] config is temporary until the figure
+    // manifest lands (Task 5).
+    const { t: rawT, opacity } = figureStateFor(
+      scrollRef.current,
+      [0, 1],
+      phase,
+    );
     opacityRef.current = opacity;
 
-    const t = easeInOutSine(elapsed.current / DURATION);
+    const t = easeInOutSine(rawT);
     const pos = curve.getPoint(t);
     // The GLB's bounding-box center is offset from its origin (centerRef). Apply
     // that compensation on Y/Z to keep the tuned composition, but NOT on X — the

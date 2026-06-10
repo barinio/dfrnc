@@ -17,7 +17,7 @@ import LoremSection from "./LoremSection";
 import GradientBackground from "./GradientBackground";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
-import { modelVisibleFor } from "../playback";
+import { figureVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
 
@@ -82,7 +82,7 @@ export default function Scene() {
   useEffect(() => {
     const update = () => {
       const sp = scrollRef.current;
-      const mv = !reducedMotion && modelVisibleFor(sp, phase);
+      const mv = !reducedMotion && figureVisibleFor(sp, [0, 1], phase);
       const lv = sp >= 1;
       setModelVisible((p) => (p !== mv ? mv : p));
       setLoremVisible((p) => (p !== lv ? lv : p));
