@@ -16,7 +16,10 @@ export interface ArcConfig {
   // height (1 ≈ the bottom edge).
   rootDepth: number;
   // Apex height at t = 0.5, as a fraction of half the viewport height
-  // (1 ≈ the top edge). Kept below 1 so the figure doesn't clip off the top.
+  // (1 ≈ the top edge). The path drives the figure's visual CENTER and the
+  // model itself is up to ~1.25 world units tall around it, so peaks stay
+  // ≈0.5 and below — the figure rises to about the middle of the screen and
+  // never clips off the top.
   peakHeight: number;
   // Entry side: 1 enters bottom-LEFT (exits right), -1 mirrors the dome so it
   // enters bottom-RIGHT. Alternating sides is what makes the waves criss-cross.
@@ -25,7 +28,8 @@ export interface ArcConfig {
   // is apex-centred: frontal exactly at t = 0.5.
   spinTurns: number;
   // This figure's sub-window of the figures phase, in normalized phase units
-  // [0, 1]. Windows overlap by 0.2 so ~2 figures are airborne at once.
+  // [0, 1]. Windows are SEQUENTIAL (no overlap): figures fly one after another,
+  // each repeating the first figure's solo behaviour with its own arc shape.
   window: readonly [number, number];
 }
 
@@ -37,7 +41,10 @@ export interface FigureDef {
   arc: ArcConfig;
 }
 
-// Launch order: and → tokyo → gba → awwwards, alternating entry sides.
+// Launch order: and → tokyo → gba → awwwards, alternating entry sides, one
+// figure airborne at a time (sequential windows). Arc shapes vary per figure —
+// distinct peaks and spreads per the design sketch (tall/wide → low/medium) —
+// while every peak stays ≈0.5 and below so nothing clips off the top.
 // Shape values are starting points — every one is live-tunable via Leva.
 export const FIGURES: FigureDef[] = [
   {
@@ -47,49 +54,49 @@ export const FIGURES: FigureDef[] = [
       legSpreadLandscape: 0.5,
       legSpreadPortrait: 0.95,
       rootDepth: 0.95,
-      peakHeight: 0.72,
+      peakHeight: 0.5,
       side: 1,
       spinTurns: 0.55,
-      window: [0, 0.4],
+      window: [0, 0.25],
     },
   },
   {
     name: "tokyo",
     url: "figures/tokyo.glb",
     arc: {
-      legSpreadLandscape: 0.62,
-      legSpreadPortrait: 0.95,
+      legSpreadLandscape: 0.4,
+      legSpreadPortrait: 0.8,
       rootDepth: 0.95,
-      peakHeight: 0.6,
+      peakHeight: 0.46,
       side: -1,
       spinTurns: -0.5,
-      window: [0.2, 0.6],
+      window: [0.25, 0.5],
     },
   },
   {
     name: "gba",
     url: "figures/gba.glb",
     arc: {
-      legSpreadLandscape: 0.44,
-      legSpreadPortrait: 0.9,
+      legSpreadLandscape: 0.62,
+      legSpreadPortrait: 0.95,
       rootDepth: 0.95,
-      peakHeight: 0.70,
+      peakHeight: 0.42,
       side: 1,
       spinTurns: 0.6,
-      window: [0.4, 0.8],
+      window: [0.5, 0.75],
     },
   },
   {
     name: "awwwards",
     url: "figures/awwwards.glb",
     arc: {
-      legSpreadLandscape: 0.56,
-      legSpreadPortrait: 0.95,
+      legSpreadLandscape: 0.5,
+      legSpreadPortrait: 0.88,
       rootDepth: 0.95,
-      peakHeight: 0.66,
+      peakHeight: 0.32,
       side: -1,
       spinTurns: -0.55,
-      window: [0.6, 1],
+      window: [0.75, 1],
     },
   },
 ];

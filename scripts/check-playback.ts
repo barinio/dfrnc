@@ -10,10 +10,12 @@ import {
   LOTTIE_INTRO_S,
   LOTTIE_TOTAL_S,
   REVEAL_END,
+  LOTTIE_SCRUB_START,
   FIGURES_END,
   LOTTIE_END,
   VIDEO_START,
   VIDEO_FADE,
+  FIGURE_FADE,
 } from "../src/constants";
 
 function eq(actual: number, expected: number, label: string, eps = 1e-9) {
@@ -27,7 +29,7 @@ function ok(cond: boolean, label: string) {
 // lottieTimeFor: anchors and monotonicity
 eq(lottieTimeFor(0, "scroll"), DEFT_DROP_S, "lottie @0");
 eq(lottieTimeFor(REVEAL_END, "scroll"), LOTTIE_INTRO_S, "lottie @REVEAL_END");
-eq(lottieTimeFor(FIGURES_END, "scroll"), LOTTIE_INTRO_S, "lottie hold");
+eq(lottieTimeFor(LOTTIE_SCRUB_START, "scroll"), LOTTIE_INTRO_S, "lottie hold");
 eq(lottieTimeFor(LOTTIE_END, "scroll"), LOTTIE_TOTAL_S, "lottie @LOTTIE_END");
 eq(lottieTimeFor(1, "scroll"), LOTTIE_TOTAL_S, "lottie clamped after end");
 eq(lottieTimeFor(0.5, "done"), LOTTIE_INTRO_S, "lottie done: readable frame held");
@@ -57,16 +59,26 @@ ok(
 );
 eq(figureStateFor(0.3, win, "done").opacity, 0, "fig done hidden");
 
-// Overlap invariant: with windows offset by 0.2 and FIGURE_FADE 0.18, no two
-// figures are mid-fade at the same phaseT.
-const winA: [number, number] = [0, 0.4];
-const winB: [number, number] = [0.2, 0.6];
+// Sequential invariant: windows don't overlap, so at most ONE figure is
+// visible at any phaseT — each flies its full solo dome like the first one.
 for (let p = 0; p <= 1.0001; p += 0.001) {
-  const a = figureStateFor(spFor(p), winA, "scroll").opacity;
-  const b = figureStateFor(spFor(p), winB, "scroll").opacity;
-  const mid = (o: number) => o > 0.001 && o < 0.999;
-  ok(!(mid(a) && mid(b)), `both figures mid-fade @phaseT=${p}`);
+  const visible = FIGURES.filter(
+    (f) => figureStateFor(spFor(p), f.arc.window, "scroll").opacity > 0.001,
+  );
+  ok(visible.length <= 1, `${visible.length} figures visible @phaseT=${p}`);
 }
+
+// Timing invariant: every flight ends before the video fades in, and the
+// LAST figure's exit happens while the Lottie typography is appearing
+// (scrubbing, not holding).
+ok(FIGURES_END < VIDEO_START, "figures end before the video starts");
+const last = FIGURES[FIGURES.length - 1].arc.window;
+const exitStartSp = spFor(last[0] + (1 - FIGURE_FADE) * (last[1] - last[0]));
+ok(
+  lottieTimeFor(exitStartSp, "scroll") > LOTTIE_INTRO_S + 1e-9,
+  "lottie is scrubbing during the last figure's exit",
+);
+eq(spFor(last[1]), FIGURES_END, "last window ends exactly at FIGURES_END", 1e-9);
 
 // videoStateFor — anchored at VIDEO_START (video fades in behind the typography)
 eq(videoStateFor(VIDEO_START, "scroll").t, 0, "video t@VIDEO_START");
@@ -95,14 +107,21 @@ for (const f of FIGURES) {
   );
   eq(Math.abs(p0.x), (W / 2) * f.arc.legSpreadLandscape, `${f.name} spread`, 1e-6);
 }
-// windows are ordered and overlap by 0.2
+// windows are sequential and contiguous, spanning the whole figures phase
+eq(FIGURES[0].arc.window[0], 0, "first window starts at 0");
+eq(FIGURES[FIGURES.length - 1].arc.window[1], 1, "last window ends at 1");
 for (let i = 1; i < FIGURES.length; i++) {
   eq(
     FIGURES[i].arc.window[0],
-    FIGURES[i - 1].arc.window[0] + 0.2,
-    `window stagger ${i}`,
+    FIGURES[i - 1].arc.window[1],
+    `window ${i} starts where window ${i - 1} ends`,
     1e-9,
   );
+}
+// peaks stay at or below ~half the viewport (0.5 of the upper half) so the
+// figure — whose body extends above its center — never clips off the top edge
+for (const f of FIGURES) {
+  ok(f.arc.peakHeight <= 0.5 + 1e-9, `${f.name} peak ≤ 0.5`);
 }
 
 console.log("check-playback: all assertions passed");

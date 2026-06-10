@@ -3,6 +3,7 @@ import {
   LOTTIE_INTRO_S,
   LOTTIE_TOTAL_S,
   REVEAL_END,
+  LOTTIE_SCRUB_START,
   FIGURES_END,
   LOTTIE_END,
   VIDEO_START,
@@ -37,8 +38,10 @@ export function lottieTimeFor(sp: number, phase: Phase): number {
     return sp < FIGURES_END ? LOTTIE_INTRO_S : LOTTIE_TOTAL_S;
   if (sp <= REVEAL_END)
     return DEFT_DROP_S + (sp / REVEAL_END) * (LOTTIE_INTRO_S - DEFT_DROP_S);
-  if (sp <= FIGURES_END) return LOTTIE_INTRO_S;
-  const t = clamp01((sp - FIGURES_END) / (LOTTIE_END - FIGURES_END));
+  // Hold ends at LOTTIE_SCRUB_START (not FIGURES_END): the typography starts
+  // appearing again while the tail of the figure sequence is still exiting.
+  if (sp <= LOTTIE_SCRUB_START) return LOTTIE_INTRO_S;
+  const t = clamp01((sp - LOTTIE_SCRUB_START) / (LOTTIE_END - LOTTIE_SCRUB_START));
   return LOTTIE_INTRO_S + t * (LOTTIE_TOTAL_S - LOTTIE_INTRO_S);
 }
 
@@ -49,10 +52,11 @@ export interface FigureState {
 }
 
 // Per-figure flight state. `window` is the figure's sub-range of the figures
-// phase, in normalized phase units [0,1]; windows overlap so ~2 figures are
-// airborne at once. The fade is SYMMETRIC within the window (first/last
-// FIGURE_FADE of local t), so each flight reads as a balanced dome and is
-// fully reversible on reverse scroll.
+// phase, in normalized phase units [0,1]; windows are SEQUENTIAL (no overlap),
+// so exactly one figure is airborne at a time — each flies its full solo dome
+// the way the first one does. The fade is SYMMETRIC within the window
+// (first/last FIGURE_FADE of local t), so each flight reads as a balanced dome
+// and is fully reversible on reverse scroll.
 export function figureStateFor(
   sp: number,
   window: readonly [number, number],
