@@ -58,6 +58,8 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.VideoTexture | null>(null);
   const lastTime = useRef<number>(-1);
+  // Degraded mode per the spec's error handling: latched on 404/decode/data-saver.
+  const failedRef = useRef(false);
 
   // Create a detached video element imperatively (NOT in the DOM render path).
   // A detached element loads and seeks fine in all modern browsers.
@@ -79,8 +81,10 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
     // video we must push needsUpdate manually after each seek settles.
     const onSeeked = () => { texture.needsUpdate = true; };
     const onLoaded = () => { texture.needsUpdate = true; };
+    const onError = () => { failedRef.current = true; };
     video.addEventListener("seeked", onSeeked);
     video.addEventListener("loadeddata", onLoaded);
+    video.addEventListener("error", onError);
 
     textureRef.current = texture;
     if (matRef.current) matRef.current.map = texture;
@@ -91,6 +95,7 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
     return () => {
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("loadeddata", onLoaded);
+      video.removeEventListener("error", onError);
       texture.dispose();
       textureRef.current = null;
       // Detach source to release network/decoder resources.
@@ -104,6 +109,14 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
     const mat = matRef.current;
     const mesh = meshRef.current;
     if (!texture || !mat || !mesh) return;
+
+    // Degraded mode: video failed to load (404/decode/data-saver).
+    // Force the mesh invisible before any opacity write so the dark
+    // GradientBackground owns the frame; scroll timeline is unaffected.
+    if (failedRef.current) {
+      mesh.visible = false;
+      return;
+    }
 
     const { t, opacity } = videoStateFor(scrollRef.current, phase);
     mat.opacity = opacity;
@@ -121,11 +134,16 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
       const planeAspect = viewport.width / viewport.height;
       const videoAspect = 16 / 9;
       if (planeAspect < videoAspect) {
-        // Viewport narrower than video (portrait): crop sides.
-        // panX=50 → centered; panX=78 → shows more right side.
-        // Equivalent to CSS object-position X% for a cover-cropped frame.
-        texture.repeat.set(planeAspect / videoAspect, 1);
-        texture.offset.set((1 - texture.repeat.x) * (panXFor(target) / 100), 0);
+        // Viewport narrower than video (portrait phones): crop sides.
+        // Pan keyframes were tuned for portrait orientation (390×844);
+        // non-portrait narrow aspects (16:10, 4:3 tablets) stay center-cropped.
+        const portrait = viewport.height > viewport.width;
+        const repeat = new THREE.Vector2(planeAspect / videoAspect, 1);
+        texture.repeat.copy(repeat);
+        texture.offset.set(
+          (1 - repeat.x) * (portrait ? panXFor(target) / 100 : 0.5),
+          0,
+        );
       } else {
         // Viewport wider/flatter (landscape): crop top/bottom, centered.
         texture.repeat.set(1, videoAspect / planeAspect);
@@ -143,29 +161,18 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
       }
     }
 
-    // Recompute plane size every frame (cheap; handles resize/orientation changes).
+    // Scale the unit plane to fill the camera frustum at PLANE_Z
+    // (allocation-free: no geometry rebuild on resize).
     const cam = camera as THREE.PerspectiveCamera;
     const distance = cam.position.z - PLANE_Z;
     const h = 2 * distance * Math.tan((cam.fov * Math.PI) / 360);
     const w = h * (viewport.width / viewport.height);
-    const geo = mesh.geometry as THREE.PlaneGeometry;
-    // Only rebuild geometry when the size actually changes.
-    const params = geo.parameters;
-    if (Math.abs(params.width - w) > 0.001 || Math.abs(params.height - h) > 0.001) {
-      mesh.geometry.dispose();
-      mesh.geometry = new THREE.PlaneGeometry(w, h);
-    }
+    mesh.scale.set(w, h, 1);
   });
-
-  // Compute initial plane dimensions for the first render.
-  const cam = camera as THREE.PerspectiveCamera;
-  const distance = cam.position.z - PLANE_Z;
-  const initH = 2 * distance * Math.tan((cam.fov * Math.PI) / 360);
-  const initW = initH * (viewport.width / viewport.height);
 
   return (
     <mesh ref={meshRef} position={[0, 0, PLANE_Z]} visible={false}>
-      <planeGeometry args={[initW, initH]} />
+      <planeGeometry args={[1, 1]} />
       <meshBasicMaterial
         ref={matRef}
         toneMapped={false}

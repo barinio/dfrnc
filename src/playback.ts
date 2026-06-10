@@ -11,7 +11,7 @@ import {
 } from "./constants";
 
 // Single source of truth for the scroll-driven timeline. LottiePlane, the
-// ArcModels and VideoSection all derive their per-frame state from these pure
+// ArcModels and VideoPlane all derive their per-frame state from these pure
 // functions (read inside useFrame/rAF), so the experience is a function of
 // scroll progress alone and never requires a React re-render to advance.
 export type Phase = "scroll" | "done";
