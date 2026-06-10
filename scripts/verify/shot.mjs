@@ -2,6 +2,7 @@
 // Usage:
 //   node scripts/verify/shot.mjs --url http://localhost:5173 --sp 0,0.3,0.5 \
 //     --out /tmp/shots --viewport 1280x800 --track 600 --wait 9000
+//   (requires: npm i puppeteer-core --no-save)
 // Notes:
 //   - Drives SYSTEM Chrome with SwiftShader so WebGL works headlessly.
 //   - After the fixed wait it also waits for body.scroll-locked to be absent
@@ -19,6 +20,10 @@ const CHROME =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const url = opt("url", "http://localhost:5173");
 const sps = opt("sp", "0").split(",").map(Number);
+if (sps.some(Number.isNaN)) {
+  console.error("Bad --sp value:", opt("sp", "0"));
+  process.exit(1);
+}
 const out = opt("out", "/tmp/shots");
 const [w, h] = opt("viewport", "1280x800").split("x").map(Number);
 const track = Number(opt("track", "600")); // keep in sync with SCROLL_TRACK_VH
@@ -28,7 +33,7 @@ mkdirSync(out, { recursive: true });
 
 const browser = await puppeteer.launch({
   executablePath: CHROME,
-  headless: "new",
+  headless: true,
   args: [
     "--enable-unsafe-swiftshader",
     "--use-angle=swiftshader-webgl",
@@ -46,18 +51,21 @@ await page.waitForFunction(
   () => !document.body.classList.contains("scroll-locked"),
   { timeout: 30000 },
 );
-for (const sp of sps) {
-  await page.evaluate(
-    (sp, track) => {
-      const trackMax = ((track - 100) / 100) * window.innerHeight;
-      window.scrollTo(0, sp * trackMax);
-    },
-    sp,
-    track,
-  );
-  await new Promise((r) => setTimeout(r, 600)); // scrub + settle
-  const file = `${out}/sp${String(sp).replace(".", "_")}.png`;
-  await page.screenshot({ path: file });
-  console.log("wrote", file);
+try {
+  for (const sp of sps) {
+    await page.evaluate(
+      (sp, track) => {
+        const trackMax = ((track - 100) / 100) * window.innerHeight;
+        window.scrollTo(0, sp * trackMax);
+      },
+      sp,
+      track,
+    );
+    await new Promise((r) => setTimeout(r, 600)); // scrub + settle
+    const file = `${out}/sp${String(sp).replace(".", "_")}.png`;
+    await page.screenshot({ path: file });
+    console.log("wrote", file);
+  }
+} finally {
+  await browser.close();
 }
-await browser.close();
