@@ -18,7 +18,7 @@ import GradientBackground from "./GradientBackground";
 import VideoPlane from "./VideoPlane";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
-import { figureVisibleFor, videoVisibleFor } from "../playback";
+import { figureVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
 import { FIGURES } from "../arc";
@@ -59,7 +59,6 @@ export default function Scene() {
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
   );
-  const [videoVisible, setVideoVisible] = useState(false);
   // Intro sequence: loader (balls) → drop (auto-played DEFT fall, Task 11) →
   // free (scroll-driven experience). Scroll stays locked until "free".
   type IntroStage = "loader" | "drop" | "free";
@@ -107,7 +106,6 @@ export default function Scene() {
       setFiguresVisible((p) =>
         fv.length === p.length && fv.every((v, i) => v === p[i]) ? p : fv,
       );
-      setVideoVisible(videoVisibleFor(sp, phase));
     };
     update();
     window.addEventListener("scroll", update, { passive: true });
@@ -300,9 +298,7 @@ export default function Scene() {
                 ),
             )}
           </Suspense>
-          {videoVisible && (
-            <VideoPlane scrollRef={scrollRef} phase={phase} />
-          )}
+          <VideoPlane scrollRef={scrollRef} phase={phase} />
           <EffectComposer multisampling={0} stencilBuffer={false}>
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
             <SMAA />

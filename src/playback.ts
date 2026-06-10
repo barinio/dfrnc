@@ -105,6 +105,10 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
   };
 }
 
-export function videoVisibleFor(sp: number, phase: Phase): boolean {
-  return videoStateFor(sp, phase).opacity > 0.001;
+// 0 → the Lottie keeps its framed inset margin; 1 → full-bleed. The frame
+// dissolves over the same ramp that brings the video in behind the text, so
+// the zoom-through reads edge-to-edge. Phase-independent: under reduced
+// motion the swap still follows scroll (no animation plays).
+export function lottieBleedFor(sp: number): number {
+  return smoothstep((sp - VIDEO_START) / VIDEO_FADE);
 }

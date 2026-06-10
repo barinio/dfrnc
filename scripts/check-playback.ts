@@ -4,6 +4,7 @@ import {
   lottieTimeFor,
   figureStateFor,
   videoStateFor,
+  lottieBleedFor,
 } from "../src/playback";
 import {
   DEFT_DROP_S,
@@ -90,6 +91,11 @@ eq(videoStateFor(0.3, "scroll").opacity, 0, "video hidden mid-page");
 eq(videoStateFor(VIDEO_START - 0.01, "done").opacity, 0, "video done: hidden before VIDEO_START");
 eq(videoStateFor(1, "done").t, 1, "video done: held on final frame");
 eq(videoStateFor(1, "done").opacity, 1, "video done: visible at tail");
+
+// lottieBleedFor — framed before VIDEO_START, full-bleed after ramp
+eq(lottieBleedFor(0.3), 0, "bleed: framed mid-page");
+eq(lottieBleedFor(VIDEO_START), 0, "bleed: framed before zoom");
+eq(lottieBleedFor(VIDEO_START + VIDEO_FADE), 1, "bleed: full-bleed after ramp");
 
 // arc.ts: apex at midpoint, mirroring flips travel direction only
 import { makeArc, FIGURES } from "../src/arc";
