@@ -14,6 +14,7 @@ import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel from "./ArcModel";
 import LottiePlane from "./LottiePlane";
 import GradientBackground from "./GradientBackground";
+import VideoSection from "./VideoSection";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
 import { figureVisibleFor } from "../playback";
@@ -296,6 +297,7 @@ export default function Scene() {
           </EffectComposer>
         </Canvas>
       </div>
+      <VideoSection scrollRef={scrollRef} phase={phase} />
       {/* Scroll-track: provides the scrollable height that drives the model and
           Lottie phases. The Canvas itself is pinned via position: fixed above. */}
       <div
