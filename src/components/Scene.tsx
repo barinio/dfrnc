@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect, Suspense } from "react";
-import type { ComponentProps } from "react";
+import { Component, useState, useCallback, useEffect, Suspense } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, useProgress } from "@react-three/drei";
 import {
@@ -21,6 +21,22 @@ import { figureVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
 import { FIGURES } from "../arc";
+
+class FigureBoundary extends Component<
+  { name: string; children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(err: unknown) {
+    console.error(`[figure:${this.props.name}] failed to load`, err);
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 function RendererConfig({ exposure }: { exposure: number }) {
   const { gl } = useThree();
@@ -60,7 +76,9 @@ export default function Scene() {
   // Scroll progress is a ref (no per-frame React renders); LottiePlane/ArcModel
   // read it inside useFrame. Only discrete transitions below use state.
   const scrollRef = useScrollProgressRef();
-  const [modelVisible, setModelVisible] = useState(false);
+  const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
+    FIGURES.map(() => false),
+  );
   const [loremVisible, setLoremVisible] = useState(false);
 
   // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
@@ -83,10 +101,13 @@ export default function Scene() {
   useEffect(() => {
     const update = () => {
       const sp = scrollRef.current;
-      const mv =
-        !reducedMotion && figureVisibleFor(sp, FIGURES[0].arc.window, phase);
+      const fv = FIGURES.map(
+        (f) => !reducedMotion && figureVisibleFor(sp, f.arc.window, phase),
+      );
+      setFiguresVisible((p) =>
+        fv.length === p.length && fv.every((v, i) => v === p[i]) ? p : fv,
+      );
       const lv = sp >= 1;
-      setModelVisible((p) => (p !== mv ? mv : p));
       setLoremVisible((p) => (p !== lv ? lv : p));
     };
     update();
@@ -261,8 +282,16 @@ export default function Scene() {
               scrollRef={scrollRef}
               phase={phase}
             />
-            {!reducedMotion && modelVisible && (
-              <ArcModel figure={FIGURES[0]} scrollRef={scrollRef} phase={phase} />
+            {FIGURES.map(
+              (f, i) =>
+                !reducedMotion &&
+                figuresVisible[i] && (
+                  <FigureBoundary key={f.name} name={f.name}>
+                    <Suspense fallback={null}>
+                      <ArcModel figure={f} scrollRef={scrollRef} phase={phase} />
+                    </Suspense>
+                  </FigureBoundary>
+                ),
             )}
           </Suspense>
           <EffectComposer multisampling={0} stencilBuffer={false}>
