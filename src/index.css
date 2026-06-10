@@ -62,18 +62,3 @@ body.scroll-locked {
     display: block;
 }
 
-/* Scroll-scrubbed FPV video tail. Sits ABOVE the WebGL layer (the in-canvas
-   gradient is opaque) and crossfades in via its own opacity, driven from the
-   scroll rAF loop. lvh for the same URL-bar stability as .canvas-layer. */
-.video-layer {
-    position: fixed;
-    top: 0;
-    left: 0;
-    width: 100vw;
-    height: 100vh; /* fallback */
-    height: 100lvh;
-    object-fit: cover;
-    z-index: 2;
-    opacity: 0;
-    pointer-events: none;
-}

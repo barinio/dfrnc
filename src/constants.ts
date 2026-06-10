@@ -14,12 +14,22 @@ export const LOTTIE_TOTAL_S = 8.6;
 //   [0, REVEAL_END]              Lottie reveal (DEFT_DROP_S → LOTTIE_INTRO_S)
 //   [REVEAL_END, FIGURES_END]    4 figures fly overlapping domes; Lottie held
 //   [FIGURES_END, LOTTIE_END]    Lottie scrubs to the end
-//   [LOTTIE_END, 1]              video crossfades in and scrubs to its last frame
+//   VIDEO_START (< LOTTIE_END)   video fades in BEHIND the typography; the
+//                                white letters occlude it; alphaTest gaps reveal it
+//   [LOTTIE_END, 1]              Lottie fully done — pure video owns the frame
 export const REVEAL_END = 0.17;
 export const FIGURES_END = 0.55;
 export const LOTTIE_END = 0.78;
 
-// Scroll-progress width of the video crossfade after LOTTIE_END.
+// Scroll progress where the video starts fading in BEHIND the typography —
+// the moment KONZEPTE has settled and the zoom-in begins (Lottie time ≈ 5.7s;
+// the zoom segment starts at ~5.9s). The letters occlude the video; it shows
+// through the alphaTest gaps, and owns the frame once the zoom passes through.
+export const VIDEO_START = 0.66;
+
+// Scroll-progress width of the video fade after VIDEO_START — fully in at
+// VIDEO_START + VIDEO_FADE = 0.71 ≈ Lottie 6.9s, well before the zoom ends
+// at ~8.5s.
 export const VIDEO_FADE = 0.05;
 
 // Fraction of a figure's own flight window spent fading in (and, mirrored,

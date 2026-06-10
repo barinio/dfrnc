@@ -5,6 +5,7 @@ import {
   REVEAL_END,
   FIGURES_END,
   LOTTIE_END,
+  VIDEO_START,
   VIDEO_FADE,
   FIGURE_FADE,
 } from "./constants";
@@ -81,21 +82,25 @@ export function figureVisibleFor(
 }
 
 export interface VideoState {
-  // Normalized video time 0..1 across [LOTTIE_END, 1].
+  // Normalized video time 0..1 across [VIDEO_START, 1].
   t: number;
   opacity: number;
 }
 
-// Video phase: fades in over VIDEO_FADE after LOTTIE_END (covering the held
-// Lottie final frame) and scrubs linearly to the clip's last frame at sp = 1.
-// "done" (reduced motion): the clip never scrubs — it sits statically on its
-// final frame — but the crossfade still follows scroll, so the typography
-// isn't covered before the page tail.
+// Video phase: fades in over VIDEO_FADE starting at VIDEO_START — while the
+// typography is still zooming, BEHIND the letters — and scrubs linearly from
+// VIDEO_START to the clip's last frame at sp = 1.
+// "done" (reduced motion): never scrubs — static final frame — but the fade
+// still follows scroll so the typography isn't covered before the tail.
 export function videoStateFor(sp: number, phase: Phase): VideoState {
-  const opacity = smoothstep((sp - LOTTIE_END) / VIDEO_FADE);
+  const opacity = smoothstep((sp - VIDEO_START) / VIDEO_FADE);
   if (phase === "done") return { t: 1, opacity };
   return {
-    t: clamp01((sp - LOTTIE_END) / (1 - LOTTIE_END)),
+    t: clamp01((sp - VIDEO_START) / (1 - VIDEO_START)),
     opacity,
   };
+}
+
+export function videoVisibleFor(sp: number, phase: Phase): boolean {
+  return videoStateFor(sp, phase).opacity > 0.001;
 }

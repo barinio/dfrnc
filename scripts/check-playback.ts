@@ -12,6 +12,8 @@ import {
   REVEAL_END,
   FIGURES_END,
   LOTTIE_END,
+  VIDEO_START,
+  VIDEO_FADE,
 } from "../src/constants";
 
 function eq(actual: number, expected: number, label: string, eps = 1e-9) {
@@ -66,13 +68,14 @@ for (let p = 0; p <= 1.0001; p += 0.001) {
   ok(!(mid(a) && mid(b)), `both figures mid-fade @phaseT=${p}`);
 }
 
-// videoStateFor
-eq(videoStateFor(LOTTIE_END, "scroll").t, 0, "video t@start");
+// videoStateFor — anchored at VIDEO_START (video fades in behind the typography)
+eq(videoStateFor(VIDEO_START, "scroll").t, 0, "video t@VIDEO_START");
+eq(videoStateFor(VIDEO_START, "scroll").opacity, 0, "video hidden at VIDEO_START");
+ok(videoStateFor(VIDEO_START + VIDEO_FADE, "scroll").opacity >= 1 - 1e-9, "video opaque at VIDEO_START+VIDEO_FADE");
 eq(videoStateFor(1, "scroll").t, 1, "video t@end");
-eq(videoStateFor(LOTTIE_END, "scroll").opacity, 0, "video hidden at start");
 eq(videoStateFor(1, "scroll").opacity, 1, "video opaque at end");
 eq(videoStateFor(0.3, "scroll").opacity, 0, "video hidden mid-page");
-eq(videoStateFor(0.1, "done").opacity, 0, "video done: hidden before tail");
+eq(videoStateFor(VIDEO_START - 0.01, "done").opacity, 0, "video done: hidden before VIDEO_START");
 eq(videoStateFor(1, "done").t, 1, "video done: held on final frame");
 eq(videoStateFor(1, "done").opacity, 1, "video done: visible at tail");
 

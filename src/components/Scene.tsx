@@ -15,10 +15,10 @@ import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel from "./ArcModel";
 import LottiePlane from "./LottiePlane";
 import GradientBackground from "./GradientBackground";
-import VideoSection from "./VideoSection";
+import VideoPlane from "./VideoPlane";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
-import { figureVisibleFor } from "../playback";
+import { figureVisibleFor, videoVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
 import { FIGURES } from "../arc";
@@ -59,6 +59,7 @@ export default function Scene() {
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
   );
+  const [videoVisible, setVideoVisible] = useState(false);
   // Intro sequence: loader (balls) → drop (auto-played DEFT fall, Task 11) →
   // free (scroll-driven experience). Scroll stays locked until "free".
   type IntroStage = "loader" | "drop" | "free";
@@ -106,6 +107,7 @@ export default function Scene() {
       setFiguresVisible((p) =>
         fv.length === p.length && fv.every((v, i) => v === p[i]) ? p : fv,
       );
+      setVideoVisible(videoVisibleFor(sp, phase));
     };
     update();
     window.addEventListener("scroll", update, { passive: true });
@@ -298,6 +300,9 @@ export default function Scene() {
                 ),
             )}
           </Suspense>
+          {videoVisible && (
+            <VideoPlane scrollRef={scrollRef} phase={phase} />
+          )}
           <EffectComposer multisampling={0} stencilBuffer={false}>
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
             <SMAA />
@@ -305,7 +310,6 @@ export default function Scene() {
           </EffectComposer>
         </Canvas>
       </div>
-      <VideoSection scrollRef={scrollRef} phase={phase} />
       {/* Scroll-track: provides the scrollable height that drives the model and
           Lottie phases. The Canvas itself is pinned via position: fixed above. */}
       <div
