@@ -1,4 +1,4 @@
-import { useRef, useEffect, useMemo } from "react";
+import { useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import type { MutableRefObject } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { useGLTF } from "@react-three/drei";
@@ -17,8 +17,8 @@ function easeInOutSine(t: number): number {
   return -(Math.cos(Math.PI * t) - 1) / 2;
 }
 
-// One template material; each figure clones it so overlapping figures can fade
-// with independent opacities while sharing the same tuned look.
+// One template material; each figure gets its own pool clone so overlapping
+// figures can fade with independent opacities while sharing the same tuned look.
 const baseGlassMaterial = new THREE.MeshPhysicalMaterial({
   color: new THREE.Color(0xffffff),
   metalness: 0.0,
@@ -37,6 +37,21 @@ const baseGlassMaterial = new THREE.MeshPhysicalMaterial({
   envMapIntensity: 1.2,
   side: THREE.DoubleSide,
 });
+
+// One clone per figure, created lazily and NEVER disposed: disposing on
+// unmount would release the (very expensive) transmission shader program and
+// force a recompile stall on every window-edge remount while scrolling. Four
+// figures ⇒ at most four materials for the session.
+const materialPool = new Map<string, THREE.MeshPhysicalMaterial>();
+
+function materialFor(name: string): THREE.MeshPhysicalMaterial {
+  let m = materialPool.get(name);
+  if (!m) {
+    m = baseGlassMaterial.clone();
+    materialPool.set(name, m);
+  }
+  return m;
+}
 
 interface ArcModelProps {
   figure: FigureDef;
@@ -60,11 +75,11 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
   const mouseRotX = useRef<number>(0);
   const mouseRotY = useRef<number>(0);
 
-  // Per-figure clone of the shared glass template. The Material controls below
-  // use identical keys in every instance, so leva's global store keeps all
-  // clones in sync in dev; the prod stub returns the same defaults per call.
-  const material = useMemo(() => baseGlassMaterial.clone(), []);
-  useEffect(() => () => material.dispose(), [material]);
+  // Per-figure clone of the shared glass template from the module-level pool.
+  // The Material controls below use identical keys in every instance, so leva's
+  // global store keeps all clones in sync in dev; the prod stub returns the same
+  // defaults per call.
+  const material = useMemo(() => materialFor(figure.name), [figure.name]);
 
   const {
     color,
@@ -227,7 +242,9 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
   }, [spinTurns, rollPeak, swingAmount, swingCycles]);
 
   // Assign this figure's material to every mesh once the model is loaded.
-  useEffect(() => {
+  // useLayoutEffect commits synchronously before the next rendered frame,
+  // preventing a one-frame flash of the wrong material on mount.
+  useLayoutEffect(() => {
     if (!modelScene) return;
     modelScene.traverse((child) => {
       if (child instanceof THREE.Mesh) {
@@ -238,7 +255,9 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
 
   // Responsive scale: keep the figure from dominating narrow/portrait
   // viewports. Reset scale before measuring so repeated runs don't compound.
-  useEffect(() => {
+  // useLayoutEffect commits synchronously before the next rendered frame so
+  // scale and centering are correct from the very first frame on mount.
+  useLayoutEffect(() => {
     if (!modelScene) return;
     modelScene.position.set(0, 0, 0);
     modelScene.scale.setScalar(1);
