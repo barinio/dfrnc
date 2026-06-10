@@ -75,4 +75,30 @@ eq(videoStateFor(0.1, "done").opacity, 0, "video done: hidden before tail");
 eq(videoStateFor(1, "done").t, 1, "video done: held on final frame");
 eq(videoStateFor(1, "done").opacity, 1, "video done: visible at tail");
 
+// arc.ts: apex at midpoint, mirroring flips travel direction only
+import { makeArc, FIGURES } from "../src/arc";
+const W = 12;
+const H = 7;
+for (const f of FIGURES) {
+  const c = makeArc(W, H, f.arc);
+  const apex = c.getPoint(0.5);
+  eq(apex.x, 0, `${f.name} apex centered`);
+  eq(apex.y, (H / 2) * f.arc.peakHeight, `${f.name} apex height`, 1e-6);
+  const p0 = c.getPoint(0);
+  ok(
+    Math.sign(p0.x) === -f.arc.side,
+    `${f.name} enters on the configured side`,
+  );
+  eq(Math.abs(p0.x), (W / 2) * f.arc.legSpreadLandscape, `${f.name} spread`, 1e-6);
+}
+// windows are ordered and overlap by 0.2
+for (let i = 1; i < FIGURES.length; i++) {
+  eq(
+    FIGURES[i].arc.window[0],
+    FIGURES[i - 1].arc.window[0] + 0.2,
+    `window stagger ${i}`,
+    1e-9,
+  );
+}
+
 console.log("check-playback: all assertions passed");
