@@ -73,7 +73,7 @@ export const FIGURES: FigureDef[] = [
       legSpreadLandscape: 0.44,
       legSpreadPortrait: 0.9,
       rootDepth: 0.95,
-      peakHeight: 0.82,
+      peakHeight: 0.70,
       side: 1,
       spinTurns: 0.6,
       window: [0.4, 0.8],

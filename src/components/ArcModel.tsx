@@ -68,9 +68,6 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
   // Outer group: carries the curve position + a screen-space roll applied
   // OUTSIDE the spin (so the roll rotates the projected image, not local Z).
   const rollGroupRef = useRef<THREE.Group>(null);
-  // Scaled bounding-box center, used to make the figure rotate about its
-  // visual center instead of the GLB's (possibly off-center) origin.
-  const centerRef = useRef<THREE.Vector3>(new THREE.Vector3());
   const opacityRef = useRef<number>(1);
   const mouseRotX = useRef<number>(0);
   const mouseRotY = useRef<number>(0);
@@ -268,11 +265,9 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
     const s = targetSize / maxDim;
     modelScene.scale.setScalar(s);
     // Offset the geometry so its bounding-box center lands on the parent
-    // group's origin; the parent's position is then compensated by the same
-    // center (Y/Z only — see useFrame) so rotation pivots about the visual
-    // center without dragging the dome horizontally.
+    // group's origin; the group's position is then driven purely by the curve
+    // point so rotation pivots about the visual center on all axes.
     const center = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
-    centerRef.current.copy(center);
     modelScene.position.set(-center.x, -center.y, -center.z);
   }, [modelScene, viewport.width, viewport.height]);
 
@@ -310,16 +305,11 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
 
     const t = easeInOutSine(rawT);
     const pos = curve.getPoint(t);
-    // The GLB's bounding-box center can be offset from its origin (centerRef).
-    // Apply that compensation on Y/Z only, NOT X — the figure's visual center
-    // then tracks the curve horizontally, so the dome stays centered on screen
-    // (an X offset would drag the whole dome sideways).
+    // The geometry is re-centered on its bounding-box center inside the group,
+    // so the curve point IS the figure's visual center on every axis.
+    // peakHeight therefore reads directly as the apex height of the visual center.
     if (rollGroupRef.current) {
-      rollGroupRef.current.position.set(
-        pos.x,
-        pos.y + centerRef.current.y,
-        pos.z + centerRef.current.z,
-      );
+      rollGroupRef.current.position.set(pos.x, pos.y, pos.z);
       // Screen-space roll: applied outside the spin, so it rotates the
       // projected image. Peaks at the apex (zero at both ends).
       rollGroupRef.current.rotation.z =
