@@ -1,5 +1,6 @@
 import { Component, useState, useCallback, useEffect, Suspense } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import Loader from "./Loader";
 import { Canvas, useThree } from "@react-three/fiber";
 import { Environment, useProgress } from "@react-three/drei";
 import {
@@ -46,27 +47,6 @@ function RendererConfig({ exposure }: { exposure: number }) {
   return null;
 }
 
-function Preloader({ visible }: { visible: boolean }) {
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 2,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "#0a0a0a",
-        opacity: visible ? 1 : 0,
-        transition: "opacity 0.5s ease-in-out",
-        pointerEvents: visible ? "auto" : "none",
-      }}
-      aria-hidden={!visible}
-    >
-      <div className="dfrnc-spinner" />
-    </div>
-  );
-}
 
 export default function Scene() {
   const reducedMotion = usePrefersReducedMotion();
@@ -79,13 +59,28 @@ export default function Scene() {
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
   );
-  // Preloader: hide once GLTF/Draco assets are loaded and Lottie has started.
+  // Intro sequence: loader (balls) → drop (auto-played DEFT fall, Task 11) →
+  // free (scroll-driven experience). Scroll stays locked until "free".
+  type IntroStage = "loader" | "drop" | "free";
+  const [introStage, setIntroStage] = useState<IntroStage>("loader");
+
   const { active, progress } = useProgress();
-  const [hidePreloader, setHidePreloader] = useState(false);
+  const assetsReady =
+    animationStarted && (reducedMotion || (!active && progress >= 100));
+
+  const handleSettled = useCallback(() => {
+    // Task 11 inserts the "drop" stage here; until then release directly.
+    setIntroStage("free");
+  }, []);
+
+  // Scroll lock for the whole intro: the page must not scroll under the
+  // loader or the DEFT drop.
   useEffect(() => {
-    const assetsReady = reducedMotion || (!active && progress >= 100);
-    if (assetsReady && animationStarted) setHidePreloader(true);
-  }, [active, progress, animationStarted, reducedMotion]);
+    const locked = introStage !== "free";
+    document.body.classList.toggle("scroll-locked", locked);
+    if (locked) window.scrollTo(0, 0);
+    return () => document.body.classList.remove("scroll-locked");
+  }, [introStage]);
 
   // Reduced motion: skip the whole scroll flow — Lottie jumps straight to the
   // last frame inside LottiePlane, nothing to animate.
@@ -227,7 +222,12 @@ export default function Scene() {
   return (
     <>
       <Leva hidden={!levaVisible} />
-      <Preloader visible={!hidePreloader} />
+      <Loader
+        assetsReady={assetsReady}
+        reducedMotion={reducedMotion}
+        hidden={introStage !== "loader"}
+        onSettled={handleSettled}
+      />
       <div className="canvas-layer">
         <Canvas
           frameloop="always"
