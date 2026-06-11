@@ -12,7 +12,7 @@ import {
 import { ToneMappingMode } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
 import { Leva, useControls, folder } from "@debug/controls";
-import ArcModel from "./ArcModel";
+import ArcModel, { figureOpacityLive } from "./ArcModel";
 import LottiePlane from "./LottiePlane";
 import GradientBackground from "./GradientBackground";
 import VideoPlane from "./VideoPlane";
@@ -100,8 +100,17 @@ export default function Scene() {
   useEffect(() => {
     const update = () => {
       const sp = scrollRef.current;
+      // A figure stays mounted while inside its (grace-padded) window OR while
+      // its temporal fade-out is still visibly decaying — a fast flick can
+      // leave the window long before the time-based fade reaches zero, and
+      // unmounting then would pop the figure off mid-fade. An invisible
+      // mounted figure costs nothing (three skips visible=false objects), and
+      // the next scroll event after the fade settles unmounts it.
       const fv = FIGURES.map(
-        (f) => !reducedMotion && figureVisibleFor(sp, f.arc.window, phase),
+        (f) =>
+          !reducedMotion &&
+          (figureVisibleFor(sp, f.arc.window, phase) ||
+            (figureOpacityLive.get(f.name) ?? 0) > 0.001),
       );
       setFiguresVisible((p) =>
         fv.length === p.length && fv.every((v, i) => v === p[i]) ? p : fv,

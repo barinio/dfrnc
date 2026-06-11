@@ -44,6 +44,12 @@ const baseGlassMaterial = new THREE.MeshPhysicalMaterial({
 // figures ⇒ at most four materials for the session.
 const materialPool = new Map<string, THREE.MeshPhysicalMaterial>();
 
+// Live smoothed opacity per figure, written every frame. Scene reads it on
+// scroll events to keep a figure MOUNTED while its temporal fade-out is still
+// decaying — the window-based mount grace alone is a scroll-distance budget
+// and can't cover fast flicks (the fade decays in time, not scroll distance).
+export const figureOpacityLive = new Map<string, number>();
+
 function materialFor(name: string): THREE.MeshPhysicalMaterial {
   let m = materialPool.get(name);
   if (!m) {
@@ -68,7 +74,6 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
   // Outer group: carries the curve position + a screen-space roll applied
   // OUTSIDE the spin (so the roll rotates the projected image, not local Z).
   const rollGroupRef = useRef<THREE.Group>(null);
-  const opacityRef = useRef<number>(1);
   const mouseRotX = useRef<number>(0);
   const mouseRotY = useRef<number>(0);
 
@@ -211,14 +216,14 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
       label: "Spin Turns",
     },
     rollPeak: {
-      value: 0.52,
+      value: figure.arc.rollPeak,
       min: -1.5,
       max: 1.5,
       step: 0.01,
       label: "Roll @ peak",
     },
     swingAmount: {
-      value: 0.56,
+      value: figure.arc.swingAmount,
       min: 0,
       max: 1.0,
       step: 0.01,
@@ -258,26 +263,31 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
     });
   }, [modelScene, material]);
 
-  // Responsive scale: keep the figure from dominating narrow/portrait
-  // viewports. Reset scale before measuring so repeated runs don't compound.
-  // useLayoutEffect commits synchronously before the next rendered frame so
-  // scale and centering are correct from the very first frame on mount.
+  // Scale to the manifest's targetHeight: normalizing the VERTICAL extent
+  // (not the max bbox dimension, which let depth/width shrink the thin text
+  // logos to slivers) is what makes the mixed set read similar in size. The
+  // width cap only engages on narrow/portrait viewports, where the world
+  // viewport height is unchanged but the width shrinks. Reset scale before
+  // measuring so repeated runs don't compound. useLayoutEffect commits
+  // synchronously before the next rendered frame so scale and centering are
+  // correct from the very first frame on mount.
   useLayoutEffect(() => {
     if (!modelScene) return;
     modelScene.position.set(0, 0, 0);
     modelScene.scale.setScalar(1);
     const box = new THREE.Box3().setFromObject(modelScene);
     const size = box.getSize(new THREE.Vector3());
-    const maxDim = Math.max(size.x, size.y, size.z);
-    const targetSize = Math.max(1.2, Math.min(2.5, viewport.width * 0.4));
-    const s = targetSize / maxDim;
+    const s = Math.min(
+      figure.targetHeight / Math.max(size.y, 1e-6),
+      (viewport.width * 0.85) / Math.max(size.x, 1e-6),
+    );
     modelScene.scale.setScalar(s);
     // Offset the geometry so its bounding-box center lands on the parent
     // group's origin; the group's position is then driven purely by the curve
     // point so rotation pivots about the visual center on all axes.
     const center = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
     modelScene.position.set(-center.x, -center.y, -center.z);
-  }, [modelScene, viewport.width, viewport.height]);
+  }, [modelScene, viewport.width, viewport.height, figure.targetHeight]);
 
   // This figure's dome. side mirrors travel; the apex lands at the curve
   // midpoint (t = 0.5) — which is where the apex-centred spin reads frontal.
@@ -299,19 +309,52 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
     ],
   );
 
+  // Temporal smoothing of the scroll-derived state. Scroll input is DISCRETE
+  // (a wheel tick can jump the progress far in one event), which used to make
+  // figures pop in mid-flight and judder along the arc. The flight t and the
+  // opacity each chase their scroll-driven target with a framerate-independent
+  // exponential lerp: position glides, and the opacity — starting from 0 on
+  // every mount — always FADES in/out even when the scroll lands inside the
+  // window in a single jump. (figureVisibleFor's mount grace keeps the
+  // component alive past its window so the fade-out can finish.)
+  const smoothTRef = useRef<number | null>(null);
+  const smoothOpacityRef = useRef<number>(0);
+
+  // Zero the live-opacity report on unmount so a stale value can't keep
+  // re-mounting the figure on later scroll events.
+  useEffect(() => {
+    return () => {
+      figureOpacityLive.set(figure.name, 0);
+    };
+  }, [figure.name]);
+
   useFrame((_state, delta: number) => {
     if (!modelRef.current) return;
 
     // Drive playback straight from scroll progress (read via ref — no React
     // re-render). Each figure maps its own window of the figures phase.
-    const { t: rawT, opacity } = figureStateFor(
+    const { t: targetT, opacity: targetOpacity } = figureStateFor(
       scrollRef.current,
       figure.arc.window,
       phase,
     );
-    opacityRef.current = opacity;
 
-    const t = easeInOutSine(rawT);
+    // Position starts AT its target on mount (no drift-in from a stale spot);
+    // opacity always starts at 0 so the entry is a fade no matter how the
+    // scroll arrived. Snap when settled so an idle page stops changing state.
+    if (smoothTRef.current === null) smoothTRef.current = targetT;
+    const kPos = 1 - Math.exp(-delta * 10);
+    const kOp = 1 - Math.exp(-delta * 9);
+    smoothTRef.current += (targetT - smoothTRef.current) * kPos;
+    if (Math.abs(targetT - smoothTRef.current) < 0.0005)
+      smoothTRef.current = targetT;
+    smoothOpacityRef.current +=
+      (targetOpacity - smoothOpacityRef.current) * kOp;
+    if (Math.abs(targetOpacity - smoothOpacityRef.current) < 0.001)
+      smoothOpacityRef.current = targetOpacity;
+    figureOpacityLive.set(figure.name, smoothOpacityRef.current);
+
+    const t = easeInOutSine(smoothTRef.current);
     const pos = curve.getPoint(t);
     // The geometry is re-centered on its bounding-box center inside the group,
     // so the curve point IS the figure's visual center on every axis.
@@ -343,7 +386,7 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
 
     // Scroll-driven opacity — bidirectional so the figure fades back in when
     // the user scrolls upward through its window.
-    const op = Math.min(Math.max(opacityRef.current, 0), 1);
+    const op = Math.min(Math.max(smoothOpacityRef.current, 0), 1);
     const visible = op > 0.001;
     if (modelRef.current.visible !== visible)
       modelRef.current.visible = visible;
@@ -353,7 +396,9 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
 
   return (
     <group ref={rollGroupRef}>
-      <group ref={modelRef}>
+      {/* Hidden until the first useFrame computes real position/opacity — the
+          pooled material can carry stale opacity from a previous unmount. */}
+      <group ref={modelRef} visible={false}>
         <primitive object={modelScene} />
       </group>
     </group>

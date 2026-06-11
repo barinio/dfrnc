@@ -4,6 +4,7 @@ import {
   LOTTIE_TOTAL_S,
   REVEAL_END,
   LOTTIE_SCRUB_START,
+  FIGURES_START,
   FIGURES_END,
   LOTTIE_END,
   VIDEO_START,
@@ -29,13 +30,15 @@ function clamp01(x: number): number {
 // Lottie timeline (seconds). The reveal starts at DEFT_DROP_S — the loader has
 // already auto-played [0, DEFT_DROP_S], and because the mapping never returns
 // less than DEFT_DROP_S, scrolling back to the top can never re-enter the drop.
-// Reduced-motion ("done") phase: hold the readable intro frame until the lottie
-// phase ends (FIGURES_END), then snap to the final frame which the video tail
-// covers. The discrete swap at FIGURES_END is intentional — no animation plays
-// for these users; the typography stays readable through the figures phase.
+// Reduced-motion ("done") phase: hold the readable intro frame until the video
+// is FULLY opaque (VIDEO_START + VIDEO_FADE), then snap to the final frame
+// (an empty zoom-through) which the video now covers completely. The video
+// fades in BEHIND the typography, so the readable frame stays on top through
+// the fade and the swap itself is invisible. The discrete swap is intentional —
+// no animation plays for these users.
 export function lottieTimeFor(sp: number, phase: Phase): number {
   if (phase === "done")
-    return sp < FIGURES_END ? LOTTIE_INTRO_S : LOTTIE_TOTAL_S;
+    return sp < VIDEO_START + VIDEO_FADE ? LOTTIE_INTRO_S : LOTTIE_TOTAL_S;
   if (sp <= REVEAL_END)
     return DEFT_DROP_S + (sp / REVEAL_END) * (LOTTIE_INTRO_S - DEFT_DROP_S);
   // Hold ends at LOTTIE_SCRUB_START (not FIGURES_END): the typography starts
@@ -52,18 +55,19 @@ export interface FigureState {
 }
 
 // Per-figure flight state. `window` is the figure's sub-range of the figures
-// phase, in normalized phase units [0,1]; windows are SEQUENTIAL (no overlap),
-// so exactly one figure is airborne at a time — each flies its full solo dome
-// the way the first one does. The fade is SYMMETRIC within the window
-// (first/last FIGURE_FADE of local t), so each flight reads as a balanced dome
-// and is fully reversible on reverse scroll.
+// phase, in normalized phase units [0,1]; windows may OVERLAP (up to two
+// figures airborne at once) so the sequence reads as a continuous cascade.
+// The phase itself starts at FIGURES_START — inside the Lottie reveal — so the
+// first figure is flying before the last word settles. The fade is SYMMETRIC
+// within the window (first/last FIGURE_FADE of local t), so each flight reads
+// as a balanced dome and is fully reversible on reverse scroll.
 export function figureStateFor(
   sp: number,
   window: readonly [number, number],
   phase: Phase,
 ): FigureState {
   if (phase === "done") return { t: 1, opacity: 0 };
-  const phaseT = (sp - REVEAL_END) / (FIGURES_END - REVEAL_END);
+  const phaseT = (sp - FIGURES_START) / (FIGURES_END - FIGURES_START);
   const [w0, w1] = window;
   const t = clamp01((phaseT - w0) / (w1 - w0));
   let opacity = 0;
@@ -75,6 +79,16 @@ export function figureStateFor(
   return { t, opacity };
 }
 
+// Extra phase-units of mount life beyond the window on each side. ArcModel
+// smooths its opacity over time (so fast scroll-jumps fade instead of pop);
+// the grace keeps the component MOUNTED slightly past its window so the
+// temporal fade-out can finish before React unmounts it. The grace is a
+// SCROLL-distance budget while the fade decays in TIME, so it only suffices
+// at moderate scroll speeds — Scene additionally keeps a figure mounted while
+// its live smoothed opacity is still nonzero (see figureOpacityLive), which
+// covers flicks and single-event jumps at any speed.
+const MOUNT_GRACE = 0.04;
+
 // Discrete visibility — used by Scene to mount/unmount each figure, flipped
 // only when the threshold is crossed (never per frame).
 export function figureVisibleFor(
@@ -82,7 +96,9 @@ export function figureVisibleFor(
   window: readonly [number, number],
   phase: Phase,
 ): boolean {
-  return figureStateFor(sp, window, phase).opacity > 0.001;
+  if (phase === "done") return false;
+  const phaseT = (sp - FIGURES_START) / (FIGURES_END - FIGURES_START);
+  return phaseT > window[0] - MOUNT_GRACE && phaseT < window[1] + MOUNT_GRACE;
 }
 
 export interface VideoState {

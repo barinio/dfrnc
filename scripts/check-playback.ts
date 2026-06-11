@@ -3,6 +3,7 @@
 import {
   lottieTimeFor,
   figureStateFor,
+  figureVisibleFor,
   videoStateFor,
   lottieBleedFor,
 } from "../src/playback";
@@ -12,6 +13,7 @@ import {
   LOTTIE_TOTAL_S,
   REVEAL_END,
   LOTTIE_SCRUB_START,
+  FIGURES_START,
   FIGURES_END,
   LOTTIE_END,
   VIDEO_START,
@@ -35,6 +37,16 @@ eq(lottieTimeFor(LOTTIE_END, "scroll"), LOTTIE_TOTAL_S, "lottie @LOTTIE_END");
 eq(lottieTimeFor(1, "scroll"), LOTTIE_TOTAL_S, "lottie clamped after end");
 eq(lottieTimeFor(0.5, "done"), LOTTIE_INTRO_S, "lottie done: readable frame held");
 eq(lottieTimeFor(0.9, "done"), LOTTIE_TOTAL_S, "lottie done: final frame at tail");
+// Reduced-motion handoff: the readable frame may only swap to the (empty)
+// final frame once the video is FULLY opaque — otherwise these users see the
+// typography vanish over a bare background.
+for (let sp = 0; sp <= 1.0001; sp += 0.001) {
+  if (lottieTimeFor(sp, "done") === LOTTIE_TOTAL_S)
+    ok(
+      videoStateFor(sp, "done").opacity >= 1 - 1e-9,
+      `done handoff uncovered @sp=${sp}`,
+    );
+}
 let prev = -1;
 for (let sp = 0; sp <= 1.0001; sp += 0.001) {
   const t = lottieTimeFor(sp, "scroll");
@@ -46,7 +58,7 @@ for (let sp = 0; sp <= 1.0001; sp += 0.001) {
 // figureStateFor: window mapping, apex, fades
 const win: [number, number] = [0.2, 0.6];
 const spFor = (phaseT: number) =>
-  REVEAL_END + phaseT * (FIGURES_END - REVEAL_END);
+  FIGURES_START + phaseT * (FIGURES_END - FIGURES_START);
 eq(figureStateFor(spFor(0.2), win, "scroll").t, 0, "fig t@start");
 eq(figureStateFor(spFor(0.4), win, "scroll").t, 0.5, "fig t@apex");
 eq(figureStateFor(spFor(0.6), win, "scroll").t, 1, "fig t@end");
@@ -60,14 +72,28 @@ ok(
 );
 eq(figureStateFor(0.3, win, "done").opacity, 0, "fig done hidden");
 
-// Sequential invariant: windows don't overlap, so at most ONE figure is
-// visible at any phaseT — each flies its full solo dome like the first one.
+// Cascade invariant: windows overlap (the sequence reads continuous), but
+// never more than TWO figures are airborne at once — and the overlap really
+// exists (two airborne somewhere), or the cascade has silently decayed back
+// to solo flights.
+let maxAirborne = 0;
 for (let p = 0; p <= 1.0001; p += 0.001) {
   const visible = FIGURES.filter(
     (f) => figureStateFor(spFor(p), f.arc.window, "scroll").opacity > 0.001,
   );
-  ok(visible.length <= 1, `${visible.length} figures visible @phaseT=${p}`);
+  ok(visible.length <= 2, `${visible.length} figures visible @phaseT=${p}`);
+  maxAirborne = Math.max(maxAirborne, visible.length);
 }
+ok(maxAirborne === 2, "two figures airborne somewhere in the cascade");
+
+// Mount grace: figureVisibleFor keeps a figure mounted slightly OUTSIDE its
+// window (so ArcModel's temporal fade-out can finish), but not far outside.
+ok(figureVisibleFor(spFor(0.21), win, "scroll"), "mounted inside window");
+ok(figureVisibleFor(spFor(0.18), win, "scroll"), "mounted in grace before");
+ok(figureVisibleFor(spFor(0.62), win, "scroll"), "mounted in grace after");
+ok(!figureVisibleFor(spFor(0.1), win, "scroll"), "unmounted far before");
+ok(!figureVisibleFor(spFor(0.72), win, "scroll"), "unmounted far after");
+ok(!figureVisibleFor(spFor(0.4), win, "done"), "done: never mounted");
 
 // Timing invariant: every flight ends before the video fades in, and the
 // LAST figure's exit happens while the Lottie typography is appearing
@@ -106,6 +132,7 @@ for (const f of FIGURES) {
   const apex = c.getPoint(0.5);
   eq(apex.x, 0, `${f.name} apex centered`);
   eq(apex.y, (H / 2) * f.arc.peakHeight, `${f.name} apex height`, 1e-6);
+  eq(apex.z, f.arc.z ?? 0, `${f.name} depth offset`, 1e-9);
   const p0 = c.getPoint(0);
   ok(
     Math.sign(p0.x) === -f.arc.side,
@@ -113,17 +140,52 @@ for (const f of FIGURES) {
   );
   eq(Math.abs(p0.x), (W / 2) * f.arc.legSpreadLandscape, `${f.name} spread`, 1e-6);
 }
-// windows are sequential and contiguous, spanning the whole figures phase
+// Cascade layout: ordered overlapping windows spanning the whole phase.
 eq(FIGURES[0].arc.window[0], 0, "first window starts at 0");
 eq(FIGURES[FIGURES.length - 1].arc.window[1], 1, "last window ends at 1");
 for (let i = 1; i < FIGURES.length; i++) {
-  eq(
-    FIGURES[i].arc.window[0],
-    FIGURES[i - 1].arc.window[1],
-    `window ${i} starts where window ${i - 1} ends`,
-    1e-9,
+  const [prevStart, prevEnd] = FIGURES[i - 1].arc.window;
+  const [start, end] = FIGURES[i].arc.window;
+  ok(start > prevStart && end > prevEnd, `window ${i} ordered after ${i - 1}`);
+}
+// The crossing pair: gba launches at 25% of tokyo's flight, on the opposite
+// side and on a HIGHER dome at a different depth — they pass without
+// colliding (per the design direction).
+const [tokyo, gba] = [FIGURES[1], FIGURES[2]];
+eq(
+  gba.arc.window[0],
+  tokyo.arc.window[0] +
+    0.25 * (tokyo.arc.window[1] - tokyo.arc.window[0]),
+  "gba launches at 25% of tokyo's window",
+  1e-9,
+);
+ok(gba.arc.side !== tokyo.arc.side, "crossing pair flies opposite sides");
+ok(gba.arc.peakHeight > tokyo.arc.peakHeight, "gba flies higher than tokyo");
+ok((gba.arc.z ?? 0) !== (tokyo.arc.z ?? 0), "crossing pair layered in depth");
+// Icons spin AGAINST their travel direction (sign opposite to side); text
+// logos spin with it.
+for (const name of ["and", "gba"]) {
+  const f = FIGURES.find((x) => x.name === name)!;
+  ok(
+    Math.sign(f.arc.spinTurns) === -f.arc.side,
+    `${name} (icon) spins against its travel`,
   );
 }
+for (const name of ["tokyo", "awwwards"]) {
+  const f = FIGURES.find((x) => x.name === name)!;
+  ok(
+    Math.sign(f.arc.spinTurns) === f.arc.side,
+    `${name} (text) spins with its travel`,
+  );
+}
+// The figures phase begins INSIDE the Lottie reveal: the first figure is
+// already nearly opaque at sp 0.155, just before AUSGEZEICHNETES (the last
+// word) settles at sp ≈ 0.158 (measured empirically from the real export).
+ok(FIGURES_START < REVEAL_END, "figures launch during the reveal");
+ok(
+  figureStateFor(0.155, FIGURES[0].arc.window, "scroll").opacity > 0.9,
+  "first figure airborne before AUSGEZEICHNETES settles",
+);
 // peaks stay at or below ~half the viewport (0.5 of the upper half) so the
 // figure — whose body extends above its center — never clips off the top edge
 for (const f of FIGURES) {

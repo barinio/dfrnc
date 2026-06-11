@@ -13,7 +13,11 @@ export const LOTTIE_TOTAL_S = 266 / 30; // 8.8667s — 30 fps, 266 frames
 // ── Scroll-progress partition (0..1) ─────────────────────────────────────────
 // Nothing autoplays after the loader releases:
 //   [0, REVEAL_END]                    Lottie reveal (DEFT_DROP_S → LOTTIE_INTRO_S)
-//   [REVEAL_END, LOTTIE_SCRUB_START]   figures fly sequential domes; Lottie held
+//   FIGURES_START (< REVEAL_END)       the FIRST figure launches inside the
+//                                      reveal — airborne before AUSGEZEICHNETES
+//                                      finishes animating in
+//   [FIGURES_START, FIGURES_END]       figures fly overlapping domes; Lottie
+//                                      held after the reveal completes
 //   [LOTTIE_SCRUB_START, LOTTIE_END]   Lottie scrubs to the end; the LAST figures
 //                                      finish their exits inside this window —
 //                                      every flight ends at FIGURES_END, before
@@ -22,12 +26,17 @@ export const LOTTIE_TOTAL_S = 266 / 30; // 8.8667s — 30 fps, 266 frames
 //                                      white letters occlude it; alphaTest gaps reveal it
 //   [LOTTIE_END, 1]                    Lottie fully done — pure video owns the frame
 export const REVEAL_END = 0.17;
+// Start of the figures phase. Sits INSIDE the Lottie reveal: AUSGEZEICHNETES
+// (the last word to appear) animates in at sp ≈ 0.147–0.158 (measured), and the
+// first figure must already be flying before it settles. With FIGURE_FADE 0.18
+// of a 0.34-wide window, the first figure is fully opaque by sp ≈ 0.153.
+export const FIGURES_START = 0.125;
 // Lottie hold ends and the typography starts appearing again. Decoupled from
 // FIGURES_END so the tail of the figure sequence exits WHILE the text animates.
 export const LOTTIE_SCRUB_START = 0.5;
 // End of the figures phase. Must stay below VIDEO_START so the last figure's
 // exit completes before the video shows up behind the typography.
-export const FIGURES_END = 0.62;
+export const FIGURES_END = 0.58;
 export const LOTTIE_END = 0.78;
 
 // Scroll progress where the video starts fading in BEHIND the typography —
@@ -43,9 +52,13 @@ export const VIDEO_START = 0.63;
 export const VIDEO_FADE = 0.05;
 
 // Fraction of a figure's own flight window spent fading in (and, mirrored,
-// fading out). Windows are sequential (no overlap), so the fade only has to
-// stay inside the figure's own window — 0.18 keeps entries/exits soft without
-// eating the readable middle of the flight.
+// fading out). Windows OVERLAP (cascade), so this value is load-bearing for
+// the ≤2-airborne design: each overlap region must be covered by the earlier
+// figure's fade-out (e.g. and's fade-out spans phase [0.279, 0.34] and fully
+// covers the and∩tokyo overlap [0.30, 0.34]), so two figures are never both
+// fully opaque outside the deliberate tokyo×gba crossing. Lowering this value
+// widens the fully-opaque overlap; check-playback's ≤2-concurrency sweep only
+// guards the count, not the opacity product.
 export const FIGURE_FADE = 0.18;
 
 // Total scrollable track height (vh). 800 gives the video phase ~154vh.

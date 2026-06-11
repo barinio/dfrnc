@@ -2,11 +2,11 @@ import { useMemo, useRef } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 
-// Sits behind the Lottie plane (z = -1). Because it is an OPAQUE object it is
+// Sits behind the video plane (z = -3.5). Because it is an OPAQUE object it is
 // included in the renderer's transmission buffer, so the glass model refracts it
 // — it doubles as the dark backdrop the refraction needs while also being the
 // visible animated background (a port of bg_dunkel.html into the scene).
-const PLANE_Z = -2;
+const PLANE_Z = -4;
 
 const vertexShader = /* glsl */ `
   varying vec2 vUv;
