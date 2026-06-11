@@ -5,13 +5,13 @@ import * as THREE from "three";
 import { videoStateFor } from "../playback";
 import type { Phase } from "../playback";
 
-// VideoPlane renders the FPV video as an in-scene mesh at z = −1.5, between
-// the Lottie plane (z = −1) and the gradient background (z = −2). Because it
+// VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
+// the Lottie plane (z = −3) and the gradient background (z = −4). Because it
 // is inside the scene the Noise/SMAA postprocessing covers it (consistent film
 // grain), and the white Lottie letters (opaque, alphaTest) occlude it while
 // the alphaTest gaps reveal the bright video behind the typography.
 
-const PLANE_Z = -1.5;
+const PLANE_Z = -3.5;
 
 // (videoTime seconds → object-position-x %) keyframes for the portrait crop.
 // The 16:9 frame is cover-cropped on phones; the baked-in taglines drift away

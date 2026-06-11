@@ -11,7 +11,12 @@ import type { Phase } from "../playback";
 
 export type IntroStage = "loader" | "drop" | "free";
 
-const PLANE_Z = -1;
+// Deep enough that no rotated figure can reach it: the largest figure's
+// rotated half-extent along z is ≈2.2 world units around arcs at z ∈
+// [-0.7, +0.9], so everything clears z = -3 with margin. The plane sizes
+// itself to fill the frustum at its depth, so the move is visually free —
+// but letters no longer depth-clip the glass figures.
+const PLANE_Z = -3;
 // Uniform transparent inset on all four sides (2% of the smaller dimension) so
 // the dark page background frames the Lottie. Always applied — the margins are
 // a deliberate design choice and must stay consistent on every pass/device.
@@ -84,9 +89,15 @@ export default function LottiePlane({
     });
 
     animRef.current = anim;
+    // Fractional-frame rendering: goToAndStop receives non-integer frames from
+    // the scroll scrub; without subframe rendering lottie-web floors them to
+    // whole 30 fps steps. Explicit so playback smoothness never hinges on the
+    // library default.
+    anim.setSubframe(true);
     // Reset the scrub cache so the new instance isn't stuck on frame 0 until
     // the next scroll change (a resize destroys and recreates the lottie).
     lastTimeRef.current = -1;
+    smoothSecRef.current = -1;
 
     let tex: THREE.CanvasTexture | null = null;
 
@@ -133,6 +144,12 @@ export default function LottiePlane({
   // frame actually changes, so an idle (non-scrolling) page does zero per-frame
   // GPU work.
   const lastTimeRef = useRef<number>(-1);
+  // Temporally smoothed scrub time: wheel scrolling moves the page in coarse
+  // discrete jumps, which used to skip whole stretches of the animation in a
+  // single frame. The displayed time chases the scroll-derived target with a
+  // framerate-independent lerp and snaps when settled (so the lastTimeRef
+  // dedup resumes skipping idle work). -1 = uninitialized.
+  const smoothSecRef = useRef<number>(-1);
   const dropClockRef = useRef<number>(0);
   const dropFiredRef = useRef<boolean>(false);
   const onDropDoneRef = useRef(onDropDone);
@@ -169,10 +186,22 @@ export default function LottiePlane({
         dropFiredRef.current = true;
         onDropDoneRef.current?.();
       }
+    } else if (phase === "done") {
+      // Reduced motion: the discrete frame swap is intentional — never animate
+      // it, so the smoothing lerp must not run here.
+      tSec = lottieTimeFor(scrollRef.current, phase);
     } else {
       // Scroll-driven; lottieTimeFor never returns less than DEFT_DROP_S, so
-      // the drop can't replay on scroll-up.
-      tSec = lottieTimeFor(scrollRef.current, phase);
+      // the drop can't replay on scroll-up. Smooth toward the target so coarse
+      // wheel jumps glide through the timeline instead of skipping frames.
+      const target = lottieTimeFor(scrollRef.current, phase);
+      if (smoothSecRef.current < 0) smoothSecRef.current = target;
+      smoothSecRef.current +=
+        (target - smoothSecRef.current) * (1 - Math.exp(-delta * 10));
+      // Snap within a quarter of a 30 fps frame so settling is invisible.
+      if (Math.abs(target - smoothSecRef.current) < 1 / 120)
+        smoothSecRef.current = target;
+      tSec = smoothSecRef.current;
     }
     if (tSec === lastTimeRef.current) return;
     lastTimeRef.current = tSec;
