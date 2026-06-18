@@ -23,13 +23,3 @@ Thumbs.db
 # Claude Code / AI tools
 .claude/
 .superpowers/
-
-# Design source files (not web assets)
-*.ai
-/assets/
-/5284_3d-background/
-/glasmorphizm-3d.glb
-
-# Scratch / untitled files
-Untitled\ file.*
-*копія*
