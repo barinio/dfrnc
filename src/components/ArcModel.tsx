@@ -27,11 +27,13 @@ const baseGlassMaterial = new THREE.MeshPhysicalMaterial({
   thickness: 1.2,
   ior: 1.45,
   dispersion: 1.5,
-  attenuationColor: new THREE.Color(0xdde6ff),
-  attenuationDistance: 4,
+  // Cool tint kept LIGHT but with a touch of blue back (supervisor round 2:
+  // #e6eaf2 read too gray). Sits between the original #dde6ff and the gray pass.
+  attenuationColor: new THREE.Color(0xe1e7f6),
+  attenuationDistance: 4.5,
   clearcoat: 1.0,
   clearcoatRoughness: 0.05,
-  iridescence: 0.6,
+  iridescence: 0.45,
   iridescenceIOR: 1.7,
   iridescenceThicknessRange: [200, 600],
   envMapIntensity: 1.2,
@@ -114,15 +116,17 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
       }),
       Glass: folder({
         dispersion: { value: 1.5, min: 0, max: 10, step: 0.1 },
-        attenuationColor: "#dde6ff",
-        attenuationDistance: { value: 4, min: 0, max: 20, step: 0.1 },
+        // A touch of blue restored (was #e6eaf2 / 5 — too gray) while staying
+        // well short of the original #dde6ff cast. tokyo/gba override this.
+        attenuationColor: "#e0e7f6",
+        attenuationDistance: { value: 4.4, min: 0, max: 20, step: 0.1 },
       }),
       Clearcoat: folder({
         clearcoat: { value: 1.0, min: 0, max: 1, step: 0.01 },
         clearcoatRoughness: { value: 0.05, min: 0, max: 1, step: 0.01 },
       }),
       Iridescence: folder({
-        iridescence: { value: 0.6, min: 0, max: 1, step: 0.01 },
+        iridescence: { value: 0.45, min: 0, max: 1, step: 0.01 },
         iridescenceIOR: { value: 1.7, min: 1.0, max: 2.5, step: 0.01 },
         thicknessMin: { value: 200, min: 50, max: 1000, step: 1 },
         thicknessMax: { value: 600, min: 50, max: 1000, step: 1 },

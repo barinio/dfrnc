@@ -70,20 +70,29 @@ export interface FigureDef {
   };
 }
 
-// Launch order: and → tokyo → gba → awwwards, alternating entry sides, with
+// Launch order: and → awwwards → tokyo → gba, alternating entry sides, with
 // OVERLAPPING windows so the sequence reads as one continuous cascade:
 //   • and starts at the very top of the figures phase — already airborne while
 //     AUSGEZEICHNETES is still animating in (the phase begins inside the
 //     Lottie reveal, see FIGURES_START).
-//   • tokyo launches as and exits, flying a LOWER dome right-to-left while…
+//   • awwwards launches the MOMENT `and` reaches its apex (and's window
+//     midpoint), flying a NARROW, almost-vertical dome and standing nearly
+//     upright at the top (tiny spin/roll) — per supervisor direction and the
+//     reference clip.
+//   • tokyo then launches as awwwards exits, flying a LOWER dome right-to-left
+//     while…
 //   • gba launches at 25% of tokyo's flight, flying a HIGHER dome left-to-
 //     right — they cross mid-air at different heights and depths (z) so the
-//     paths never collide.
-//   • awwwards follows on gba's exit.
+//     paths never collide. gba is the LAST figure: it is ≈¾ through its arc
+//     when the Lottie scrub / video reveal begins (LOTTIE_SCRUB_START 0.5 maps
+//     to gba's phase ≈0.835), so the background continuation only resumes once
+//     the last icon is almost down.
 // Icons (and/gba) spin AGAINST their travel at distinct rates; text logos
-// (tokyo/awwwards) spin with it. Sizes keep every figure INSIDE the Lottie
-// frame at its apex (rotated extent ≤ ~87% of the half-viewport, vs the
-// Lottie's 2% inset). All values are live-tunable via Leva.
+// (tokyo/awwwards) spin with it. NO opacity fades (FIGURE_FADE = 0): every
+// figure enters/exits below the frame (rootDepth ≈ 1.4 sinks the entry/exit
+// roots fully off-screen), so flights read as motion, never a dissolve.
+// Sizes keep every figure INSIDE the Lottie frame at its apex. All values are
+// live-tunable via Leva.
 export const FIGURES: FigureDef[] = [
   {
     name: "and",
@@ -92,13 +101,37 @@ export const FIGURES: FigureDef[] = [
     arc: {
       legSpreadLandscape: 0.5,
       legSpreadPortrait: 0.95,
-      rootDepth: 0.95,
+      // Deep enough that the entry/exit roots sit fully below the visible frame
+      // (so the figure flies in/out instead of fading — FIGURE_FADE is 0).
+      rootDepth: 1.4,
       peakHeight: 0.42,
       side: 1,
       spinTurns: -0.6,
       rollPeak: 0.3,
       swingAmount: 0.5,
-      window: [0, 0.34],
+      window: [0, 0.3],
+    },
+  },
+  {
+    name: "awwwards",
+    url: "figures/awwwards.glb",
+    targetHeight: 4.0,
+    arc: {
+      // Narrow legs → an almost-vertical dome (rises near straight-up from
+      // bottom-centre to top-centre). Minimal spin and roll so the tall text
+      // column stands nearly upright at the apex, as in the reference clip.
+      legSpreadLandscape: 0.25,
+      legSpreadPortrait: 0.28,
+      rootDepth: 1.4,
+      // Centred apex (was 0.4 — too high, overlapping DEFT) so the upright
+      // column reads near screen-centre like the reference clip.
+      peakHeight: 0.3,
+      side: -1,
+      spinTurns: -0.1,
+      rollPeak: 0.05,
+      swingAmount: 0.2,
+      // Launches exactly as `and` hits its apex (and's window midpoint 0.15).
+      window: [0.15, 0.46],
     },
   },
   {
@@ -109,7 +142,7 @@ export const FIGURES: FigureDef[] = [
     arc: {
       legSpreadLandscape: 0.38,
       legSpreadPortrait: 0.72,
-      rootDepth: 0.95,
+      rootDepth: 1.4,
       peakHeight: 0.33,
       side: -1,
       spinTurns: -0.5,
@@ -119,48 +152,42 @@ export const FIGURES: FigureDef[] = [
       // larger than both reaches combined.
       swingAmount: 0.4,
       z: 0.9,
-      window: [0.3, 0.64],
+      window: [0.4, 0.74],
     },
     // Tokyo's stacked thin DoubleSide letters compound the attenuation tint
     // surface after surface, so its blue saturates far faster than the
     // boxier figures' (supervisor flagged it twice). #eef3ff read too blue,
     // pure white too gray next to the others — this midpoint keeps it in the
     // same cool family without the cast.
-    material: { attenuationDistance: 16, attenuationColor: "#f6f9ff" },
+    material: { attenuationDistance: 20, attenuationColor: "#f6f9ff" },
   },
   {
     name: "gba",
     url: "figures/gba.glb",
-    // Flies at z=−0.7 (perspective ×0.92) — 3.5 reads as ≈3.2 on screen.
-    targetHeight: 3.5,
+    // Flies at z=−0.7 (perspective ×0.92). Shrunk ~13% (3.5 → 3.05) so it no
+    // longer pokes past the frame at its apex (supervisor: "V" breaks the
+    // bounds) — reads as ≈2.8 on screen.
+    targetHeight: 3.05,
     arc: {
       legSpreadLandscape: 0.66,
       legSpreadPortrait: 1.0,
-      rootDepth: 0.95,
-      peakHeight: 0.5,
+      rootDepth: 1.4,
+      // Nudged below the 0.5 cap for extra top clearance now that it is the
+      // tallest-apex figure flagged for overflow.
+      peakHeight: 0.46,
       side: 1,
       spinTurns: -0.85,
       rollPeak: -0.25,
       swingAmount: 0.45,
       z: -0.7,
-      window: [0.385, 0.725],
+      // Last figure; ≈¾ through its arc at LOTTIE_SCRUB_START (sp 0.5).
+      window: [0.485, 0.95],
     },
-  },
-  {
-    name: "awwwards",
-    url: "figures/awwwards.glb",
-    targetHeight: 4.0,
-    arc: {
-      legSpreadLandscape: 0.5,
-      legSpreadPortrait: 0.88,
-      rootDepth: 0.95,
-      peakHeight: 0.3,
-      side: -1,
-      spinTurns: -0.55,
-      rollPeak: 0.35,
-      swingAmount: 0.5,
-      window: [0.66, 1],
-    },
+    // gba's chunky, thick body has the longest internal light paths of the set,
+    // so the Beer-Lambert tint saturates blue hardest. Kept the WEAKEST of the
+    // non-tokyo figures, but with a little blue back (round 2: #eef2f8 / 8 read
+    // too gray) so it no longer looks plain glass.
+    material: { attenuationDistance: 5.7, attenuationColor: "#dae4f5" },
   },
 ];
 

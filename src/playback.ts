@@ -72,7 +72,10 @@ export function figureStateFor(
   const t = clamp01((phaseT - w0) / (w1 - w0));
   let opacity = 0;
   if (phaseT > w0 && phaseT < w1) {
-    if (t < FIGURE_FADE) opacity = smoothstep(t / FIGURE_FADE);
+    // FIGURE_FADE === 0: figures never change opacity (they enter/exit by
+    // flying off-screen), so opacity is binary inside the window.
+    if (FIGURE_FADE <= 0) opacity = 1;
+    else if (t < FIGURE_FADE) opacity = smoothstep(t / FIGURE_FADE);
     else if (t > 1 - FIGURE_FADE) opacity = smoothstep((1 - t) / FIGURE_FADE);
     else opacity = 1;
   }

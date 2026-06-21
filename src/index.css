@@ -21,18 +21,23 @@ body.scroll-locked {
     position: relative;
 }
 
-/* Full-screen WebGL layer. Locked to the LARGE viewport height (lvh), which by
-   spec does not change when the mobile URL bar hides/shows. With `inset: 0` the
-   layer tracked the dynamic viewport, so each URL-bar toggle resized the canvas
-   and re-fit the whole Lottie/scene — causing the scroll jumps. On desktop
-   lvh == vh, so this is identical there. */
+/* Full-screen WebGL layer. Locked to the SMALL viewport height (svh) — the
+   height available WITH the mobile browser toolbars shown. Like lvh, svh is a
+   FIXED length that does NOT change when the iOS Safari URL bar hides/shows, so
+   it keeps the no-scroll-jump property that motivated lvh. The difference: with
+   lvh the scene filled the toolbar-hidden height, so its bottom edge (the last
+   Lottie line) sat BEHIND Safari's bottom address bar (supervisor). svh fits
+   the scene within the always-visible region, clearing the address bar. When
+   the toolbar later auto-hides mid-scroll, a thin strip of the dark page
+   background (#0a0a0a) shows below — matching the scene's dark frame. On
+   desktop svh == vh, so this is identical there. */
 .canvas-layer {
     position: fixed;
     top: 0;
     left: 0;
     width: 100vw;
     height: 100vh; /* fallback */
-    height: 100lvh;
+    height: 100svh;
     z-index: 1;
     pointer-events: none;
 }

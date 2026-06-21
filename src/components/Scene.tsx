@@ -1,7 +1,14 @@
-import { Component, useState, useCallback, useEffect, Suspense } from "react";
-import type { ComponentProps, ReactNode } from "react";
+import {
+  Component,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  Suspense,
+} from "react";
+import type { ComponentProps, ReactNode, MutableRefObject, Ref } from "react";
 import Loader from "./Loader";
-import { Canvas, useThree } from "@react-three/fiber";
+import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import { Environment, useProgress } from "@react-three/drei";
 import {
   EffectComposer,
@@ -9,7 +16,7 @@ import {
   Noise,
   SMAA,
 } from "@react-three/postprocessing";
-import { ToneMappingMode } from "postprocessing";
+import { ToneMappingMode, NoiseEffect } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
 import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel, { figureOpacityLive } from "./ArcModel";
@@ -18,7 +25,7 @@ import GradientBackground from "./GradientBackground";
 import VideoPlane from "./VideoPlane";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef } from "../hooks/useScrollProgress";
-import { figureVisibleFor } from "../playback";
+import { figureVisibleFor, videoStateFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH } from "../constants";
 import { FIGURES } from "../arc";
@@ -47,6 +54,33 @@ function RendererConfig({ exposure }: { exposure: number }) {
   return null;
 }
 
+// Base film-grain strength, applied to the figures/typography phase.
+const NOISE_BASE = 0.05;
+
+// Drives the post-process grain opacity from scroll: full grain over the
+// figures/typography, fading to ZERO as the video reveals. The video's dark,
+// smooth regions (water/shadow) show grain badly, so it must be gone once the
+// video owns the frame (supervisor). Held as a ref on the NoiseEffect so the
+// EffectComposer keeps Noise as a DIRECT child (its pass introspection breaks
+// if effects are wrapped in components).
+function NoiseDriver({
+  noiseRef,
+  scrollRef,
+  phase,
+}: {
+  noiseRef: MutableRefObject<NoiseEffect | null>;
+  scrollRef: MutableRefObject<number>;
+  phase: Phase;
+}) {
+  useFrame(() => {
+    const e = noiseRef.current;
+    if (!e) return;
+    const videoIn = videoStateFor(scrollRef.current, phase).opacity; // 0..1
+    e.blendMode.opacity.value = NOISE_BASE * (1 - videoIn);
+  });
+  return null;
+}
+
 
 export default function Scene() {
   const reducedMotion = usePrefersReducedMotion();
@@ -56,6 +90,7 @@ export default function Scene() {
   // Scroll progress is a ref (no per-frame React renders); LottiePlane/ArcModel
   // read it inside useFrame. Only discrete transitions below use state.
   const scrollRef = useScrollProgressRef();
+  const noiseRef = useRef<NoiseEffect | null>(null);
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
   );
@@ -166,7 +201,7 @@ export default function Scene() {
         },
       }),
       "Directional 2": folder({
-        dir2Color: { label: "color", value: "#ccddff" },
+        dir2Color: { label: "color", value: "#dde4ee" },
         dir2Intensity: {
           label: "intensity",
           value: 2,
@@ -258,7 +293,7 @@ export default function Scene() {
           style={{ width: "100%", height: "100%", background: "transparent" }}
         >
           <RendererConfig exposure={toneMappingExposure} />
-          <GradientBackground />
+          <GradientBackground scrollRef={scrollRef} phase={phase} />
           <ambientLight color={0xffffff} intensity={ambientIntensity} />
           <directionalLight
             color={dir1Color}
@@ -308,10 +343,18 @@ export default function Scene() {
             )}
           </Suspense>
           <VideoPlane scrollRef={scrollRef} phase={phase} />
+          <NoiseDriver noiseRef={noiseRef} scrollRef={scrollRef} phase={phase} />
           <EffectComposer multisampling={0} stencilBuffer={false}>
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
             <SMAA />
-            <Noise opacity={0.1} />
+            {/* Film grain over the figures/typography only — NoiseDriver fades
+                it to 0 as the video reveals (grain reads badly on the video). */}
+            {/* Library types the ref as the class, not the instance; the
+                runtime value is the NoiseEffect instance the driver mutates. */}
+            <Noise
+              ref={noiseRef as unknown as Ref<typeof NoiseEffect>}
+              opacity={NOISE_BASE}
+            />
           </EffectComposer>
         </Canvas>
       </div>

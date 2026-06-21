@@ -1,6 +1,9 @@
 import { useMemo, useRef } from "react";
+import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
+import { videoStateFor } from "../playback";
+import type { Phase } from "../playback";
 
 // Sits behind the video plane (z = -3.5). Because it is an OPAQUE object it is
 // included in the renderer's transmission buffer, so the glass model refracts it
@@ -22,6 +25,8 @@ const fragmentShader = /* glsl */ `
   varying vec2 vUv;
   uniform vec2 uResolution;
   uniform float uTime;
+  // 1 = full grain/specks (figures + typography phase); 0 = clean (video phase).
+  uniform float uGrainMix;
 
   float noise(vec2 p) {
     return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -69,14 +74,16 @@ const fragmentShader = /* glsl */ `
     float grainSize = max(uResolution.x, uResolution.y) / 62.5;
     vec2 grainUV = fragCoord / grainSize;
     float grain = (noise(grainUV + uTime * 0.05) - 0.5) * 0.15;
-    color += vec3(grain);
+    color += vec3(grain) * uGrainMix;
 
     float speckNoise = noise(grainUV + uTime * 0.2);
     if (speckNoise > 0.92) {
       float hueNoise = fract(noise(grainUV * 2.0) + uTime * 0.05);
       float hue = mix(0.5, 1.0, hueNoise);
       float brightness = (speckNoise - 0.92) * 10.0;
-      color += hsv2rgb(vec3(hue, 1.0, brightness)) * 0.5;
+      // Faded out with the video reveal so the bright specks don't show
+      // through the (briefly semi-transparent) video on zoom-in.
+      color += hsv2rgb(vec3(hue, 1.0, brightness)) * 0.5 * uGrainMix;
     }
 
     vec3 contrasted = (color - 0.5) * 1.05 + 0.5;
@@ -89,12 +96,21 @@ const fragmentShader = /* glsl */ `
   }
 `;
 
-export default function GradientBackground() {
+interface GradientBackgroundProps {
+  scrollRef: MutableRefObject<number>;
+  phase: Phase;
+}
+
+export default function GradientBackground({
+  scrollRef,
+  phase,
+}: GradientBackgroundProps) {
   const { camera, viewport, size } = useThree();
   const uniforms = useMemo(
     () => ({
       uTime: { value: 0 },
       uResolution: { value: new THREE.Vector2(1, 1) },
+      uGrainMix: { value: 1 },
     }),
     [],
   );
@@ -111,6 +127,9 @@ export default function GradientBackground() {
   useFrame((state) => {
     uniforms.uTime.value = state.clock.elapsedTime;
     uniforms.uResolution.value.set(size.width, size.height);
+    // Fade grain + specks out as the video reveals (they otherwise show through
+    // the briefly semi-transparent video on the zoom-in).
+    uniforms.uGrainMix.value = 1 - videoStateFor(scrollRef.current, phase).opacity;
   });
 
   return (

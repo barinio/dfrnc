@@ -51,15 +51,15 @@ export const VIDEO_START = 0.63;
 // at ~8.5s.
 export const VIDEO_FADE = 0.05;
 
-// Fraction of a figure's own flight window spent fading in (and, mirrored,
-// fading out). Windows OVERLAP (cascade), so this value is load-bearing for
-// the ≤2-airborne design: each overlap region must be covered by the earlier
-// figure's fade-out (e.g. and's fade-out spans phase [0.279, 0.34] and fully
-// covers the and∩tokyo overlap [0.30, 0.34]), so two figures are never both
-// fully opaque outside the deliberate tokyo×gba crossing. Lowering this value
-// widens the fully-opaque overlap; check-playback's ≤2-concurrency sweep only
-// guards the count, not the opacity product.
-export const FIGURE_FADE = 0.18;
+// Fraction of a figure's own flight window spent fading opacity in/out.
+// ZERO by design: per supervisor direction the figures must NOT change opacity —
+// they simply fly in from below the frame and back out (the arc roots sit fully
+// off-screen, see ArcConfig.rootDepth ≥ ~1.4), so entry/exit reads as motion,
+// not a dissolve. Because there is no fade-out to mask overlaps, two glass
+// figures can be fully opaque at once during a cascade overlap; that is
+// acceptable (they are transmissive, and the tokyo×gba crossing already showed
+// two at once). figureStateFor returns a binary 0/1 opacity when this is 0.
+export const FIGURE_FADE = 0;
 
 // Total scrollable track height (vh). 800 gives the video phase ~154vh.
 export const SCROLL_TRACK_VH = 800;

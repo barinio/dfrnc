@@ -65,11 +65,11 @@ eq(figureStateFor(spFor(0.6), win, "scroll").t, 1, "fig t@end");
 eq(figureStateFor(spFor(0.1), win, "scroll").opacity, 0, "fig hidden before");
 eq(figureStateFor(spFor(0.7), win, "scroll").opacity, 0, "fig hidden after");
 eq(figureStateFor(spFor(0.4), win, "scroll").opacity, 1, "fig opaque @apex");
-ok(
-  figureStateFor(spFor(0.22), win, "scroll").opacity > 0 &&
-    figureStateFor(spFor(0.22), win, "scroll").opacity < 1,
-  "fig fading in",
-);
+// FIGURE_FADE === 0: opacity is BINARY — figures never dissolve, they fly in/out
+// off-screen. Anywhere strictly inside the window it is exactly 1 (no partials).
+ok(FIGURE_FADE === 0, "FIGURE_FADE is 0 (no opacity fades, per direction)");
+eq(figureStateFor(spFor(0.22), win, "scroll").opacity, 1, "fig opaque just inside window");
+eq(figureStateFor(spFor(0.58), win, "scroll").opacity, 1, "fig opaque just before exit");
 eq(figureStateFor(0.3, win, "done").opacity, 0, "fig done hidden");
 
 // Cascade invariant: windows overlap (the sequence reads continuous), but
@@ -96,16 +96,26 @@ ok(!figureVisibleFor(spFor(0.72), win, "scroll"), "unmounted far after");
 ok(!figureVisibleFor(spFor(0.4), win, "done"), "done: never mounted");
 
 // Timing invariant: every flight ends before the video fades in, and the
-// LAST figure's exit happens while the Lottie typography is appearing
-// (scrubbing, not holding).
+// LAST figure (gba) is ≈¾ through its arc when the Lottie scrub / video reveal
+// begins — the background continuation only resumes once the last icon is
+// almost down (supervisor direction).
 ok(FIGURES_END < VIDEO_START, "figures end before the video starts");
 const last = FIGURES[FIGURES.length - 1].arc.window;
-const exitStartSp = spFor(last[0] + (1 - FIGURE_FADE) * (last[1] - last[0]));
+ok(spFor(last[1]) <= FIGURES_END + 1e-9, "last flight ends within the figures phase");
+ok(spFor(last[1]) < VIDEO_START, "last flight ends before the video starts");
+// The last figure's local t at LOTTIE_SCRUB_START should be ≈0.75 (¾ done).
+const lastTatScrub =
+  (((LOTTIE_SCRUB_START - FIGURES_START) / (FIGURES_END - FIGURES_START)) -
+    last[0]) /
+  (last[1] - last[0]);
 ok(
-  lottieTimeFor(exitStartSp, "scroll") > LOTTIE_INTRO_S + 1e-9,
+  Math.abs(lastTatScrub - 0.75) < 0.06,
+  `last figure ≈¾ done when scrub starts (got ${lastTatScrub.toFixed(3)})`,
+);
+ok(
+  lottieTimeFor(spFor(last[1]), "scroll") > LOTTIE_INTRO_S + 1e-9,
   "lottie is scrubbing during the last figure's exit",
 );
-eq(spFor(last[1]), FIGURES_END, "last window ends exactly at FIGURES_END", 1e-9);
 
 // videoStateFor — anchored at VIDEO_START (video fades in behind the typography)
 eq(videoStateFor(VIDEO_START, "scroll").t, 0, "video t@VIDEO_START");
@@ -140,18 +150,32 @@ for (const f of FIGURES) {
   );
   eq(Math.abs(p0.x), (W / 2) * f.arc.legSpreadLandscape, `${f.name} spread`, 1e-6);
 }
-// Cascade layout: ordered overlapping windows spanning the whole phase.
+// Cascade layout: ordered overlapping windows. Order is and → awwwards →
+// tokyo → gba; the first starts at the phase top and the last lands within it.
 eq(FIGURES[0].arc.window[0], 0, "first window starts at 0");
-eq(FIGURES[FIGURES.length - 1].arc.window[1], 1, "last window ends at 1");
+ok(
+  FIGURES[FIGURES.length - 1].arc.window[1] <= 1 + 1e-9,
+  "last window ends within the phase",
+);
 for (let i = 1; i < FIGURES.length; i++) {
   const [prevStart, prevEnd] = FIGURES[i - 1].arc.window;
   const [start, end] = FIGURES[i].arc.window;
   ok(start > prevStart && end > prevEnd, `window ${i} ordered after ${i - 1}`);
 }
+const byName = (n: string) => FIGURES.find((f) => f.name === n)!;
+// awwwards launches the moment `and` reaches its apex (and's window midpoint).
+const and = byName("and");
+eq(
+  byName("awwwards").arc.window[0],
+  (and.arc.window[0] + and.arc.window[1]) / 2,
+  "awwwards launches at and's apex",
+  1e-9,
+);
 // The crossing pair: gba launches at 25% of tokyo's flight, on the opposite
 // side and on a HIGHER dome at a different depth — they pass without
 // colliding (per the design direction).
-const [tokyo, gba] = [FIGURES[1], FIGURES[2]];
+const tokyo = byName("tokyo");
+const gba = byName("gba");
 eq(
   gba.arc.window[0],
   tokyo.arc.window[0] +
