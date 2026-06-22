@@ -76,6 +76,7 @@ body.scroll-locked {
     display: flex;
     align-items: center;
     justify-content: center;
+    background-color: #000000;
     opacity: 0;
     pointer-events: none;
     perspective: 800px;
