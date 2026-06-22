@@ -27,8 +27,8 @@ const SLOT_OFFSETS = [
 // SNAPS to the nearest whole slide once scrolling stops — so a flick sends the
 // front card flying out and settles the next on a clean stack with no lingering
 // half-state, and scrolling back reverses it the same way. Both are tuning dials.
-const SNAP_RATE = 8; // exponential follow/settle rate (higher = snappier)
-const IDLE_SNAP_TIME = 0.1; // seconds of scroll-stillness before it snaps
+const SNAP_RATE = 18; // exponential follow/settle rate (higher = snappier; ~0.28s settle)
+const IDLE_SNAP_TIME = 0.04; // seconds of scroll-stillness before it snaps
 
 interface Props {
   galleryRef: MutableRefObject<number>;
