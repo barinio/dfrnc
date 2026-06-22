@@ -123,6 +123,14 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
 
     const gp = galleryRef.current;
     const { span } = cardConveyorFor(gp);
+
+    // Show the stack only once the gallery's card phase begins — i.e. after the
+    // video AND the black backdrop fade (span > 0 ⟺ gp > BACKDROP_FADE_END).
+    // During the intro/figures/video (gp = 0) the whole stack is hidden, so it
+    // can't peek up from the bottom behind the intro typography.
+    group.visible = span > 1e-4;
+    if (!group.visible) return;
+
     const n = GALLERY_IMAGES.length;
     const target = Math.round(span * n); // discrete slide index (0..n)
 
@@ -165,8 +173,10 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
 
     // Entrance: the whole group rises from below to its band centre as the
     // gallery opens.
+    // Entrance lift deep enough that at entrance=0 the whole stack starts fully
+    // below the screen (no sliver peeking) and rises into its band centre.
     const entrance = THREE.MathUtils.clamp(span / 0.04, 0, 1);
-    group.position.y = bandOffsetY - (1 - entrance) * cardH * 1.6;
+    group.position.y = bandOffsetY - (1 - entrance) * cardH * 2.3;
 
     // Hover only: parallax tilt + scale-up while the cursor is over the card.
     const px = ptr.current.x;
