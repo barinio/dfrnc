@@ -34,6 +34,7 @@ const out = opt("out", "/tmp/shots");
 const [w, h] = opt("viewport", "1280x800").split("x").map(Number);
 const track = Number(opt("track", "800")); // keep in sync with SCROLL_TRACK_VH
 const wait = Number(opt("wait", "9000"));
+const reducedMotion = argv.includes("--reduced-motion");
 
 mkdirSync(out, { recursive: true });
 
@@ -48,6 +49,11 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 await page.setViewport({ width: w, height: h });
+if (reducedMotion) {
+  await page.emulateMediaFeatures([
+    { name: "prefers-reduced-motion", value: "reduce" },
+  ]);
+}
 page.on("console", (m) => {
   if (m.text().includes("[DBG]")) console.log("page:", m.text());
 });
