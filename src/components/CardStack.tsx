@@ -22,6 +22,14 @@ const SLOT_OFFSETS = [
   { x: 0.07, y: 0.09, s: 0.97, z: -0.3 },
 ];
 
+// Swiper-style settle (radiance.family portfolio-slider feel). The displayed
+// conveyor position eases toward the live scroll target while scrolling, then
+// SNAPS to the nearest whole slide once scrolling stops — so a flick sends the
+// front card flying out and settles the next on a clean stack with no lingering
+// half-state, and scrolling back reverses it the same way. Both are tuning dials.
+const SNAP_RATE = 8; // exponential follow/settle rate (higher = snappier)
+const IDLE_SNAP_TIME = 0.1; // seconds of scroll-stillness before it snaps
+
 interface Props {
   galleryRef: MutableRefObject<number>;
   reducedMotion?: boolean;
@@ -37,6 +45,11 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
   const rotX = useRef(0);
   const rotY = useRef(0);
   const elapsed = useRef(0);
+  // Swiper-settle state: the eased/snapped displayed conveyor position, the last
+  // scroll value (to detect stillness), and accumulated still-time.
+  const displayedRef = useRef<number | null>(null);
+  const lastGpRef = useRef(0);
+  const idleTimeRef = useRef(0);
 
   // Card world size. ≥1:1: 64vh tall, 3:2 (96vh wide). Portrait: 64vh tall,
   // width tracks 86vw. Viewport is in world units (height ≈ 9.24 at z=0).
@@ -58,8 +71,38 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     if (!group) return;
     elapsed.current += delta;
 
-    const { lead, local, span } = cardConveyorFor(galleryRef.current);
+    const gp = galleryRef.current;
+    const { span } = cardConveyorFor(gp);
     const n = GALLERY_IMAGES.length;
+    const target = span * n; // raw scroll-driven conveyor position (0..n)
+
+    // Eased + snap-on-idle conveyor: while scrolling, the displayed position
+    // follows the scroll target (with a little lag → momentum); once scrolling
+    // stops (gp still for IDLE_SNAP_TIME), it eases to the nearest whole slide
+    // so the stack always settles cleanly. Reversible (target tracks gp both
+    // ways). Reduced motion: follow the target directly, no added motion/snap.
+    if (displayedRef.current === null) displayedRef.current = target;
+    if (reducedMotion) {
+      displayedRef.current = target;
+    } else {
+      if (Math.abs(gp - lastGpRef.current) < 1e-4) idleTimeRef.current += delta;
+      else idleTimeRef.current = 0;
+      const goal =
+        idleTimeRef.current > IDLE_SNAP_TIME ? Math.round(target) : target;
+      displayedRef.current = approach(
+        displayedRef.current,
+        goal,
+        delta,
+        SNAP_RATE,
+      );
+      if (Math.abs(goal - displayedRef.current) < 1e-3)
+        displayedRef.current = goal;
+    }
+    lastGpRef.current = gp;
+
+    const displayed = THREE.MathUtils.clamp(displayedRef.current, 0, n);
+    const lead = Math.floor(displayed);
+    const local = displayed - lead;
 
     for (let slot = 0; slot < 3; slot++) {
       const ref = slotRefs[slot].current;
