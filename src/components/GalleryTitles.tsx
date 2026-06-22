@@ -34,6 +34,7 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
     wrapper.style.top = "0";
     wrapper.style.width = `${size.width}px`;
     wrapper.style.height = `${size.height}px`;
+    wrapper.style.background = "transparent";
     document.body.appendChild(wrapper);
 
     const ssMax = Math.min(size.width, size.height) <= 480 ? 1.0 : 1.25;
@@ -84,7 +85,7 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
 
   useFrame((_s, delta) => {
     const anim = animRef.current;
-    if (!anim || !texture) return;
+    if (!anim || !texRef.current) return;
     const target = galleryTitleFracFor(galleryRef.current); // 0..1
     let frac: number;
     if (reducedMotion) {
@@ -92,7 +93,7 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
     } else {
       if (smoothRef.current < 0) smoothRef.current = target;
       smoothRef.current += (target - smoothRef.current) * (1 - Math.exp(-delta * 10));
-      if (Math.abs(target - smoothRef.current) < 1 / 600) smoothRef.current = target;
+      if (Math.abs(target - smoothRef.current) < 1 / 120) smoothRef.current = target;
       frac = smoothRef.current;
     }
     const frame = frac * Math.max(anim.totalFrames - 1, 0);
@@ -121,7 +122,7 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
   return (
     <mesh position={[0, 0, PLANE_Z]}>
       <planeGeometry args={[planeWidth, planeHeight]} />
-      <meshBasicMaterial map={texture} toneMapped={false} transparent alphaTest={0.05} />
+      <meshBasicMaterial map={texture} toneMapped={false} alphaTest={0.1} />
     </mesh>
   );
 }
