@@ -67,4 +67,6 @@ export const SCROLL_TRACK_VH = 800;
 // Additional scrollable track (vh) appended AFTER the animation track for the
 // gallery section. The animation timeline (sp) is unchanged — it stays clamped
 // at 1 through the whole gallery; only `gp` (gallery progress) advances here.
-export const GALLERY_TRACK_VH = 600;
+// Kept short so a modest, "short natural" swipe advances one card slide in the
+// discrete-step slider (see 2026-06-23-gallery-card-swiper-design.md).
+export const GALLERY_TRACK_VH = 400;

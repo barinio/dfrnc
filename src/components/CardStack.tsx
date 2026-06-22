@@ -22,13 +22,14 @@ const SLOT_OFFSETS = [
   { x: 0.07, y: 0.09, s: 0.97, z: -0.3 },
 ];
 
-// Swiper-style settle (radiance.family portfolio-slider feel). The displayed
-// conveyor position eases toward the live scroll target while scrolling, then
-// SNAPS to the nearest whole slide once scrolling stops — so a flick sends the
-// front card flying out and settles the next on a clean stack with no lingering
-// half-state, and scrolling back reverses it the same way. Both are tuning dials.
-const SNAP_RATE = 18; // exponential follow/settle rate (higher = snappier; ~0.28s settle)
-const IDLE_SNAP_TIME = 0.04; // seconds of scroll-stillness before it snaps
+// Discrete-step swiper (radiance.family portfolio-slider feel). The deck holds
+// still within each slide's scroll band; the target slide is the ROUNDED conveyor
+// position, so crossing a band midpoint flips to the next slide with a quick eased
+// fly-up. A big scroll jumps the target several slides and the deck glides through
+// the intermediates at a capped even speed, easing to a stop on the target.
+// Reversible. See 2026-06-23-gallery-card-swiper-design.md. Both are tuning dials.
+const STEP_RATE = 18; // single-step ease rate (higher = snappier; ~0.2s per slide)
+const MAX_STEP_PER_SEC = 6; // cascade glide-speed cap (slides/sec) on big scrolls
 
 interface Props {
   galleryRef: MutableRefObject<number>;
@@ -45,11 +46,9 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
   const rotX = useRef(0);
   const rotY = useRef(0);
   const elapsed = useRef(0);
-  // Swiper-settle state: the eased/snapped displayed conveyor position, the last
-  // scroll value (to detect stillness), and accumulated still-time.
+  // The live displayed slide position (float) that steps toward the rounded
+  // target slide; drives lead/local. null until the first frame initializes it.
   const displayedRef = useRef<number | null>(null);
-  const lastGpRef = useRef(0);
-  const idleTimeRef = useRef(0);
 
   // Card world size. ≥1:1: 64vh tall, 3:2 (96vh wide). Portrait: 64vh tall,
   // width tracks 86vw. Viewport is in world units (height ≈ 9.24 at z=0).
@@ -74,31 +73,28 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     const gp = galleryRef.current;
     const { span } = cardConveyorFor(gp);
     const n = GALLERY_IMAGES.length;
-    const target = span * n; // raw scroll-driven conveyor position (0..n)
+    // Discrete target: the ROUNDED conveyor position, so the deck holds still
+    // within a band and flips at the midpoint. Range 0..n (n = all gone → CTA).
+    const target = Math.round(span * n);
 
-    // Eased + snap-on-idle conveyor: while scrolling, the displayed position
-    // follows the scroll target (with a little lag → momentum); once scrolling
-    // stops (gp still for IDLE_SNAP_TIME), it eases to the nearest whole slide
-    // so the stack always settles cleanly. Reversible (target tracks gp both
-    // ways). Reduced motion: follow the target directly, no added motion/snap.
+    // Step the displayed position toward the integer target with a speed-capped
+    // exponential ease: a single-slide step eases quickly (~STEP_RATE); a multi-
+    // slide jump glides through the intermediates at MAX_STEP_PER_SEC (each
+    // briefly visible, one-after-another) and eases to a stop on the target.
+    // Reduced motion: jump straight to the target (no animation).
     if (displayedRef.current === null) displayedRef.current = target;
     if (reducedMotion) {
       displayedRef.current = target;
     } else {
-      if (Math.abs(gp - lastGpRef.current) < 1e-4) idleTimeRef.current += delta;
-      else idleTimeRef.current = 0;
-      const goal =
-        idleTimeRef.current > IDLE_SNAP_TIME ? Math.round(target) : target;
-      displayedRef.current = approach(
-        displayedRef.current,
-        goal,
-        delta,
-        SNAP_RATE,
-      );
-      if (Math.abs(goal - displayedRef.current) < 1e-3)
-        displayedRef.current = goal;
+      const cur = displayedRef.current;
+      const eased = approach(cur, target, delta, STEP_RATE);
+      const maxStep = MAX_STEP_PER_SEC * delta;
+      let next = eased;
+      if (Math.abs(eased - cur) > maxStep)
+        next = cur + Math.sign(target - cur) * maxStep; // cap cascade speed
+      if (Math.abs(target - next) < 1e-3) next = target; // settle exactly
+      displayedRef.current = next;
     }
-    lastGpRef.current = gp;
 
     const displayed = THREE.MathUtils.clamp(displayedRef.current, 0, n);
     const lead = Math.floor(displayed);
