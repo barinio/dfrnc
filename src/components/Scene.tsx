@@ -25,6 +25,7 @@ import GradientBackground from "./GradientBackground";
 import VideoPlane from "./VideoPlane";
 import GalleryBackdrop from "./GalleryBackdrop";
 import GalleryTitles from "./GalleryTitles";
+import CardStack from "./CardStack";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
 import { figureVisibleFor, videoStateFor } from "../playback";
@@ -335,6 +336,7 @@ export default function Scene() {
               onDropDone={handleDropDone}
             />
             <GalleryTitles galleryRef={galleryRef} reducedMotion={reducedMotion} />
+            <CardStack galleryRef={galleryRef} reducedMotion={reducedMotion} />
             {FIGURES.map(
               (f, i) =>
                 !reducedMotion &&
