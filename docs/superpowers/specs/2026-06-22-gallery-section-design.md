@@ -28,8 +28,9 @@ In:
   fly-up cycling. Card images are **placeholders, drop-in later** (data-driven
   array under `public/gallery/`, mirroring how figure GLBs are drop-in).
 - A final CTA frame (DOM overlay, `mailto:hi@deft.ch`).
-- Bump the existing intro Lottie/video inset from **2% → 3%** so the whole site
-  frames consistently at 3% vmin.
+- The gallery uses a **3% vmin** gutter. The existing intro Lottie/video inset
+  stays at **2%** (unchanged) — the brief's "3% not 2%" refers to *this* new
+  section, not the intro.
 
 Out (later / not now):
 - Real gallery imagery and final CTA wording/typeface (explicitly "yet to be
@@ -55,9 +56,10 @@ and clamps to 1. The gallery is therefore purely additive.
 
 ### `gp` partition
 
-- `[0, FADE]` (FADE ≈ 0.06): black backdrop fades in, covering the held video.
-- `[FADE, CTA_START]`: titles scrub `titles.json` 0→100 **and** the card
-  conveyor cycles, locked to finish together (cadence tuned visually).
+- `[0, CTA_START]`: over the **held video last frame**, titles scrub
+  `titles.json` 0→100 **and** the card conveyor cycles, locked to finish
+  together (cadence tuned visually). At `gp ≈ 0` the first title frame grows in
+  from the top/bottom edges and the first cards enter from below.
 - `[CTA_START, 1]`: titles + cards gone (last card has flown up); the CTA frame
   fades in.
 
@@ -84,8 +86,8 @@ Landscape (aspect ≥ 1:1), summing to 100vh:
   (squeezing the 3:2). Corner radius **2.5% vh**.
 - Cap horizontal aspect at **16:9**; beyond that, empty space left/right
   (letterbox the section).
-- The same 3% value replaces the intro Lottie's current 2% inset
-  (`PADDING_RATIO` 0.02 → 0.03 in `LottiePlane`).
+- The intro Lottie keeps its existing **2% vmin** inset (`PADDING_RATIO`,
+  unchanged); only the gallery uses the **3% vmin** gutter.
 
 `titles.json` (1000×1000, 50fps, 100 frames) already encodes the three frames
 at the correct positions — top line in the top ~8%, bottom line(s) in the
@@ -105,14 +107,10 @@ Lottie — it is a separate element (below).
 ## Components (new, focused files)
 
 - **`src/gallery.ts`** — pure data + functions: the placeholder image array,
-  the `gp` partition (`galleryBackdropFor`, `galleryTitleTimeFor`,
-  `cardConveyorFor`, `galleryCtaFor`), and layout constants (gutter 3%, top 8vh,
+  the `gp` partition (`galleryTitleTimeFor`, `cardConveyorFor`,
+  `galleryCtaFor`), and layout constants (gutter 3%, top 8vh,
   cards 64vh, bottom 16vh, radius 2.5vh, max aspect 16:9). Mirrors the
   `arc.ts` + `playback.ts` pattern; no React, no Three.
-- **`GalleryBackdrop`** — full-bleed black plane in front of the video/intro
-  Lottie (z just greater than −3), opacity driven by `galleryBackdropFor(gp)`.
-  Cleanly hides the held video; no `VideoPlane` change required. Post-process
-  grain stays at 0 because `sp` is pinned at 1 (`videoIn = 1`).
 - **`GalleryTitles`** — renders `titles.json` to a `CanvasTexture` on a plane
   sized to fill the frustum at its depth minus the 3% gutter,
   `preserveAspectRatio:"none"`, scrubbed by `galleryTitleTimeFor(gp)` with the
@@ -146,10 +144,14 @@ cursor moves.
 
 ## Background / handoff
 
-The video reaches and holds its last frame at `sp = 1`. As `gp` ramps from 0 the
-`GalleryBackdrop` black plane fades in over the top of it, so the gallery sits on
-clean black (matching the mockups). The video element is simply occluded (still
-holding its last frame, no extra seeking).
+The video reaches and holds its last frame at `sp = 1` and **stays visible** as
+the gallery backdrop — per the brief ("…the last frame of the video, and then we
+continue…"), explicitly *not* a black screen. The gallery titles, cards and CTA
+render in front of it (z > −3.5). `VideoPlane` is unchanged: it holds the last
+frame with no extra seeking, and post-process grain is already at 0 because `sp`
+stays pinned at 1 (`videoIn = 1`). If card legibility over the video frame
+demands it, a subtle darkening scrim is an option tuned visually — but the frame
+stays visible (no fade to black).
 
 ## Reduced motion
 
