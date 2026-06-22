@@ -32,6 +32,14 @@ import {
   CTA_START,
 } from "../src/gallery";
 import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../src/constants";
+import {
+  approach,
+  tiltTarget,
+  idleTilt,
+  TILT_MAX,
+  IDLE_AMP_X,
+  IDLE_AMP_Y,
+} from "../src/cursorTilt";
 
 function eq(actual: number, expected: number, label: string, eps = 1e-9) {
   if (Math.abs(actual - expected) > eps)
@@ -266,6 +274,33 @@ for (const f of FIGURES) {
   eq(galleryCtaFor(1), 1, "CTA fully in at gp 1");
 
   console.log("✓ gallery timeline");
+}
+
+// ── Cursor tilt ──────────────────────────────────────────────────────────────
+{
+  // approach converges toward target and is a no-op at delta 0.
+  let v = 0;
+  for (let i = 0; i < 1000; i++) v = approach(v, 1, 1 / 60, 4);
+  ok(Math.abs(v - 1) < 1e-3, "approach converges to target");
+  eq(approach(0, 1, 0, 4), 0, "approach with delta 0 is a no-op");
+
+  // tiltTarget maps pointer to rotation, zero under reduced motion.
+  const t = tiltTarget(1, 1, false);
+  eq(t.y, TILT_MAX, "pointer.x → rotY = +TILT_MAX");
+  eq(t.x, -TILT_MAX, "pointer.y → rotX = −TILT_MAX");
+  const tr = tiltTarget(1, 1, true);
+  ok(tr.x === 0 && tr.y === 0, "reduced motion ⇒ no pointer tilt");
+
+  // idleTilt is bounded by its amplitudes and zero under reduced motion.
+  for (const e of [0, 1.3, 5.7, 12.4]) {
+    const it = idleTilt(e, false);
+    ok(Math.abs(it.x) <= IDLE_AMP_X + 1e-9, "idle x within amplitude");
+    ok(Math.abs(it.y) <= IDLE_AMP_Y + 1e-9, "idle y within amplitude");
+  }
+  const ir = idleTilt(5.7, true);
+  ok(ir.x === 0 && ir.y === 0, "reduced motion ⇒ no idle drift");
+
+  console.log("✓ cursor tilt");
 }
 
 console.log("check-playback: all assertions passed");
