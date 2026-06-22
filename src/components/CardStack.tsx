@@ -1,4 +1,4 @@
-import { useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
@@ -9,6 +9,9 @@ import {
   CARDS_VH,
   CARD_ASPECT,
   CARDS_WIDTH_VW_PORTRAIT,
+  GUTTER,
+  TOP_TITLE_VH,
+  BOTTOM_TITLE_VH,
 } from "../gallery";
 import { approach, tiltTarget, idleTilt, TILT_RATE } from "../cursorTilt";
 
@@ -37,7 +40,7 @@ interface Props {
 }
 
 export default function CardStack({ galleryRef, reducedMotion = false }: Props) {
-  const { viewport, pointer } = useThree();
+  const { viewport, pointer, gl } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   const slotRef0 = useRef<THREE.Group>(null);
   const slotRef1 = useRef<THREE.Group>(null);
@@ -50,9 +53,9 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
   // target slide; drives lead/local. null until the first frame initializes it.
   const displayedRef = useRef<number | null>(null);
 
-  // Card world size. ≥1:1: 64vh tall, 3:2 (96vh wide). Portrait: 64vh tall,
-  // width tracks 86vw. Viewport is in world units (height ≈ 9.24 at z=0).
-  const { cardW, cardH } = useMemo(() => {
+  // Card world size + content-band geometry. ≥1:1: 64vh tall, 3:2 (96vh wide).
+  // Portrait: 64vh tall, width tracks 86vw. Viewport is world units (h ≈ 9.24).
+  const { cardW, cardH, bandOffsetY, topClipY, botClipY } = useMemo(() => {
     const vw = viewport.width;
     const vh = viewport.height;
     const aspect = vw / vh;
@@ -62,8 +65,36 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     // 16:9 cap: beyond it the section letterboxes — cards keep their vh-based
     // size (they never grow past 64vh / 96vh), so wide viewports leave empty
     // space left/right automatically.
-    return { cardW: w, cardH: h };
+    //
+    // Centre the stack in its CONTENT BAND, not the screen: the band is
+    // asymmetric (8vh title above, 16vh below), so its centre sits above screen
+    // centre. world y is +up; screen-fraction-from-top F → y = (0.5 − F)·vh.
+    const topMargin = 2 * GUTTER + TOP_TITLE_VH; // 0.14
+    const bandCenterFromTop = topMargin + CARDS_VH / 2; // 0.46
+    const bandOffsetY = (0.5 - bandCenterFromTop) * vh; // +0.04·vh (up)
+    // Clip the cards to the title-TEXT inner edges (the 3% gutter is retained so
+    // the peek/tilt can dip into the gutter but never reach the text).
+    const topClipY = (0.5 - (topMargin - GUTTER)) * vh; // top title bottom (11vh)
+    const botClipY = (0.5 - (1 - (2 * GUTTER + BOTTOM_TITLE_VH) + GUTTER)) * vh; // bottom title top (81vh)
+    return { cardW: w, cardH: h, bandOffsetY, topClipY, botClipY };
   }, [viewport.width, viewport.height]);
+
+  // World-space clipping planes confining the cards to the central band. Top
+  // keeps y ≤ topClipY; bottom keeps y ≥ botClipY. Stable array (constants
+  // mutated on resize) so the card materials never recompile. Local clipping is
+  // enabled on the renderer; only materials carrying these planes are clipped.
+  const clipPlanes = useMemo(
+    () => [
+      new THREE.Plane(new THREE.Vector3(0, -1, 0), 0),
+      new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
+    ],
+    [],
+  );
+  useEffect(() => {
+    gl.localClippingEnabled = true;
+    clipPlanes[0].constant = topClipY; // keeps y ≤ topClipY
+    clipPlanes[1].constant = -botClipY; // keeps y ≥ botClipY
+  }, [gl, clipPlanes, topClipY, botClipY]);
 
   useFrame((_s, delta) => {
     const group = groupRef.current;
@@ -132,9 +163,10 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
       }
     }
 
-    // Entrance: the whole stack rises from below as the gallery opens.
+    // Entrance: the whole stack rises from below to its band centre as the
+    // gallery opens (bandOffsetY centres it in the content band, not the screen).
     const entrance = THREE.MathUtils.clamp(span / 0.04, 0, 1);
-    group.position.y = (1 - entrance) * -cardH * 1.6;
+    group.position.y = bandOffsetY - (1 - entrance) * cardH * 1.6;
 
     // Cursor tilt + idle on the whole stack (group rotation).
     const tt = tiltTarget(pointer.x, pointer.y, reducedMotion);
@@ -153,7 +185,13 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
               needs a stable slot. Use slot as the placeholder index so each slot
               shows a consistent gray; real images key off the live conveyor idx
               below. */}
-          <SlotCard slot={slot} galleryRef={galleryRef} cardW={cardW} cardH={cardH} />
+          <SlotCard
+            slot={slot}
+            galleryRef={galleryRef}
+            cardW={cardW}
+            cardH={cardH}
+            clipPlanes={clipPlanes}
+          />
         </group>
       ))}
     </group>
@@ -168,16 +206,26 @@ function SlotCard({
   galleryRef,
   cardW,
   cardH,
+  clipPlanes,
 }: {
   slot: number;
   galleryRef: MutableRefObject<number>;
   cardW: number;
   cardH: number;
+  clipPlanes: THREE.Plane[];
 }) {
   const { lead } = cardConveyorFor(galleryRef.current);
   const idx = lead + slot;
   const n = GALLERY_IMAGES.length;
   if (idx >= n) return null;
   const realIdx = idx % n;
-  return <GalleryCard src={GALLERY_IMAGES[realIdx]} index={realIdx} width={cardW} height={cardH} />;
+  return (
+    <GalleryCard
+      src={GALLERY_IMAGES[realIdx]}
+      index={realIdx}
+      width={cardW}
+      height={cardH}
+      clippingPlanes={clipPlanes}
+    />
+  );
 }

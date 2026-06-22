@@ -68,9 +68,12 @@ interface Props {
   // World-space card size (the parent sizes these to 64vh / 3:2).
   width: number;
   height: number;
+  // World-space clipping planes that confine the card to the central content
+  // band (so tilt/peek can never cover the title text). Optional.
+  clippingPlanes?: THREE.Plane[];
 }
 
-export default function GalleryCard({ src, index, width, height }: Props) {
+export default function GalleryCard({ src, index, width, height, clippingPlanes }: Props) {
   const { gl } = useThree();
   const [texture, setTexture] = useState<THREE.Texture>(() => placeholderTexture(index));
 
@@ -115,7 +118,7 @@ export default function GalleryCard({ src, index, width, height }: Props) {
 
   return (
     <mesh geometry={geometry}>
-      <meshBasicMaterial map={texture} toneMapped={false} />
+      <meshBasicMaterial map={texture} toneMapped={false} clippingPlanes={clippingPlanes} />
     </mesh>
   );
 }
