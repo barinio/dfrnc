@@ -23,6 +23,7 @@ import ArcModel, { figureOpacityLive } from "./ArcModel";
 import LottiePlane from "./LottiePlane";
 import GradientBackground from "./GradientBackground";
 import VideoPlane from "./VideoPlane";
+import GalleryBackdrop from "./GalleryBackdrop";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
 import { figureVisibleFor, videoStateFor } from "../playback";
@@ -92,7 +93,6 @@ export default function Scene() {
   const scrollRef = useScrollProgressRef();
   // galleryRef is wired here; consumed by gallery components in Task 3+.
   const galleryRef = useGalleryProgressRef();
-  void galleryRef;
   const noiseRef = useRef<NoiseEffect | null>(null);
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
@@ -346,6 +346,7 @@ export default function Scene() {
             )}
           </Suspense>
           <VideoPlane scrollRef={scrollRef} phase={phase} />
+          <GalleryBackdrop galleryRef={galleryRef} />
           <NoiseDriver noiseRef={noiseRef} scrollRef={scrollRef} phase={phase} />
           <EffectComposer multisampling={0} stencilBuffer={false}>
             <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
