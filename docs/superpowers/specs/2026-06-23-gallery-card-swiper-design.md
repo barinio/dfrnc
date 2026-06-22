@@ -71,3 +71,28 @@ text, not slides), backdrop, CTA, reduced-motion gating elsewhere, and every
 (unchanged pure functions still pass); headless screenshots at mid-band scroll
 positions must show **clean settled stacks** (not half-fly-out), confirming the
 deck rounds to a whole slide. The step/cascade motion itself is judged live.
+
+## Refinement — round 2 (2026-06-23)
+
+Card-stack visuals + interaction reworked toward the radiance.family stack
+(supersedes the conveyor's up-right peek, always-on parallax, and the
+title-clip). Discrete-step snapping (above) is unchanged.
+
+- **Smaller cards.** Rendered at `CARD_FILL` (≈0.72) of the 64vh band, centred in
+  the band — so the hover scale-up stays clear of the titles without clipping.
+- **Hover-only parallax + scale.** Parallax tilt and a scale `1 → HOVER_SCALE`
+  (1.3) apply ONLY while the cursor is over the card (window-pointer NDC
+  hit-test — no canvas pointer-events needed). No always-on tilt, no idle drift.
+- **Clipping removed.** Cards and the peek show fully; the group still enters
+  from below. The smaller base + bounded hover keep the card clear of the titles
+  by construction (verified at rest / hover-centre / hover-corner).
+- **Peek-below stack.** Back cards are CENTRED (x=0), each ~8% / 15% smaller, and
+  offset DOWN to peek below the front (per-depth `STOPS`), replacing the
+  up-right offset.
+- **Transition.** Front card rises and **fades out**; the next **fades in from
+  below** (per-depth opacity envelope in `depthState`). Reversible.
+- New dials: `CARD_FILL`, `HOVER_SCALE`, `HOVER_TILT_MAX`, `HOVER_RATE`, the
+  `STOPS` per-depth placement, and `RISE` (leaving-card travel).
+
+(The earlier "Unchanged → cursor tilt + idle drift" and the title-clip fix are
+superseded by this round.)
