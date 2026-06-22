@@ -63,3 +63,8 @@ export const FIGURE_FADE = 0;
 
 // Total scrollable track height (vh). 800 gives the video phase ~154vh.
 export const SCROLL_TRACK_VH = 800;
+
+// Additional scrollable track (vh) appended AFTER the animation track for the
+// gallery section. The animation timeline (sp) is unchanged — it stays clamped
+// at 1 through the whole gallery; only `gp` (gallery progress) advances here.
+export const GALLERY_TRACK_VH = 600;
