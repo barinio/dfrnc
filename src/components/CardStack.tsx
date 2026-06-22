@@ -11,28 +11,61 @@ import {
   CARDS_WIDTH_VW_PORTRAIT,
   GUTTER,
   TOP_TITLE_VH,
-  BOTTOM_TITLE_VH,
 } from "../gallery";
-import { approach, tiltTarget, idleTilt, TILT_RATE } from "../cursorTilt";
+import { approach } from "../cursorTilt";
 
-const PLANE_Z = 0; // center of the frustum → pronounced perspective for the tilt
+const PLANE_Z = 0; // centre of the frustum → pronounced perspective for the tilt
 
-// Per-slot resting offsets (world-unit fractions of card size). Slot 0 = front;
-// 1 and 2 peek up and to the right (matches the PDF stack). Repeats every 3.
-const SLOT_OFFSETS = [
-  { x: 0.0, y: 0.0, s: 1.0, z: 0.0 },
-  { x: 0.035, y: 0.045, s: 0.985, z: -0.15 },
-  { x: 0.07, y: 0.09, s: 0.97, z: -0.3 },
+// The card is rendered smaller than its 64vh layout band and centred in it, so
+// the hover scale-up (→1.3) and tilt stay clear of the top/bottom titles without
+// clipping. Tuning dial.
+const CARD_FILL = 0.72;
+
+// Hover (radiance.family): parallax + scale apply ONLY while the cursor is over
+// the card. No always-on tilt or idle drift.
+const HOVER_SCALE = 1.3; // card grows 1 → 1.3 on hover
+const HOVER_TILT_MAX = 0.13; // ~7.5° max parallax tilt on hover (radians)
+const HOVER_RATE = 9; // ease rate for the hover scale/tilt
+const HOVER_PAD = 1.06; // hover hit-region padding (reduces edge flicker)
+
+// Discrete-step swiper: the deck holds still within each slide's scroll band and
+// the target is the ROUNDED conveyor position, so a swipe past the midpoint flips
+// one slide; a big scroll cascades. See 2026-06-23-gallery-card-swiper-design.md.
+const STEP_RATE = 18;
+const MAX_STEP_PER_SEC = 6;
+
+// Per-depth resting placement of a card (y as a fraction of card height, z in
+// world units). Cards are CENTRED (x = 0) and each one behind is ~7-8% smaller
+// and offset DOWN so it peeks below the one in front (the radiance stack). d = 3
+// is the entering card that fades in from below.
+const STOPS = [
+  { y: 0.0, scale: 1.0, z: 0.0 }, // d0 — front
+  { y: -0.05, scale: 0.92, z: -0.15 }, // d1 — back, peeks below
+  { y: -0.1, scale: 0.85, z: -0.3 }, // d2 — back, peeks below more
+  { y: -0.15, scale: 0.8, z: -0.45 }, // d3 — entering (fades in from below)
 ];
+// How far a leaving card rises (fraction of card height) per unit of depth above
+// the front; it fades out as it rises, so it never reaches the top title.
+const RISE = 0.6;
 
-// Discrete-step swiper (radiance.family portfolio-slider feel). The deck holds
-// still within each slide's scroll band; the target slide is the ROUNDED conveyor
-// position, so crossing a band midpoint flips to the next slide with a quick eased
-// fly-up. A big scroll jumps the target several slides and the deck glides through
-// the intermediates at a capped even speed, easing to a stop on the target.
-// Reversible. See 2026-06-23-gallery-card-swiper-design.md. Both are tuning dials.
-const STEP_RATE = 18; // single-step ease rate (higher = snappier; ~0.2s per slide)
-const MAX_STEP_PER_SEC = 6; // cascade glide-speed cap (slides/sec) on big scrolls
+// Continuous depth d (= slot − local) → {y, scale, z, opacity}. d < 0 is the
+// leaving front card (rises + fades out); d > 2 is the entering card (fades in).
+function depthState(d: number): { y: number; scale: number; z: number; opacity: number } {
+  if (d < 0) {
+    return { y: -d * RISE, scale: 1, z: 0, opacity: THREE.MathUtils.clamp(1 + d, 0, 1) };
+  }
+  const i = Math.min(Math.floor(d), STOPS.length - 2);
+  const a = STOPS[i];
+  const b = STOPS[i + 1];
+  const f = THREE.MathUtils.clamp(d - i, 0, 1);
+  const opacity = d <= 2 ? 1 : THREE.MathUtils.clamp(3 - d, 0, 1);
+  return {
+    y: THREE.MathUtils.lerp(a.y, b.y, f),
+    scale: THREE.MathUtils.lerp(a.scale, b.scale, f),
+    z: THREE.MathUtils.lerp(a.z, b.z, f),
+    opacity,
+  };
+}
 
 interface Props {
   galleryRef: MutableRefObject<number>;
@@ -40,79 +73,62 @@ interface Props {
 }
 
 export default function CardStack({ galleryRef, reducedMotion = false }: Props) {
-  const { viewport, pointer, gl } = useThree();
+  const { viewport } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   const slotRef0 = useRef<THREE.Group>(null);
   const slotRef1 = useRef<THREE.Group>(null);
   const slotRef2 = useRef<THREE.Group>(null);
-  const slotRefs = [slotRef0, slotRef1, slotRef2];
+  const slotRef3 = useRef<THREE.Group>(null);
+  const slotRefs = [slotRef0, slotRef1, slotRef2, slotRef3];
   const rotX = useRef(0);
   const rotY = useRef(0);
-  const elapsed = useRef(0);
-  // The live displayed slide position (float) that steps toward the rounded
-  // target slide; drives lead/local. null until the first frame initializes it.
+  const hover = useRef(0); // eased 0..1 hover amount
   const displayedRef = useRef<number | null>(null);
 
-  // Card world size + content-band geometry. ≥1:1: 64vh tall, 3:2 (96vh wide).
-  // Portrait: 64vh tall, width tracks 86vw. Viewport is world units (h ≈ 9.24).
-  const { cardW, cardH, bandOffsetY, topClipY, botClipY } = useMemo(() => {
+  // Pointer in normalized device coords, tracked on window so it works despite
+  // the canvas layer being pointer-events:none. Used for the hover hit-test +
+  // parallax direction (no R3F raycasting needed).
+  const ptr = useRef({ x: 0, y: 0 });
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      ptr.current.x = (e.clientX / window.innerWidth) * 2 - 1;
+      ptr.current.y = -((e.clientY / window.innerHeight) * 2 - 1);
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => window.removeEventListener("pointermove", onMove);
+  }, []);
+
+  // Card world size (smaller via CARD_FILL) + content-band centring + hover
+  // hit-region in NDC. Viewport is world units (height ≈ 9.24 at z = 0).
+  const { cardW, cardH, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY } = useMemo(() => {
     const vw = viewport.width;
     const vh = viewport.height;
     const aspect = vw / vh;
-    const h = CARDS_VH * vh;
+    const h = CARDS_VH * CARD_FILL * vh;
     let w = h * CARD_ASPECT; // landscape/square: keep 3:2
-    if (aspect < 1) w = CARDS_WIDTH_VW_PORTRAIT * vw; // portrait: stretch to 86vw
-    // 16:9 cap: beyond it the section letterboxes — cards keep their vh-based
-    // size (they never grow past 64vh / 96vh), so wide viewports leave empty
-    // space left/right automatically.
-    //
-    // Centre the stack in its CONTENT BAND, not the screen: the band is
-    // asymmetric (8vh title above, 16vh below), so its centre sits above screen
-    // centre. world y is +up; screen-fraction-from-top F → y = (0.5 − F)·vh.
-    const topMargin = 2 * GUTTER + TOP_TITLE_VH; // 0.14
-    const bandCenterFromTop = topMargin + CARDS_VH / 2; // 0.46
-    const bandOffsetY = (0.5 - bandCenterFromTop) * vh; // +0.04·vh (up)
-    // Clip the cards to the title-TEXT inner edges (the 3% gutter is retained so
-    // the peek/tilt can dip into the gutter but never reach the text).
-    const topClipY = (0.5 - (topMargin - GUTTER)) * vh; // top title bottom (11vh)
-    const botClipY = (0.5 - (1 - (2 * GUTTER + BOTTOM_TITLE_VH) + GUTTER)) * vh; // bottom title top (81vh)
-    return { cardW: w, cardH: h, bandOffsetY, topClipY, botClipY };
+    if (aspect < 1) w = CARDS_WIDTH_VW_PORTRAIT * CARD_FILL * vw; // portrait → 86vw band, scaled
+    // Centre in the (asymmetric) content band, not the screen.
+    const bandCenterFromTop = 2 * GUTTER + TOP_TITLE_VH + CARDS_VH / 2; // 0.46
+    const bandOffsetY = (0.5 - bandCenterFromTop) * vh;
+    // Hover region (NDC), padded a touch to avoid edge flicker.
+    const hoverHalfX = (w / vw) * HOVER_PAD;
+    const hoverHalfY = (h / vh) * HOVER_PAD;
+    const hoverCenterY = (2 * bandOffsetY) / vh;
+    return { cardW: w, cardH: h, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY };
   }, [viewport.width, viewport.height]);
-
-  // World-space clipping planes confining the cards to the central band. Top
-  // keeps y ≤ topClipY; bottom keeps y ≥ botClipY. Stable array (constants
-  // mutated on resize) so the card materials never recompile. Local clipping is
-  // enabled on the renderer; only materials carrying these planes are clipped.
-  const clipPlanes = useMemo(
-    () => [
-      new THREE.Plane(new THREE.Vector3(0, -1, 0), 0),
-      new THREE.Plane(new THREE.Vector3(0, 1, 0), 0),
-    ],
-    [],
-  );
-  useEffect(() => {
-    gl.localClippingEnabled = true;
-    clipPlanes[0].constant = topClipY; // keeps y ≤ topClipY
-    clipPlanes[1].constant = -botClipY; // keeps y ≥ botClipY
-  }, [gl, clipPlanes, topClipY, botClipY]);
 
   useFrame((_s, delta) => {
     const group = groupRef.current;
     if (!group) return;
-    elapsed.current += delta;
 
     const gp = galleryRef.current;
     const { span } = cardConveyorFor(gp);
     const n = GALLERY_IMAGES.length;
-    // Discrete target: the ROUNDED conveyor position, so the deck holds still
-    // within a band and flips at the midpoint. Range 0..n (n = all gone → CTA).
-    const target = Math.round(span * n);
+    const target = Math.round(span * n); // discrete slide index (0..n)
 
-    // Step the displayed position toward the integer target with a speed-capped
-    // exponential ease: a single-slide step eases quickly (~STEP_RATE); a multi-
-    // slide jump glides through the intermediates at MAX_STEP_PER_SEC (each
-    // briefly visible, one-after-another) and eases to a stop on the target.
-    // Reduced motion: jump straight to the target (no animation).
+    // Discrete-step displayed position: speed-capped exponential ease toward the
+    // rounded target (single eased step; big scroll cascades). Reduced motion
+    // jumps straight to the target.
     if (displayedRef.current === null) displayedRef.current = target;
     if (reducedMotion) {
       displayedRef.current = target;
@@ -121,9 +137,8 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
       const eased = approach(cur, target, delta, STEP_RATE);
       const maxStep = MAX_STEP_PER_SEC * delta;
       let next = eased;
-      if (Math.abs(eased - cur) > maxStep)
-        next = cur + Math.sign(target - cur) * maxStep; // cap cascade speed
-      if (Math.abs(target - next) < 1e-3) next = target; // settle exactly
+      if (Math.abs(eased - cur) > maxStep) next = cur + Math.sign(target - cur) * maxStep;
+      if (Math.abs(target - next) < 1e-3) next = target;
       displayedRef.current = next;
     }
 
@@ -131,101 +146,74 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     const lead = Math.floor(displayed);
     const local = displayed - lead;
 
-    for (let slot = 0; slot < 3; slot++) {
+    // Place the four slot cards by continuous depth (centred; back cards smaller
+    // and peeking below; front rises + fades out; deepest fades in from below).
+    for (let slot = 0; slot < 4; slot++) {
       const ref = slotRefs[slot].current;
       if (!ref) continue;
       const idx = lead + slot;
-      ref.visible = idx < n;
-      if (idx >= n) continue;
-
-      // Continuous depth: slot 0 (front) eases to −local as it flies out; the
-      // cards behind ease one slot forward as `local` advances 0→1.
-      const d = slot - local;
-      if (d < 0) {
-        // Front card flying up and out of frame (no fade — flies out like the
-        // glass figures; clears the top by ≈1.5× the card height).
-        const a = SLOT_OFFSETS[0];
-        ref.position.set(a.x * cardW, a.y * cardH + -d * cardH * 1.5, a.z);
-        ref.scale.setScalar(a.s);
-      } else {
-        // lo === hi when d >= 2: the back card holds at SLOT_OFFSETS[2] (lerp is identity).
-        const lo = Math.min(2, Math.floor(d));
-        const hi = Math.min(2, lo + 1);
-        const f = d - Math.floor(d);
-        const a = SLOT_OFFSETS[lo];
-        const b = SLOT_OFFSETS[hi];
-        ref.position.set(
-          THREE.MathUtils.lerp(a.x, b.x, f) * cardW,
-          THREE.MathUtils.lerp(a.y, b.y, f) * cardH,
-          THREE.MathUtils.lerp(a.z, b.z, f),
-        );
-        ref.scale.setScalar(THREE.MathUtils.lerp(a.s, b.s, f));
-      }
+      const st = depthState(slot - local);
+      const visible = idx < n && st.opacity > 0.001;
+      ref.visible = visible;
+      if (!visible) continue;
+      ref.position.set(0, st.y * cardH, st.z);
+      ref.scale.setScalar(st.scale);
+      const mesh = ref.children[0] as THREE.Mesh | undefined;
+      const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
+      if (mat) mat.opacity = st.opacity;
     }
 
-    // Entrance: the whole stack rises from below to its band centre as the
-    // gallery opens (bandOffsetY centres it in the content band, not the screen).
+    // Entrance: the whole group rises from below to its band centre as the
+    // gallery opens.
     const entrance = THREE.MathUtils.clamp(span / 0.04, 0, 1);
     group.position.y = bandOffsetY - (1 - entrance) * cardH * 1.6;
 
-    // Cursor tilt + idle on the whole stack (group rotation).
-    const tt = tiltTarget(pointer.x, pointer.y, reducedMotion);
-    const it = idleTilt(elapsed.current, reducedMotion);
-    rotX.current = approach(rotX.current, tt.x + it.x, delta, TILT_RATE);
-    rotY.current = approach(rotY.current, tt.y + it.y, delta, TILT_RATE);
+    // Hover only: parallax tilt + scale-up while the cursor is over the card.
+    const px = ptr.current.x;
+    const py = ptr.current.y;
+    const over =
+      !reducedMotion &&
+      Math.abs(px) < hoverHalfX &&
+      Math.abs(py - hoverCenterY) < hoverHalfY;
+    hover.current = approach(hover.current, over ? 1 : 0, delta, HOVER_RATE);
+    group.scale.setScalar(1 + (HOVER_SCALE - 1) * hover.current);
+    const relY = py - hoverCenterY;
+    rotX.current = approach(rotX.current, -relY * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
+    rotY.current = approach(rotY.current, px * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
     group.rotation.x = rotX.current;
     group.rotation.y = rotY.current;
   });
 
   return (
     <group ref={groupRef} position={[0, 0, PLANE_Z]}>
-      {[0, 1, 2].map((slot) => (
+      {[0, 1, 2, 3].map((slot) => (
         <group key={slot} ref={slotRefs[slot]}>
-          {/* index is assigned per-frame via the conveyor; the card itself only
-              needs a stable slot. Use slot as the placeholder index so each slot
-              shows a consistent gray; real images key off the live conveyor idx
-              below. */}
-          <SlotCard
-            slot={slot}
-            galleryRef={galleryRef}
-            cardW={cardW}
-            cardH={cardH}
-            clipPlanes={clipPlanes}
-          />
+          <SlotCard slot={slot} galleryRef={galleryRef} cardW={cardW} cardH={cardH} />
         </group>
       ))}
     </group>
   );
 }
 
-// Resolves the live image index for a slot each render-ish; the conveyor lead is
-// read from galleryRef. Kept as a tiny child so GalleryCard's texture swaps only
-// when the resolved index changes (not every frame).
+// Resolves the live image index for a slot at render time (placeholders are
+// identical, so the stale read is invisible; for real images, lift the conveyor
+// lead to state — see the plan's "real images" note). Opacity/position/scale are
+// driven imperatively by the parent each frame.
 function SlotCard({
   slot,
   galleryRef,
   cardW,
   cardH,
-  clipPlanes,
 }: {
   slot: number;
   galleryRef: MutableRefObject<number>;
   cardW: number;
   cardH: number;
-  clipPlanes: THREE.Plane[];
 }) {
   const { lead } = cardConveyorFor(galleryRef.current);
   const idx = lead + slot;
   const n = GALLERY_IMAGES.length;
   if (idx >= n) return null;
   const realIdx = idx % n;
-  return (
-    <GalleryCard
-      src={GALLERY_IMAGES[realIdx]}
-      index={realIdx}
-      width={cardW}
-      height={cardH}
-      clippingPlanes={clipPlanes}
-    />
-  );
+  return <GalleryCard src={GALLERY_IMAGES[realIdx]} index={realIdx} width={cardW} height={cardH} />;
 }
