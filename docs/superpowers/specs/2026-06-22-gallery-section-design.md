@@ -56,10 +56,12 @@ and clamps to 1. The gallery is therefore purely additive.
 
 ### `gp` partition
 
-- `[0, CTA_START]`: over the **held video last frame**, titles scrub
-  `titles.json` 0→100 **and** the card conveyor cycles, locked to finish
-  together (cadence tuned visually). At `gp ≈ 0` the first title frame grows in
-  from the top/bottom edges and the first cards enter from below.
+- `[0, FADE]` (FADE ≈ 0.06): the held video last frame fades to flat black (the
+  `GalleryBackdrop`), so the gallery sits on the PDF's black background.
+- `[FADE, CTA_START]`: titles scrub `titles.json` 0→100 **and** the card
+  conveyor cycles, locked to finish together (cadence tuned visually). At the
+  start the first title frame grows in from the top/bottom edges and the first
+  cards enter from below.
 - `[CTA_START, 1]`: titles + cards gone (last card has flown up); the CTA frame
   fades in.
 
@@ -107,10 +109,15 @@ Lottie — it is a separate element (below).
 ## Components (new, focused files)
 
 - **`src/gallery.ts`** — pure data + functions: the placeholder image array,
-  the `gp` partition (`galleryTitleTimeFor`, `cardConveyorFor`,
-  `galleryCtaFor`), and layout constants (gutter 3%, top 8vh,
+  the `gp` partition (`galleryBackdropFor`, `galleryTitleTimeFor`,
+  `cardConveyorFor`, `galleryCtaFor`), and layout constants (gutter 3%, top 8vh,
   cards 64vh, bottom 16vh, radius 2.5vh, max aspect 16:9). Mirrors the
   `arc.ts` + `playback.ts` pattern; no React, no Three.
+- **`GalleryBackdrop`** — full-bleed black plane in front of the held video
+  (z just greater than −3.5), opacity driven by `galleryBackdropFor(gp)` over
+  `[0, FADE]`. The video scrubs to its last frame, then this fades it to flat
+  black for the gallery; `VideoPlane` needs no change (it is simply covered).
+  Post-process grain is already 0 (`sp` pinned at 1 → `videoIn = 1`).
 - **`GalleryTitles`** — renders `titles.json` to a `CanvasTexture` on a plane
   sized to fill the frustum at its depth minus the 3% gutter,
   `preserveAspectRatio:"none"`, scrubbed by `galleryTitleTimeFor(gp)` with the
@@ -144,14 +151,14 @@ cursor moves.
 
 ## Background / handoff
 
-The video reaches and holds its last frame at `sp = 1` and **stays visible** as
-the gallery backdrop — per the brief ("…the last frame of the video, and then we
-continue…"), explicitly *not* a black screen. The gallery titles, cards and CTA
-render in front of it (z > −3.5). `VideoPlane` is unchanged: it holds the last
-frame with no extra seeking, and post-process grain is already at 0 because `sp`
-stays pinned at 1 (`videoIn = 1`). If card legibility over the video frame
-demands it, a subtle darkening scrim is an option tuned visually — but the frame
-stays visible (no fade to black).
+The video reaches and holds its last frame at `sp = 1` (visible). As `gp` ramps
+from 0, the `GalleryBackdrop` black plane fades in over the top of it (over
+`[0, FADE]`), so the gallery sits on flat black, matching the PDF mockups. This
+honors the brief's "…the last frame of the video, and then we continue…": the
+film finishes on its last frame, then the black gallery begins. The video
+element is simply occluded (still holding its last frame, no extra seeking).
+Card/title contrast on black is the design intent (gray placeholders + white
+type read cleanly), which over the bright FPV footage they would not.
 
 ## Reduced motion
 
