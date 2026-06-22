@@ -30,7 +30,10 @@ interface Props {
 export default function CardStack({ galleryRef, reducedMotion = false }: Props) {
   const { viewport, pointer } = useThree();
   const groupRef = useRef<THREE.Group>(null);
-  const slotRefs = [useRef<THREE.Group>(null), useRef<THREE.Group>(null), useRef<THREE.Group>(null)];
+  const slotRef0 = useRef<THREE.Group>(null);
+  const slotRef1 = useRef<THREE.Group>(null);
+  const slotRef2 = useRef<THREE.Group>(null);
+  const slotRefs = [slotRef0, slotRef1, slotRef2];
   const rotX = useRef(0);
   const rotY = useRef(0);
   const elapsed = useRef(0);
@@ -75,6 +78,7 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
         ref.position.set(a.x * cardW, a.y * cardH + -d * cardH * 1.5, a.z);
         ref.scale.setScalar(a.s);
       } else {
+        // lo === hi when d >= 2: the back card holds at SLOT_OFFSETS[2] (lerp is identity).
         const lo = Math.min(2, Math.floor(d));
         const hi = Math.min(2, lo + 1);
         const f = d - Math.floor(d);
@@ -134,6 +138,7 @@ function SlotCard({
   const { lead } = cardConveyorFor(galleryRef.current);
   const idx = lead + slot;
   const n = GALLERY_IMAGES.length;
+  if (idx >= n) return null;
   const realIdx = idx % n;
   return <GalleryCard src={GALLERY_IMAGES[realIdx]} index={realIdx} width={cardW} height={cardH} />;
 }
