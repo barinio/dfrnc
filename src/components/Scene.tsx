@@ -24,10 +24,10 @@ import LottiePlane from "./LottiePlane";
 import GradientBackground from "./GradientBackground";
 import VideoPlane from "./VideoPlane";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
-import { useScrollProgressRef } from "../hooks/useScrollProgress";
+import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
 import { figureVisibleFor, videoStateFor } from "../playback";
 import type { Phase } from "../playback";
-import { SCROLL_TRACK_VH } from "../constants";
+import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../constants";
 import { FIGURES } from "../arc";
 
 class FigureBoundary extends Component<
@@ -90,6 +90,9 @@ export default function Scene() {
   // Scroll progress is a ref (no per-frame React renders); LottiePlane/ArcModel
   // read it inside useFrame. Only discrete transitions below use state.
   const scrollRef = useScrollProgressRef();
+  // galleryRef is wired here; consumed by gallery components in Task 3+.
+  const galleryRef = useGalleryProgressRef();
+  void galleryRef;
   const noiseRef = useRef<NoiseEffect | null>(null);
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
@@ -362,7 +365,7 @@ export default function Scene() {
           Lottie phases. The Canvas itself is pinned via position: fixed above. */}
       <div
         style={{
-          height: `${SCROLL_TRACK_VH}vh`,
+          height: `${SCROLL_TRACK_VH + GALLERY_TRACK_VH}vh`,
           width: "100%",
           pointerEvents: "none",
         }}
