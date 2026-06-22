@@ -21,7 +21,7 @@ export function roundedRectShape(w: number, h: number, r: number): THREE.Shape {
   return s;
 }
 
-// Procedural gray placeholder (matches the PDF mockups). Cached per index.
+// Module-scope cache: placeholder textures are permanent for the session (fixed, small index set) — never disposed.
 const placeholderCache = new Map<number, THREE.CanvasTexture>();
 export function placeholderTexture(index: number): THREE.CanvasTexture {
   const cached = placeholderCache.get(index);
@@ -52,9 +52,11 @@ function fitUVs(geom: THREE.ShapeGeometry, w: number, h: number, texAspect: numb
   let sv = 1;
   if (texAspect > cardAspect) su = cardAspect / texAspect; // wider texture → crop sides
   else sv = texAspect / cardAspect; // taller texture → crop top/bottom
+  const bw = bb.max.x - bb.min.x;
+  const bh = bb.max.y - bb.min.y;
   for (let i = 0; i < uv.count; i++) {
-    const x = (geom.attributes.position.getX(i) - bb.min.x) / w; // 0..1
-    const y = (geom.attributes.position.getY(i) - bb.min.y) / h; // 0..1
+    const x = (geom.attributes.position.getX(i) - bb.min.x) / bw; // 0..1
+    const y = (geom.attributes.position.getY(i) - bb.min.y) / bh; // 0..1
     uv.setXY(i, 0.5 + (x - 0.5) * su, 0.5 + (y - 0.5) * sv);
   }
   uv.needsUpdate = true;
@@ -106,6 +108,10 @@ export default function GalleryCard({ src, index, width, height }: Props) {
     fitUVs(geom, width, height, texAspect);
     return geom;
   }, [width, height, texture]);
+
+  useEffect(() => {
+    return () => { geometry.dispose(); };
+  }, [geometry]);
 
   return (
     <mesh geometry={geometry}>
