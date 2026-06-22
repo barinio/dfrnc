@@ -26,6 +26,7 @@ import VideoPlane from "./VideoPlane";
 import GalleryBackdrop from "./GalleryBackdrop";
 import GalleryTitles from "./GalleryTitles";
 import CardStack from "./CardStack";
+import GalleryCTA from "./GalleryCTA";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
 import { figureVisibleFor, videoStateFor } from "../playback";
@@ -366,6 +367,7 @@ export default function Scene() {
           </EffectComposer>
         </Canvas>
       </div>
+      <GalleryCTA galleryRef={galleryRef} reducedMotion={reducedMotion} />
       {/* Scroll-track: provides the scrollable height that drives the model and
           Lottie phases. The Canvas itself is pinned via position: fixed above. */}
       <div
