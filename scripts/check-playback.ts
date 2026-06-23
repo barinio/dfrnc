@@ -24,11 +24,17 @@ import {
   galleryProgressFrom,
   galleryBackdropFor,
   galleryTitleFracFor,
+  galleryTitleOpacityFor,
   cardConveyorFor,
+  cardFlyProgressFor,
   galleryCtaFor,
   GALLERY_IMAGES,
   BACKDROP_FADE_END,
   TITLES_END,
+  CARDS_FLY_START,
+  CARDS_FLY_END,
+  TITLES_FADE_START,
+  TITLES_FADE_END,
   CTA_START,
 } from "../src/gallery";
 import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../src/constants";
@@ -272,6 +278,26 @@ for (const f of FIGURES) {
   // CTA: 0 before CTA_START, fades to 1 by the end.
   eq(galleryCtaFor(CTA_START), 0, "CTA hidden before CTA_START");
   eq(galleryCtaFor(1), 1, "CTA fully in at gp 1");
+
+  // Round 3 — retimed fly window: 0 through the first-card linger, 1 by fly end.
+  eq(cardFlyProgressFor(CARDS_FLY_START), 0, "fly progress 0 at fly start");
+  eq(cardFlyProgressFor(0.15), 0, "fly progress 0 during the first-card linger");
+  eq(cardFlyProgressFor(CARDS_FLY_END), 1, "fly progress 1 by fly end");
+  ok(cardFlyProgressFor(0.5) > cardFlyProgressFor(0.35), "fly progress monotonic");
+  // First card has flown by the time text 1 is readable (title frac ≈ 0.5).
+  {
+    const gpText1 = BACKDROP_FADE_END + 0.5 * (TITLES_END - BACKDROP_FADE_END);
+    ok(Math.round(cardFlyProgressFor(gpText1) * N) >= 1, "first card gone once text 1 readable");
+  }
+  // Round 3 — title fade-out: opaque while read, fully faded by the CTA.
+  eq(galleryTitleOpacityFor(TITLES_FADE_START), 1, "titles opaque until fade start");
+  eq(galleryTitleOpacityFor(TITLES_FADE_END), 0, "titles fully faded by fade end");
+  eq(galleryTitleOpacityFor(CTA_START), 0, "titles gone by CTA start");
+  ok(galleryTitleOpacityFor(0.79) < galleryTitleOpacityFor(0.77), "title opacity fades monotonically");
+  // Ordering of the round-3 windows.
+  ok(BACKDROP_FADE_END < CARDS_FLY_START && CARDS_FLY_START < TITLES_END, "fly start sits inside the card phase");
+  ok(TITLES_END <= TITLES_FADE_START && TITLES_FADE_START < TITLES_FADE_END, "title fade comes after the scrub");
+  ok(TITLES_FADE_END <= CTA_START && CARDS_FLY_END <= CTA_START, "title fade + last card finish by the CTA");
 
   console.log("✓ gallery timeline");
 }

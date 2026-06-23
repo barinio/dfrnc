@@ -42,6 +42,16 @@ export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
 export const CTA_FADE = 0.1;
 
+// ── Round 3 retiming ─────────────────────────────────────────────────────────
+// The card conveyor TRAILS the title scrub so a card leaves at the END of each
+// text display. The first card lingers through the title grow-in; the last card
+// flies up together with the title fade-out, finishing by CTA_START. Tuning
+// dials — feel is judged in-browser.
+export const CARDS_FLY_START = 0.22; // first card holds until here (title still growing in)
+export const CARDS_FLY_END = CTA_START; // last card gone by the CTA
+export const TITLES_FADE_START = 0.76; // last text holds [TITLES_END, here], then fades
+export const TITLES_FADE_END = CTA_START; // titles fully gone as the CTA takes over
+
 // scrollY → gp. The animation track owns scroll up to its end (sp = 1 there);
 // the gallery owns the GALLERY_TRACK_VH appended beyond it. innerHeight makes
 // the vh-based track heights concrete. Mirrors useScrollProgress' anim mapping.
@@ -80,6 +90,20 @@ export function cardConveyorFor(gp: number): ConveyorState {
   const span = clamp01((gp - BACKDROP_FADE_END) / (CTA_START - BACKDROP_FADE_END));
   const total = span * GALLERY_IMAGES.length;
   return { lead: Math.floor(total), local: total - Math.floor(total), span };
+}
+
+// Retimed fly progress for the discrete-step swiper (round 3). 0 through the
+// first-card linger window, 1 by CARDS_FLY_END — so the swiper's rounded target
+// (= round(this · N)) advances later than the continuous title scrub.
+export function cardFlyProgressFor(gp: number): number {
+  return clamp01((gp - CARDS_FLY_START) / (CARDS_FLY_END - CARDS_FLY_START));
+}
+
+// Title-plane opacity: 1 while the final text is read, then fades to 0 over
+// [TITLES_FADE_START, TITLES_FADE_END] — coincident with the last card flying
+// up. The CTA then owns the frame (the titles must not show behind it).
+export function galleryTitleOpacityFor(gp: number): number {
+  return 1 - smoothstep(clamp01((gp - TITLES_FADE_START) / (TITLES_FADE_END - TITLES_FADE_START)));
 }
 
 // CTA overlay opacity: 0 until CTA_START, smooth to 1 over CTA_FADE.
