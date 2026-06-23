@@ -98,11 +98,12 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
       frac = smoothRef.current;
     }
     const frame = frac * Math.max(anim.totalFrames - 1, 0);
+    // Update opacity every frame (depends only on galleryRef, not on frame change)
+    if (matRef.current) matRef.current.opacity = galleryTitleOpacityFor(galleryRef.current);
     if (frame === lastFrameRef.current) return;
     lastFrameRef.current = frame;
     anim.goToAndStop(frame, true);
     if (texRef.current) texRef.current.needsUpdate = true;
-    if (matRef.current) matRef.current.opacity = galleryTitleOpacityFor(galleryRef.current);
   });
 
   const { planeWidth, planeHeight } = useMemo(() => {
