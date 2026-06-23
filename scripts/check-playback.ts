@@ -20,6 +20,29 @@ import {
   VIDEO_FADE,
   FIGURE_FADE,
 } from "../src/constants";
+import {
+  galleryProgressFrom,
+  galleryBackdropFor,
+  galleryTitleFracFor,
+  cardConveyorFor,
+  cardFlyProgressFor,
+  galleryCtaFor,
+  GALLERY_IMAGES,
+  BACKDROP_FADE_END,
+  TITLES_END,
+  CARDS_FLY_START,
+  CARDS_FLY_END,
+  CTA_START,
+} from "../src/gallery";
+import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../src/constants";
+import {
+  approach,
+  tiltTarget,
+  idleTilt,
+  TILT_MAX,
+  IDLE_AMP_X,
+  IDLE_AMP_Y,
+} from "../src/cursorTilt";
 
 function eq(actual: number, expected: number, label: string, eps = 1e-9) {
   if (Math.abs(actual - expected) > eps)
@@ -214,6 +237,89 @@ ok(
 // figure — whose body extends above its center — never clips off the top edge
 for (const f of FIGURES) {
   ok(f.arc.peakHeight <= 0.5 + 1e-9, `${f.name} peak ≤ 0.5`);
+}
+
+// ── Gallery timeline ─────────────────────────────────────────────────────────
+{
+  const H = 1000; // arbitrary innerHeight for the pure mapping
+  const animY = ((SCROLL_TRACK_VH - 100) / 100) * H;
+  const galleryPx = (GALLERY_TRACK_VH / 100) * H;
+
+  // gp is 0 at/under the animation track end, 1 at the document bottom.
+  eq(galleryProgressFrom(animY, H), 0, "gp = 0 at anim track end");
+  eq(galleryProgressFrom(animY - 500, H), 0, "gp clamps to 0 above gallery");
+  eq(galleryProgressFrom(animY + galleryPx, H), 1, "gp = 1 at document bottom");
+  eq(galleryProgressFrom(animY + galleryPx / 2, H), 0.5, "gp = 0.5 at gallery midpoint");
+
+  // Backdrop: 0 at gp 0, 1 by BACKDROP_FADE_END, stays opaque after.
+  eq(galleryBackdropFor(0), 0, "backdrop 0 at gp 0");
+  eq(galleryBackdropFor(BACKDROP_FADE_END), 1, "backdrop fully in by fade end");
+  eq(galleryBackdropFor(1), 1, "backdrop stays opaque after fade");
+
+  // Title frac: 0 before titles start, reaches 1 at TITLES_END, holds at 1 after.
+  eq(galleryTitleFracFor(BACKDROP_FADE_END), 0, "title frac 0 at titles start");
+  eq(galleryTitleFracFor(TITLES_END), 1, "title frac 1 at TITLES_END");
+  eq(galleryTitleFracFor(0.95), 1, "title frac holds at 1 after TITLES_END");
+  ok(galleryTitleFracFor(0.4) > galleryTitleFracFor(0.2), "title frac is monotonic");
+
+  // Conveyor: span 0→1 over [BACKDROP_FADE_END, CTA_START]; lead reaches N (empty) at CTA_START.
+  const N = GALLERY_IMAGES.length;
+  eq(cardConveyorFor(BACKDROP_FADE_END).lead, 0, "conveyor starts at lead 0");
+  ok(cardConveyorFor(CTA_START).lead >= N, "conveyor empty (lead ≥ N) at CTA_START");
+  ok(cardConveyorFor(0.4).span > cardConveyorFor(0.2).span, "conveyor span is monotonic");
+  ok(
+    cardConveyorFor(0.4).local >= 0 && cardConveyorFor(0.4).local < 1,
+    "conveyor local in [0,1)",
+  );
+
+  // CTA: 0 before CTA_START, fades to 1 by the end.
+  eq(galleryCtaFor(CTA_START), 0, "CTA hidden before CTA_START");
+  eq(galleryCtaFor(1), 1, "CTA fully in at gp 1");
+
+  // Round 3 — retimed fly window: 0 through the first-card linger, 1 by fly end.
+  eq(cardFlyProgressFor(CARDS_FLY_START), 0, "fly progress 0 at fly start");
+  eq(cardFlyProgressFor(0.15), 0, "fly progress 0 during the first-card linger");
+  eq(cardFlyProgressFor(CARDS_FLY_END), 1, "fly progress 1 by fly end");
+  ok(cardFlyProgressFor(0.5) > cardFlyProgressFor(0.35), "fly progress monotonic");
+  // First card has flown by the time text 1 is readable (title frac ≈ 0.5).
+  {
+    const gpText1 = BACKDROP_FADE_END + 0.5 * (TITLES_END - BACKDROP_FADE_END);
+    ok(Math.round(cardFlyProgressFor(gpText1) * N) >= 1, "first card gone once text 1 readable");
+  }
+  // Round 3 — title fade is now driven by the last card's exit progress (a
+  // stateful, eased value in CardStack), so the title and card leave in exact
+  // lockstep. That coupling is verified visually, not here. Ordering invariants:
+  ok(BACKDROP_FADE_END < CARDS_FLY_START && CARDS_FLY_START < TITLES_END, "fly start sits inside the card phase");
+  ok(CARDS_FLY_END <= CTA_START, "last card finishes by the CTA");
+
+  console.log("✓ gallery timeline");
+}
+
+// ── Cursor tilt ──────────────────────────────────────────────────────────────
+{
+  // approach converges toward target and is a no-op at delta 0.
+  let v = 0;
+  for (let i = 0; i < 1000; i++) v = approach(v, 1, 1 / 60, 4);
+  ok(Math.abs(v - 1) < 1e-3, "approach converges to target");
+  eq(approach(0, 1, 0, 4), 0, "approach with delta 0 is a no-op");
+
+  // tiltTarget maps pointer to rotation, zero under reduced motion.
+  const t = tiltTarget(1, 1, false);
+  eq(t.y, TILT_MAX, "pointer.x → rotY = +TILT_MAX");
+  eq(t.x, -TILT_MAX, "pointer.y → rotX = −TILT_MAX");
+  const tr = tiltTarget(1, 1, true);
+  ok(tr.x === 0 && tr.y === 0, "reduced motion ⇒ no pointer tilt");
+
+  // idleTilt is bounded by its amplitudes and zero under reduced motion.
+  for (const e of [0, 1.3, 5.7, 12.4]) {
+    const it = idleTilt(e, false);
+    ok(Math.abs(it.x) <= IDLE_AMP_X + 1e-9, "idle x within amplitude");
+    ok(Math.abs(it.y) <= IDLE_AMP_Y + 1e-9, "idle y within amplitude");
+  }
+  const ir = idleTilt(5.7, true);
+  ok(ir.x === 0 && ir.y === 0, "reduced motion ⇒ no idle drift");
+
+  console.log("✓ cursor tilt");
 }
 
 console.log("check-playback: all assertions passed");

@@ -67,3 +67,31 @@ body.scroll-locked {
     display: block;
 }
 
+/* Gallery CTA — DOM overlay above the fixed canvas, shown only on the final
+   gallery frame (opacity driven imperatively from gallery progress). */
+.gallery-cta {
+    position: fixed;
+    inset: 0;
+    z-index: 2; /* above .canvas-layer (z-index 1), below the loader (3) */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #000000;
+    opacity: 0;
+    pointer-events: none;
+    perspective: 800px;
+}
+
+.gallery-cta__link {
+    width: 50vmin;
+    text-align: center;
+    color: #ffffff;
+    text-decoration: none;
+    font-family: "Arial Narrow", "Helvetica Neue Condensed", Arial, sans-serif;
+    font-weight: 700;
+    font-size: 4vmin;
+    line-height: 1.15;
+    transform-style: preserve-3d;
+    will-change: transform;
+}
+

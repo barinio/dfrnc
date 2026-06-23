@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { SCROLL_TRACK_VH } from "../constants";
+import { galleryProgressFrom } from "../gallery";
 
 // Use the animation scroll-track height as the denominator so that content
 // placed after the track (e.g. the text section) doesn't dilute progress.
@@ -42,6 +43,28 @@ export function useScrollProgressRef(): MutableRefObject<number> {
     return () => {
       window.removeEventListener("scroll", read);
       window.removeEventListener("resize", onResize);
+    };
+  }, []);
+
+  return progress;
+}
+
+// Latest GALLERY progress (0..1) as a ref — scroll BEYOND the animation track.
+// Separate from useScrollProgressRef so the animation timeline (sp) is wholly
+// unchanged; both read window.scrollY in their own passive listener (cheap).
+export function useGalleryProgressRef(): MutableRefObject<number> {
+  const progress = useRef<number>(0);
+
+  useEffect(() => {
+    const read = () => {
+      progress.current = galleryProgressFrom(window.scrollY, window.innerHeight);
+    };
+    window.addEventListener("scroll", read, { passive: true });
+    window.addEventListener("resize", read);
+    read();
+    return () => {
+      window.removeEventListener("scroll", read);
+      window.removeEventListener("resize", read);
     };
   }, []);
 

@@ -24,10 +24,17 @@ if (sps.some(Number.isNaN)) {
   console.error("Bad --sp value:", opt("sp", "0"));
   process.exit(1);
 }
+const gpsRaw = opt("gp", null);
+const gps = gpsRaw ? gpsRaw.split(",").map(Number) : [];
+if (gps.some(Number.isNaN)) {
+  console.error("Bad --gp value:", gpsRaw);
+  process.exit(1);
+}
 const out = opt("out", "/tmp/shots");
 const [w, h] = opt("viewport", "1280x800").split("x").map(Number);
 const track = Number(opt("track", "800")); // keep in sync with SCROLL_TRACK_VH
 const wait = Number(opt("wait", "9000"));
+const reducedMotion = argv.includes("--reduced-motion");
 
 mkdirSync(out, { recursive: true });
 
@@ -42,6 +49,11 @@ const browser = await puppeteer.launch({
 });
 const page = await browser.newPage();
 await page.setViewport({ width: w, height: h });
+if (reducedMotion) {
+  await page.emulateMediaFeatures([
+    { name: "prefers-reduced-motion", value: "reduce" },
+  ]);
+}
 page.on("console", (m) => {
   if (m.text().includes("[DBG]")) console.log("page:", m.text());
 });
@@ -51,6 +63,20 @@ await page.waitForFunction(
   () => !document.body.classList.contains("scroll-locked"),
   { timeout: 30000 },
 );
+// Scroll to a GALLERY progress position (gp ∈ [0,1]) — i.e. scroll BEYOND the
+// animation track. `track` is SCROLL_TRACK_VH (default 800).
+async function scrollToGp(page, gp, track) {
+  await page.evaluate(
+    ({ gp, track }) => {
+      const ih = window.innerHeight;
+      const animY = ((track - 100) / 100) * ih;
+      const maxY = document.documentElement.scrollHeight - ih;
+      window.scrollTo(0, animY + gp * (maxY - animY));
+    },
+    { gp, track },
+  );
+}
+
 try {
   for (const sp of sps) {
     await page.evaluate(
@@ -63,6 +89,13 @@ try {
     );
     await new Promise((r) => setTimeout(r, 600)); // scrub + settle
     const file = `${out}/sp${String(sp).replace(".", "_")}.png`;
+    await page.screenshot({ path: file });
+    console.log("wrote", file);
+  }
+  for (const gp of gps) {
+    await scrollToGp(page, gp, track);
+    await new Promise((r) => setTimeout(r, 600)); // scrub + settle
+    const file = `${out}/gp${String(gp).replace(".", "_")}.png`;
     await page.screenshot({ path: file });
     console.log("wrote", file);
   }
