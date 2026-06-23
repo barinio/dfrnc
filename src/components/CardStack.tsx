@@ -31,8 +31,8 @@ const HOVER_PAD = 1.06; // hover hit-region padding (reduces edge flicker)
 // Discrete-step swiper: the deck holds still within each slide's scroll band and
 // the target is the ROUNDED conveyor position, so a swipe past the midpoint flips
 // one slide; a big scroll cascades. See 2026-06-23-gallery-card-swiper-design.md.
-const STEP_RATE = 18;
-const MAX_STEP_PER_SEC = 6;
+const STEP_RATE = 9;
+const MAX_STEP_PER_SEC = 3;
 
 // Per-depth resting placement of a card (y as a fraction of card height, z in
 // world units). Cards are CENTRED (x = 0) and each one behind is ~7-8% smaller
