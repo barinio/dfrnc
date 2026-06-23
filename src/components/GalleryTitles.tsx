@@ -5,7 +5,7 @@ import * as THREE from "three";
 import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import titlesData from "../assets/titles.json";
-import { galleryTitleFracFor, GUTTER, MAX_ASPECT } from "../gallery";
+import { galleryTitleFracFor, galleryTitleOpacityFor, GUTTER, MAX_ASPECT } from "../gallery";
 
 // titles.json scrubbed by gallery progress. The 1000×1000 comp encodes the 3
 // title frames at the right top(≈8%)/bottom(≈16%) positions, so a full-frame
@@ -26,6 +26,7 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
   const texRef = useRef<THREE.CanvasTexture | null>(null);
   const lastFrameRef = useRef<number>(-1);
   const smoothRef = useRef<number>(-1);
+  const matRef = useRef<THREE.MeshBasicMaterial | null>(null);
 
   useEffect(() => {
     const wrapper = document.createElement("div");
@@ -101,6 +102,7 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
     lastFrameRef.current = frame;
     anim.goToAndStop(frame, true);
     if (texRef.current) texRef.current.needsUpdate = true;
+    if (matRef.current) matRef.current.opacity = galleryTitleOpacityFor(galleryRef.current);
   });
 
   const { planeWidth, planeHeight } = useMemo(() => {
@@ -122,7 +124,7 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
   return (
     <mesh position={[0, 0, PLANE_Z]}>
       <planeGeometry args={[planeWidth, planeHeight]} />
-      <meshBasicMaterial map={texture} toneMapped={false} alphaTest={0.1} />
+      <meshBasicMaterial ref={matRef} map={texture} toneMapped={false} transparent alphaTest={0.1} />
     </mesh>
   );
 }
