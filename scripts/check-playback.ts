@@ -293,7 +293,10 @@ for (const f of FIGURES) {
   eq(galleryTitleOpacityFor(TITLES_FADE_START), 1, "titles opaque until fade start");
   eq(galleryTitleOpacityFor(TITLES_FADE_END), 0, "titles fully faded by fade end");
   eq(galleryTitleOpacityFor(CTA_START), 0, "titles gone by CTA start");
-  ok(galleryTitleOpacityFor(0.79) < galleryTitleOpacityFor(0.77), "title opacity fades monotonically");
+  // Sample points derived from the fade window so this stays valid if retuned.
+  const fadeA = TITLES_FADE_START + 0.25 * (TITLES_FADE_END - TITLES_FADE_START);
+  const fadeB = TITLES_FADE_START + 0.75 * (TITLES_FADE_END - TITLES_FADE_START);
+  ok(galleryTitleOpacityFor(fadeB) < galleryTitleOpacityFor(fadeA), "title opacity fades monotonically");
   // Ordering of the round-3 windows.
   ok(BACKDROP_FADE_END < CARDS_FLY_START && CARDS_FLY_START < TITLES_END, "fly start sits inside the card phase");
   ok(TITLES_END <= TITLES_FADE_START && TITLES_FADE_START < TITLES_FADE_END, "title fade comes after the scrub");
