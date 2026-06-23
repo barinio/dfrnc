@@ -36,11 +36,14 @@ export const MAX_ASPECT = 16 / 9; // cap; letterbox beyond
 // [0, BACKDROP_FADE_END]   held video last frame fades to black
 // [BACKDROP_FADE_END, TITLES_END]  titles scrub 0→1 (the 3 title frames)
 // [TITLES_END, CTA_START]  titles hold on frame 3 while the last card flies out
-// [CTA_START, 1]           CTA fades in (titles + cards gone)
+// CTA_START marks the END of the card phase (last card gone by here). The CTA
+// reveal itself is no longer gp-gated — it tracks the last card's exit (see
+// galleryCtaFromExit) so it appears right as the card + title finish leaving.
 export const BACKDROP_FADE_END = 0.06;
 export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
-export const CTA_FADE = 0.1;
+// CTA reveals over the TAIL of the last card's exit: cardExit ∈ [CTA_REVEAL_FROM, 1].
+export const CTA_REVEAL_FROM = 0.8;
 
 // ── Round 3 retiming ─────────────────────────────────────────────────────────
 // The card conveyor TRAILS the title scrub so a card leaves at the END of each
@@ -98,7 +101,12 @@ export function cardFlyProgressFor(gp: number): number {
   return clamp01((gp - CARDS_FLY_START) / (CARDS_FLY_END - CARDS_FLY_START));
 }
 
-// CTA overlay opacity: 0 until CTA_START, smooth to 1 over CTA_FADE.
-export function galleryCtaFor(gp: number): number {
-  return smoothstep(clamp01((gp - CTA_START) / CTA_FADE));
+// CTA overlay opacity, driven by the last card's exit progress (cardExit, 0→1
+// as the last card flies up — see CardStack). The CTA fades in over the TAIL of
+// that exit ([CTA_REVEAL_FROM, 1]) so it appears immediately as the card + title
+// finish leaving, with no black gap. Coupled to the (eased) exit, not gp, so it
+// tracks the fly-out at any scroll speed. 0 the whole time until the LAST card
+// starts leaving (cardExit is 0 for every earlier card).
+export function galleryCtaFromExit(cardExit: number): number {
+  return smoothstep(clamp01((cardExit - CTA_REVEAL_FROM) / (1 - CTA_REVEAL_FROM)));
 }

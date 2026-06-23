@@ -1,14 +1,14 @@
 import { useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
-import { galleryCtaFor } from "../gallery";
+import { galleryCtaFromExit } from "../gallery";
 import { tiltTarget, idleTilt, approach, TILT_RATE } from "../cursorTilt";
 
 interface Props {
-  galleryRef: MutableRefObject<number>;
+  cardExitRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
 
-export default function GalleryCTA({ galleryRef, reducedMotion = false }: Props) {
+export default function GalleryCTA({ cardExitRef, reducedMotion = false }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLAnchorElement>(null);
   const rotX = useRef(0);
@@ -29,7 +29,7 @@ export default function GalleryCTA({ galleryRef, reducedMotion = false }: Props)
       const delta = Math.min((now - last) / 1000, 1 / 30);
       last = now;
       elapsed += delta;
-      const op = galleryCtaFor(galleryRef.current);
+      const op = galleryCtaFromExit(cardExitRef.current);
       const wrap = wrapRef.current;
       const inner = innerRef.current;
       if (wrap) {
@@ -54,7 +54,7 @@ export default function GalleryCTA({ galleryRef, reducedMotion = false }: Props)
       window.removeEventListener("pointermove", onMove);
       cancelAnimationFrame(raf);
     };
-  }, [galleryRef, reducedMotion]);
+  }, [cardExitRef, reducedMotion]);
 
   return (
     <div ref={wrapRef} className="gallery-cta">

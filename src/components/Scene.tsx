@@ -371,7 +371,7 @@ export default function Scene() {
           </EffectComposer>
         </Canvas>
       </div>
-      <GalleryCTA galleryRef={galleryRef} reducedMotion={reducedMotion} />
+      <GalleryCTA cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
       {/* Scroll-track: provides the scrollable height that drives the model and
           Lottie phases. The Canvas itself is pinned via position: fixed above. */}
       <div

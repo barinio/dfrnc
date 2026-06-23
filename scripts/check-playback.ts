@@ -26,7 +26,8 @@ import {
   galleryTitleFracFor,
   cardConveyorFor,
   cardFlyProgressFor,
-  galleryCtaFor,
+  galleryCtaFromExit,
+  CTA_REVEAL_FROM,
   GALLERY_IMAGES,
   BACKDROP_FADE_END,
   TITLES_END,
@@ -272,9 +273,12 @@ for (const f of FIGURES) {
     "conveyor local in [0,1)",
   );
 
-  // CTA: 0 before CTA_START, fades to 1 by the end.
-  eq(galleryCtaFor(CTA_START), 0, "CTA hidden before CTA_START");
-  eq(galleryCtaFor(1), 1, "CTA fully in at gp 1");
+  // CTA: coupled to the last card's exit — hidden while cards present, fades in
+  // over the tail of the exit, full once the last card is gone.
+  eq(galleryCtaFromExit(0), 0, "CTA hidden while cards present");
+  eq(galleryCtaFromExit(CTA_REVEAL_FROM), 0, "CTA hidden until the exit tail");
+  eq(galleryCtaFromExit(1), 1, "CTA fully in once last card has flown");
+  ok(galleryCtaFromExit(0.95) > galleryCtaFromExit(0.85), "CTA reveal monotonic over the exit tail");
 
   // Round 3 — retimed fly window: 0 through the first-card linger, 1 by fly end.
   eq(cardFlyProgressFor(CARDS_FLY_START), 0, "fly progress 0 at fly start");
