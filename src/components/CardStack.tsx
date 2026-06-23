@@ -16,10 +16,9 @@ import { approach } from "../cursorTilt";
 
 const PLANE_Z = 0; // centre of the frustum → pronounced perspective for the tilt
 
-// The card is rendered smaller than its 64vh layout band and centred in it, so
-// the hover scale-up (→1.3) and tilt stay clear of the top/bottom titles without
-// clipping. Tuning dial.
-const CARD_FILL = 0.72;
+// The card now fills its full 64vh layout band (no shrink): hover stays clear of
+// the titles via the clamp in this file, not by rendering smaller. Tuning dial.
+const CARD_FILL = 1.0;
 
 // Hover (radiance.family): parallax + scale apply ONLY while the cursor is over
 // the card. No always-on tilt or idle drift.
@@ -34,25 +33,23 @@ const HOVER_PAD = 1.06; // hover hit-region padding (reduces edge flicker)
 const STEP_RATE = 9;
 const MAX_STEP_PER_SEC = 3;
 
-// Per-depth resting placement of a card (y as a fraction of card height, z in
-// world units). Cards are CENTRED (x = 0) and each one behind is ~7-8% smaller
-// and offset DOWN so it peeks below the one in front (the radiance stack). d = 3
-// is the entering card that fades in from below.
+// Per-depth resting placement. Cards peek UP and to the RIGHT (the PDF stack):
+// each one behind is a touch smaller and offset +x/+y so its top-right corner
+// shows behind the front. d = 3 is the entering card that fades in.
 const STOPS = [
-  { y: 0.0, scale: 1.0, z: 0.0 }, // d0 — front
-  { y: -0.05, scale: 0.92, z: -0.15 }, // d1 — back, peeks below
-  { y: -0.1, scale: 0.85, z: -0.3 }, // d2 — back, peeks below more
-  { y: -0.15, scale: 0.8, z: -0.45 }, // d3 — entering (fades in from below)
+  { x: 0.0, y: 0.0, scale: 1.0, z: 0.0 }, // d0 — front
+  { x: 0.035, y: 0.03, scale: 0.97, z: -0.15 }, // d1 — back, peeks top-right
+  { x: 0.07, y: 0.06, scale: 0.94, z: -0.3 }, // d2 — back, peeks more
+  { x: 0.09, y: 0.075, scale: 0.92, z: -0.45 }, // d3 — entering (fades in)
 ];
 // How far a leaving card rises (fraction of card height) per unit of depth above
 // the front; it fades out as it rises, so it never reaches the top title.
 const RISE = 0.6;
 
-// Continuous depth d (= slot − local) → {y, scale, z, opacity}. d < 0 is the
-// leaving front card (rises + fades out); d > 2 is the entering card (fades in).
-function depthState(d: number): { y: number; scale: number; z: number; opacity: number } {
+function depthState(d: number): { x: number; y: number; scale: number; z: number; opacity: number } {
   if (d < 0) {
-    return { y: -d * RISE, scale: 1, z: 0, opacity: THREE.MathUtils.clamp(1 + d, 0, 1) };
+    // Leaving front card rises straight up (x = 0) and fades out.
+    return { x: 0, y: -d * RISE, scale: 1, z: 0, opacity: THREE.MathUtils.clamp(1 + d, 0, 1) };
   }
   const i = Math.min(Math.floor(d), STOPS.length - 2);
   const a = STOPS[i];
@@ -60,6 +57,7 @@ function depthState(d: number): { y: number; scale: number; z: number; opacity: 
   const f = THREE.MathUtils.clamp(d - i, 0, 1);
   const opacity = d <= 2 ? 1 : THREE.MathUtils.clamp(3 - d, 0, 1);
   return {
+    x: THREE.MathUtils.lerp(a.x, b.x, f),
     y: THREE.MathUtils.lerp(a.y, b.y, f),
     scale: THREE.MathUtils.lerp(a.scale, b.scale, f),
     z: THREE.MathUtils.lerp(a.z, b.z, f),
@@ -164,7 +162,7 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
       const visible = idx < n && st.opacity > 0.001;
       ref.visible = visible;
       if (!visible) continue;
-      ref.position.set(0, st.y * cardH, st.z);
+      ref.position.set(st.x * cardW, st.y * cardH, st.z);
       ref.scale.setScalar(st.scale);
       const mesh = ref.children[0] as THREE.Mesh | undefined;
       const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
