@@ -23,8 +23,8 @@ const CARD_FILL = 1.0;
 
 // Hover (radiance.family): parallax + scale apply ONLY while the cursor is over
 // the card. No always-on tilt or idle drift.
-const HOVER_SCALE = 1.3; // card grows 1 → 1.3 on hover
-const HOVER_TILT_MAX = 0.13; // ~7.5° max parallax tilt on hover (radians)
+const HOVER_SCALE = 1.03; // front card grows 1 → 1.03 on hover (small — full-size card)
+const HOVER_TILT_MAX = 0.06; // ~3.4° max parallax tilt on hover (radians)
 const HOVER_RATE = 9; // ease rate for the hover scale/tilt
 const HOVER_PAD = 1.06; // hover hit-region padding (reduces edge flicker)
 
@@ -99,7 +99,7 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
 
   // Card world size (smaller via CARD_FILL) + content-band centring + hover
   // hit-region in NDC. Viewport is world units (height ≈ 9.24 at z = 0).
-  const { cardW, cardH, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY } = useMemo(() => {
+  const { cardW, cardH, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY, maxHoverScale } = useMemo(() => {
     const vw = viewport.width;
     const vh = viewport.height;
     const aspect = vw / vh;
@@ -113,7 +113,13 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     const hoverHalfX = (w / vw) * HOVER_PAD;
     const hoverHalfY = (h / vh) * HOVER_PAD;
     const hoverCenterY = (2 * bandOffsetY) / vh;
-    return { cardW: w, cardH: h, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY };
+    // Max hover scale that keeps the (centre-scaled) front card clear of BOTH
+    // title bands: its half-height may grow only into the 3vmin gutter, never to
+    // the title text. (Tilt is kept small separately via HOVER_TILT_MAX.)
+    const vmin = Math.min(vw, vh);
+    const gutterWorld = GUTTER * vmin;
+    const maxHoverScale = 1 + gutterWorld / (h / 2);
+    return { cardW: w, cardH: h, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY, maxHoverScale };
   }, [viewport.width, viewport.height]);
 
   useFrame((_s, delta) => {
@@ -156,6 +162,22 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     const lead = Math.floor(displayed);
     const local = displayed - lead;
 
+    // Hover (front card only): ease the parallax tilt + scale AMOUNT here; it is
+    // applied to slot 0 inside the loop. Back cards never react. The group keeps
+    // only its entrance/position transform (set above).
+    const px = ptr.current.x;
+    const py = ptr.current.y;
+    const over =
+      !reducedMotion &&
+      Math.abs(px) < hoverHalfX &&
+      Math.abs(py - hoverCenterY) < hoverHalfY;
+    hover.current = approach(hover.current, over ? 1 : 0, delta, HOVER_RATE);
+    const relY = py - hoverCenterY;
+    rotX.current = approach(rotX.current, -relY * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
+    rotY.current = approach(rotY.current, px * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
+    group.rotation.set(0, 0, 0);
+    group.scale.setScalar(1);
+
     // Place the four slot cards by continuous depth (centred; back cards smaller
     // and peeking below; front rises + fades out; deepest fades in from below).
     for (let slot = 0; slot < 4; slot++) {
@@ -166,8 +188,19 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
       const visible = idx < n && st.opacity > 0.001;
       ref.visible = visible;
       if (!visible) continue;
+      // Front card (slot 0) gets the hover tilt + small scale, faded out during a
+      // swipe via `settle` so a leaving card isn't tilted. Back cards stay put.
+      let hoverScale = 1;
+      if (slot === 0) {
+        const settle = 1 - THREE.MathUtils.clamp(local, 0, 1);
+        const amt = hover.current * settle;
+        hoverScale = Math.min(1 + (HOVER_SCALE - 1) * amt, maxHoverScale);
+        ref.rotation.set(rotX.current * settle, rotY.current * settle, 0);
+      } else {
+        ref.rotation.set(0, 0, 0);
+      }
       ref.position.set(st.x * cardW, st.y * cardH, st.z);
-      ref.scale.setScalar(st.scale);
+      ref.scale.setScalar(st.scale * hoverScale);
       const mesh = ref.children[0] as THREE.Mesh | undefined;
       const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
       if (mat) mat.opacity = st.opacity;
@@ -179,21 +212,6 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     // below the screen (no sliver peeking) and rises into its band centre.
     const entrance = THREE.MathUtils.clamp(span / 0.04, 0, 1);
     group.position.y = bandOffsetY - (1 - entrance) * cardH * 2.3;
-
-    // Hover only: parallax tilt + scale-up while the cursor is over the card.
-    const px = ptr.current.x;
-    const py = ptr.current.y;
-    const over =
-      !reducedMotion &&
-      Math.abs(px) < hoverHalfX &&
-      Math.abs(py - hoverCenterY) < hoverHalfY;
-    hover.current = approach(hover.current, over ? 1 : 0, delta, HOVER_RATE);
-    group.scale.setScalar(1 + (HOVER_SCALE - 1) * hover.current);
-    const relY = py - hoverCenterY;
-    rotX.current = approach(rotX.current, -relY * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
-    rotY.current = approach(rotY.current, px * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
-    group.rotation.x = rotX.current;
-    group.rotation.y = rotY.current;
   });
 
   return (
