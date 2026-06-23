@@ -5,6 +5,7 @@ import * as THREE from "three";
 import GalleryCard from "./GalleryCard";
 import {
   cardConveyorFor,
+  cardFlyProgressFor,
   GALLERY_IMAGES,
   CARDS_VH,
   CARD_ASPECT,
@@ -130,7 +131,10 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     if (!group.visible) return;
 
     const n = GALLERY_IMAGES.length;
-    const target = Math.round(span * n); // discrete slide index (0..n)
+    // Discrete slide index from the RETIMED fly window (round 3): the deck trails
+    // the title scrub so a card leaves at the END of each text display. `span`
+    // (above) still drives visibility + entrance over the full card phase.
+    const target = Math.round(cardFlyProgressFor(gp) * n);
 
     // Discrete-step displayed position: speed-capped exponential ease toward the
     // rounded target (single eased step; big scroll cascades). Reduced motion
