@@ -159,12 +159,20 @@ swiper); the image count stays flexible/drop-in.
   through that grow-in and flies out only as the first text appears — so by the
   time text 1 (`STRATEGISCHE KOMMUNIKATION`) is fully readable, card 2 is already
   the front.
-- **Finale.** `CARDS_FLY_END` is placed so the **last** card flies up together
-  with a new **title fade-out** (the title plane's opacity runs 1→0, the text
-  "погасне"), finishing by `CTA_START`; the CTA (`«small call to action…»`) then
-  fades in immediately. This also closes a gap: today the titles hold on frame
-  100 (`GANZ GROSSEN BILDER`) and are never hidden, so they'd otherwise show
-  behind the CTA — the PDF's CTA page is pure black + the call-to-action only.
+- **Finale (synchronized via coupling).** The **last** card flies up while the
+  **title fades out in exact lockstep**. The fade is **not** a separate gp window
+  (an early attempt with `galleryTitleOpacityFor` over `[TITLES_FADE_START,
+  CTA_START]` made the card leave *first*, then the text — the card's fly-up is a
+  time-eased step while a gp-window fade is scroll-position based, so they
+  drifted apart). Instead, `CardStack` publishes the **last-card exit progress**
+  (`cardExitRef`, `0` front → `1` fully flown, = `clamp(displayed − (N−1), 0, 1)`)
+  via a Scene-owned shared ref, and `GalleryTitles` sets the title-plane opacity
+  to `1 − cardExit`. Since the leaving card's own fade is also `1 − cardExit`,
+  the title and card fade/rise on the **same curve, same frames** — `в цей же
+  час`. The CTA (`«small call to action…»`) then fades in over `[CTA_START, …]`.
+  This also closes a gap: the titles hold on frame 100 (`GANZ GROSSEN BILDER`)
+  and are otherwise never hidden, so they'd show behind the CTA — the PDF's CTA
+  page is pure black + the call-to-action only.
 - Alternatives considered and rejected: **D2** pinning each card step to one of
   the 3 title text frames (breaks with a flexible image count); **D3** stepping
   the title frame per card step (only 3 title states; loses the smooth continuous
@@ -183,14 +191,18 @@ swapped for the stepped one without reworking layout/hover.
 
 `CARD_FILL` → 1.0; `HOVER_SCALE` → ~1.03; `HOVER_TILT_MAX` tuned down; `STOPS`
 re-defined for the top-right peek; new card-fly window `CARDS_FLY_START` /
-`CARDS_FLY_END`; new title fade-out window (`TITLES_FADE_*`). All judged live.
+`CARDS_FLY_END`; new Scene-owned `cardExitRef` coupling the title fade to the
+last card's exit (replaces the earlier gp-window `TITLES_FADE_*` / 
+`galleryTitleOpacityFor`, which let the card lead the text). All judged live.
 
 ### Verification (round 3)
 
 `npm run typecheck` + `npm run build`; `npx tsx scripts/check-playback.ts` with
 new assertions for the retimed card-fly window (monotonic; first step delayed
-past the title grow-in; last step coincides with the title fade-out before
-`CTA_START`). Headless screenshots: a settled stack (full size, top-right peek,
+past the title grow-in; last card finishes by `CTA_START`). The title↔card
+coupling is stateful (eased), so it is verified by screenshot, not asserted:
+gp 0.76 shows card + title both present, gp 0.79 shows both gone together.
+Headless screenshots: a settled stack (full size, top-right peek,
 back card clear of the top title), hover-centre and hover-corner (front card
 does not touch either title; back cards unchanged), and the finale (last card
 rising while the title fades and the CTA appears).

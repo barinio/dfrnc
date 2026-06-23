@@ -68,10 +68,11 @@ function depthState(d: number): { x: number; y: number; scale: number; z: number
 
 interface Props {
   galleryRef: MutableRefObject<number>;
+  cardExitRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
 
-export default function CardStack({ galleryRef, reducedMotion = false }: Props) {
+export default function CardStack({ galleryRef, cardExitRef, reducedMotion = false }: Props) {
   const { viewport } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   const slotRef0 = useRef<THREE.Group>(null);
@@ -134,7 +135,10 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     // During the intro/figures/video (gp = 0) the whole stack is hidden, so it
     // can't peek up from the bottom behind the intro typography.
     group.visible = span > 1e-4;
-    if (!group.visible) return;
+    if (!group.visible) {
+      cardExitRef.current = 0; // titles stay fully opaque before the card phase
+      return;
+    }
 
     const n = GALLERY_IMAGES.length;
     // Discrete slide index from the RETIMED fly window (round 3): the deck trails
@@ -161,6 +165,12 @@ export default function CardStack({ galleryRef, reducedMotion = false }: Props) 
     const displayed = THREE.MathUtils.clamp(displayedRef.current, 0, n);
     const lead = Math.floor(displayed);
     const local = displayed - lead;
+
+    // Last-card exit progress for the synchronized finale: 0 until the last card
+    // begins flying up, 1 once it has fully risen out. It equals the leaving
+    // card's own fade (1 − this), so GalleryTitles fading by (1 − cardExit) makes
+    // the title and the last card leave together — exactly in lockstep.
+    cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
 
     // Hover (front card only): ease the parallax tilt + scale AMOUNT here; it is
     // applied to slot 0 inside the loop. Back cards never react. The group keeps

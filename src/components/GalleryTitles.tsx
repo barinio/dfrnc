@@ -5,7 +5,7 @@ import * as THREE from "three";
 import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import titlesData from "../assets/titles.json";
-import { galleryTitleFracFor, galleryTitleOpacityFor, GUTTER, MAX_ASPECT } from "../gallery";
+import { galleryTitleFracFor, GUTTER, MAX_ASPECT } from "../gallery";
 
 // titles.json scrubbed by gallery progress. The 1000×1000 comp encodes the 3
 // title frames at the right top(≈8%)/bottom(≈16%) positions, so a full-frame
@@ -16,10 +16,11 @@ const PLANE_Z = -1;
 
 interface Props {
   galleryRef: MutableRefObject<number>;
+  cardExitRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
 
-export default function GalleryTitles({ galleryRef, reducedMotion = false }: Props) {
+export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion = false }: Props) {
   const { viewport, camera, size, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
   const animRef = useRef<AnimationItem | null>(null);
@@ -98,8 +99,11 @@ export default function GalleryTitles({ galleryRef, reducedMotion = false }: Pro
       frac = smoothRef.current;
     }
     const frame = frac * Math.max(anim.totalFrames - 1, 0);
-    // Update opacity every frame (depends only on galleryRef, not on frame change)
-    if (matRef.current) matRef.current.opacity = galleryTitleOpacityFor(galleryRef.current);
+    // Fade the title in lockstep with the last card flying up: opacity mirrors
+    // the leaving card's own fade (1 − exit), so text and card leave together.
+    // Driven every frame (not on Lottie-frame change) since exit moves while the
+    // held last frame is static.
+    if (matRef.current) matRef.current.opacity = 1 - THREE.MathUtils.clamp(cardExitRef.current, 0, 1);
     if (frame === lastFrameRef.current) return;
     lastFrameRef.current = frame;
     anim.goToAndStop(frame, true);

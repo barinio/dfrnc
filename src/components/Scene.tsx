@@ -96,6 +96,10 @@ export default function Scene() {
   const scrollRef = useScrollProgressRef();
   // galleryRef is wired here; consumed by gallery components in Task 3+.
   const galleryRef = useGalleryProgressRef();
+  // Last-card exit progress (0 = front card resting, 1 = last card fully flown
+  // up). CardStack writes it each frame; GalleryTitles reads it to fade the
+  // title in exact lockstep with the last card rising — the synchronized finale.
+  const cardExitRef = useRef(0);
   const noiseRef = useRef<NoiseEffect | null>(null);
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
@@ -336,8 +340,8 @@ export default function Scene() {
               introStage={introStage}
               onDropDone={handleDropDone}
             />
-            <GalleryTitles galleryRef={galleryRef} reducedMotion={reducedMotion} />
-            <CardStack galleryRef={galleryRef} reducedMotion={reducedMotion} />
+            <GalleryTitles galleryRef={galleryRef} cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
+            <CardStack galleryRef={galleryRef} cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
             {FIGURES.map(
               (f, i) =>
                 !reducedMotion &&

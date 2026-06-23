@@ -24,7 +24,6 @@ import {
   galleryProgressFrom,
   galleryBackdropFor,
   galleryTitleFracFor,
-  galleryTitleOpacityFor,
   cardConveyorFor,
   cardFlyProgressFor,
   galleryCtaFor,
@@ -33,8 +32,6 @@ import {
   TITLES_END,
   CARDS_FLY_START,
   CARDS_FLY_END,
-  TITLES_FADE_START,
-  TITLES_FADE_END,
   CTA_START,
 } from "../src/gallery";
 import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../src/constants";
@@ -289,18 +286,11 @@ for (const f of FIGURES) {
     const gpText1 = BACKDROP_FADE_END + 0.5 * (TITLES_END - BACKDROP_FADE_END);
     ok(Math.round(cardFlyProgressFor(gpText1) * N) >= 1, "first card gone once text 1 readable");
   }
-  // Round 3 — title fade-out: opaque while read, fully faded by the CTA.
-  eq(galleryTitleOpacityFor(TITLES_FADE_START), 1, "titles opaque until fade start");
-  eq(galleryTitleOpacityFor(TITLES_FADE_END), 0, "titles fully faded by fade end");
-  eq(galleryTitleOpacityFor(CTA_START), 0, "titles gone by CTA start");
-  // Sample points derived from the fade window so this stays valid if retuned.
-  const fadeA = TITLES_FADE_START + 0.25 * (TITLES_FADE_END - TITLES_FADE_START);
-  const fadeB = TITLES_FADE_START + 0.75 * (TITLES_FADE_END - TITLES_FADE_START);
-  ok(galleryTitleOpacityFor(fadeB) < galleryTitleOpacityFor(fadeA), "title opacity fades monotonically");
-  // Ordering of the round-3 windows.
+  // Round 3 — title fade is now driven by the last card's exit progress (a
+  // stateful, eased value in CardStack), so the title and card leave in exact
+  // lockstep. That coupling is verified visually, not here. Ordering invariants:
   ok(BACKDROP_FADE_END < CARDS_FLY_START && CARDS_FLY_START < TITLES_END, "fly start sits inside the card phase");
-  ok(TITLES_END <= TITLES_FADE_START && TITLES_FADE_START < TITLES_FADE_END, "title fade comes after the scrub");
-  ok(TITLES_FADE_END <= CTA_START && CARDS_FLY_END <= CTA_START, "title fade + last card finish by the CTA");
+  ok(CARDS_FLY_END <= CTA_START, "last card finishes by the CTA");
 
   console.log("✓ gallery timeline");
 }
