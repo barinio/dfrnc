@@ -28,8 +28,10 @@ function lerp(a: number, b: number, f: number): number {
 // imagery: drop files in public/gallery/ and replace the nulls with their URLs
 // (relative to BASE_URL), e.g. "gallery/photo-1.jpg". Any length ≥ 3 works; more
 // images keep the 3-card stack full for longer before it empties into the CTA.
+// 8 image cards (slides 2..9) — slide #1 is the morphing video (VideoPlane), so
+// the gallery is 9 cards total. `null` ⇒ procedural gray placeholder.
 export const GALLERY_IMAGES: (string | null)[] = [
-  null, null, null, null, null, null,
+  null, null, null, null, null, null, null, null,
 ];
 
 // ── Layout (fractions of viewport; vmin where noted) ─────────────────────────

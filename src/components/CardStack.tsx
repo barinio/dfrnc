@@ -18,9 +18,9 @@ import { approach } from "../cursorTilt";
 
 const PLANE_Z = 0; // centre of the frustum → pronounced perspective for the tilt
 
-// The card now fills its full 64vh layout band (no shrink): hover stays clear of
-// the titles via the clamp in this file, not by rendering smaller. Tuning dial.
-const CARD_FILL = 1.0;
+// Cards render at a FRACTION of the 64vh band so the front card (and the peeked
+// neighbours offset up/down) stay clear of the top/bottom title text with margin.
+const CARD_FILL = 0.72;
 
 // Hover (radiance.family): parallax + scale apply ONLY while the cursor is over
 // the card. No always-on tilt or idle drift.
@@ -29,41 +29,37 @@ const HOVER_TILT_MAX = 0.06; // ~3.4° max parallax tilt on hover (radians)
 const HOVER_RATE = 9; // ease rate for the hover scale/tilt
 const HOVER_PAD = 1.06; // hover hit-region padding (reduces edge flicker)
 
-// Discrete-step swiper: the deck holds still within each slide's scroll band and
-// the target is the ROUNDED conveyor position, so a swipe past the midpoint flips
-// one slide; a big scroll cascades. See 2026-06-23-gallery-card-swiper-design.md.
-const STEP_RATE = 9;
-const MAX_STEP_PER_SEC = 3;
-
-// Per-depth resting placement. Cards peek UP and to the RIGHT (the PDF stack):
-// each one behind is a touch smaller and offset +x/+y so its top-right corner
-// shows behind the front. d = 3 is the entering card that fades in.
-const STOPS = [
-  { x: 0.0, y: 0.0, scale: 1.0, z: 0.0 }, // d0 — front
-  { x: 0.035, y: 0.03, scale: 0.97, z: -0.15 }, // d1 — back, peeks top-right
-  { x: 0.07, y: 0.06, scale: 0.94, z: -0.3 }, // d2 — back, peeks more
-  { x: 0.09, y: 0.075, scale: 0.92, z: -0.45 }, // d3 — entering (fades in)
+// Resting X/Y positions (image #5), FIXED per card index (cycles every 3): centre
+// = cards 1·4·7, upper-left = 2·5·8, right = 3·6·9. (Fractions of card W/H.)
+const POSITIONS = [
+  { x: 0.0, y: 0.0 }, // 0 — centre
+  { x: -0.15, y: 0.1 }, // 1 — upper-left
+  { x: 0.16, y: -0.02 }, // 2 — right
 ];
-// How far a leaving card rises (fraction of card height) per unit of depth above
-// the front; it fades out as it rises, so it never reaches the top title.
-const RISE = 0.6;
 
-function depthState(d: number): { x: number; y: number; scale: number; z: number; opacity: number } {
-  if (d < 0) {
-    // Leaving front card rises straight up (x = 0) and fades out.
-    return { x: 0, y: -d * RISE, scale: 1, z: 0, opacity: THREE.MathUtils.clamp(1 + d, 0, 1) };
-  }
-  const i = Math.min(Math.floor(d), STOPS.length - 2);
-  const a = STOPS[i];
-  const b = STOPS[i + 1];
+// Depth stack by AGE (continuous depth d, 0 = front): the front card (next to
+// leave) has the HIGHEST z + largest scale; each card behind is deeper + a touch
+// smaller; new cards enter at the BACK. Per direction: card 1 has the highest z,
+// then 2, then 3; when 1 leaves up, 2 is frontmost and the new card 4 enters at
+// 1's spot at the LOWEST z.
+const DEPTH = [
+  { z: 0.0, scale: 1.0 }, // d0 — front
+  { z: -0.16, scale: 0.96 }, // d1
+  { z: -0.32, scale: 0.93 }, // d2
+  { z: -0.48, scale: 0.9 }, // d3 — back (entering)
+];
+
+// The leaving (front) card flies straight UP and off the top — NO opacity fade
+// (per direction: "слайди без опасіті улітають"). Distance in card-heights, big
+// enough to clear the frame before the next card settles.
+const RISE_OFF = 1.9;
+
+function depthAt(d: number): { z: number; scale: number } {
+  const i = Math.min(Math.floor(d), DEPTH.length - 2);
   const f = THREE.MathUtils.clamp(d - i, 0, 1);
-  const opacity = d <= 2 ? 1 : THREE.MathUtils.clamp(3 - d, 0, 1);
   return {
-    x: THREE.MathUtils.lerp(a.x, b.x, f),
-    y: THREE.MathUtils.lerp(a.y, b.y, f),
-    scale: THREE.MathUtils.lerp(a.scale, b.scale, f),
-    z: THREE.MathUtils.lerp(a.z, b.z, f),
-    opacity,
+    z: THREE.MathUtils.lerp(DEPTH[i].z, DEPTH[i + 1].z, f),
+    scale: THREE.MathUtils.lerp(DEPTH[i].scale, DEPTH[i + 1].scale, f),
   };
 }
 
@@ -84,7 +80,6 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
   const rotX = useRef(0);
   const rotY = useRef(0);
   const hover = useRef(0); // eased 0..1 hover amount
-  const displayedRef = useRef<number | null>(null);
 
   // Pointer in normalized device coords, tracked on window so it works despite
   // the canvas layer being pointer-events:none. Used for the hover hit-test +
@@ -145,40 +140,18 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     }
 
     const n = GALLERY_IMAGES.length;
-    // Discrete slide index from the RETIMED fly window (round 3): the deck trails
-    // the title scrub so a card leaves at the END of each text display. `span`
-    // (above) still drives visibility + entrance over the full card phase.
-    const target = Math.round(cardFlyProgressFor(igp) * n);
-
-    // Discrete-step displayed position: speed-capped exponential ease toward the
-    // rounded target (single eased step; big scroll cascades). Reduced motion
-    // jumps straight to the target.
-    if (displayedRef.current === null) displayedRef.current = target;
-    if (reducedMotion) {
-      displayedRef.current = target;
-    } else {
-      const cur = displayedRef.current;
-      const eased = approach(cur, target, delta, STEP_RATE);
-      const maxStep = MAX_STEP_PER_SEC * delta;
-      let next = eased;
-      if (Math.abs(eased - cur) > maxStep) next = cur + Math.sign(target - cur) * maxStep;
-      if (Math.abs(target - next) < 1e-3) next = target;
-      displayedRef.current = next;
-    }
-
-    const displayed = THREE.MathUtils.clamp(displayedRef.current, 0, n);
+    // Continuous, scroll-scrubbed flip progress through the cards: card `lead` is
+    // mid-flip-OUT (local 0→1) and the next card of the same position enters
+    // behind it. No discrete swiper — the flips scrub alongside the other anims.
+    const displayed = THREE.MathUtils.clamp(cardFlyProgressFor(igp) * n, 0, n);
     const lead = Math.floor(displayed);
     const local = displayed - lead;
 
     // Last-card exit progress for the synchronized finale: 0 until the last card
-    // begins flying up, 1 once it has fully risen out. It equals the leaving
-    // card's own fade (1 − this), so GalleryTitles fading by (1 − cardExit) makes
-    // the title and the last card leave together — exactly in lockstep.
+    // begins flipping out, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
 
-    // Hover (front card only): ease the parallax tilt + scale AMOUNT here; it is
-    // applied to slot 0 inside the loop. Back cards never react. The group keeps
-    // only its entrance/position transform (set above).
+    // Hover amount (eased) — applied to the front/centre resting card only.
     const px = ptr.current.x;
     const py = ptr.current.y;
     const over =
@@ -192,32 +165,54 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     group.rotation.set(0, 0, 0);
     group.scale.setScalar(1);
 
-    // Place the four slot cards by continuous depth (centred; back cards smaller
-    // and peeking below; front rises + fades out; deepest fades in from below).
+    // Four live slots: slot 0 = the front card flying UP and off the top (NO
+    // opacity fade), slots 1–2 = the cards behind it, slot 3 = the next card
+    // entering at the BACK directly behind slot 0 (same X/Y, since (lead+3) % 3 ===
+    // lead % 3 — revealed as slot 0 rises). X/Y are fixed per card
+    // (POSITIONS[idx % 3]); z + scale come from the age-ordered DEPTH stack via the
+    // continuous depth d = slot − local.
     for (let slot = 0; slot < 4; slot++) {
       const ref = slotRefs[slot].current;
       if (!ref) continue;
       const idx = lead + slot;
-      const st = depthState(slot - local);
-      const visible = idx < n && st.opacity > 0.001;
-      ref.visible = visible;
-      if (!visible) continue;
-      // Front card (slot 0) gets the hover tilt + small scale, faded out during a
-      // swipe via `settle` so a leaving card isn't tilted. Back cards stay put.
-      let hoverScale = 1;
-      if (slot === 0) {
-        const settle = 1 - THREE.MathUtils.clamp(local, 0, 1);
-        const amt = hover.current * settle;
-        hoverScale = Math.min(1 + (HOVER_SCALE - 1) * amt, maxHoverScale);
-        ref.rotation.set(rotX.current * settle, rotY.current * settle, 0);
-      } else {
-        ref.rotation.set(0, 0, 0);
+      if (idx >= n) {
+        ref.visible = false;
+        continue;
       }
-      ref.position.set(st.x * cardW, st.y * cardH, st.z);
-      ref.scale.setScalar(st.scale * hoverScale);
+      const P = POSITIONS[idx % 3];
+      let x = P.x;
+      let y = P.y;
+      let z: number;
+      let scale: number;
+      const d = slot - local;
+
+      if (d < 0) {
+        // Leaving: fly straight UP off the top — opaque the whole way (no fade).
+        z = DEPTH[0].z;
+        scale = DEPTH[0].scale;
+        y = P.y + -d * RISE_OFF;
+        ref.rotation.set(0, 0, 0);
+      } else {
+        const ds = depthAt(d);
+        z = ds.z;
+        scale = ds.scale;
+        if (slot === 0) {
+          // Hover tilt + scale on the front/centre card while it is settled.
+          const settle = 1 - THREE.MathUtils.clamp(local / 0.2, 0, 1);
+          const amt = hover.current * settle;
+          scale = ds.scale * Math.min(1 + (HOVER_SCALE - 1) * amt, maxHoverScale);
+          ref.rotation.set(rotX.current * settle, rotY.current * settle, 0);
+        } else {
+          ref.rotation.set(0, 0, 0);
+        }
+      }
+
+      ref.visible = true;
+      ref.position.set(x * cardW, y * cardH, z);
+      ref.scale.setScalar(scale);
       const mesh = ref.children[0] as THREE.Mesh | undefined;
       const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
-      if (mat) mat.opacity = st.opacity;
+      if (mat) mat.opacity = 1;
     }
 
     // Entrance: the whole group rises from below to its band centre as the
