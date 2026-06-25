@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
@@ -20,6 +20,13 @@ import type { Phase } from "../playback";
 
 const PLANE_Z = -3.5;
 
+// Scrub robustness: the paused video is seeked every frame. Issue at most ONE
+// seek at a time (browsers silently DROP coalesced seeks, and the last one can
+// be lost → the frame freezes) and always re-converge to the latest target once
+// the previous seek settles.
+const SEEK_EPS = 1 / 50; // ~a frame; below a visible step, above seek jitter
+const SEEK_STALL_MS = 400; // a seek whose `seeked` never fires is treated as dropped
+
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
   galleryRef: MutableRefObject<number>;
@@ -31,13 +38,40 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.VideoTexture | null>(null);
-  const lastTime = useRef<number>(-1);
+  // Scrub state: latest desired time (from scroll), the time we last ISSUED a
+  // seek to, whether a seek is in flight, and when it started (stall watchdog).
+  const desiredRef = useRef<number>(-1);
+  const issuedRef = useRef<number>(-1);
+  const seekingRef = useRef(false);
+  const seekStartRef = useRef(0);
   // True once the video has a decodable first frame (loadeddata fired).
   // Buffering starts at page load (component always mounted, preload=auto);
   // this gate is the slow-network fallback so the plane never shows black.
   const readyRef = useRef(false);
   // Degraded mode per the spec's error handling: latched on 404/decode/data-saver.
   const failedRef = useRef(false);
+
+  // Issue a seek toward the latest desired time, but only when no seek is in
+  // flight — coalesced seeks get dropped by the browser and the final one can be
+  // lost, freezing the frame. The `seeked` handler and the stall watchdog re-call
+  // this so we always converge to the newest target. Allocation-free; safe to
+  // call every frame.
+  const issueSeekIfIdle = useCallback((video: HTMLVideoElement) => {
+    if (seekingRef.current) {
+      if (performance.now() - seekStartRef.current <= SEEK_STALL_MS) return;
+      seekingRef.current = false; // previous seek stalled / `seeked` never fired
+    }
+    const want = desiredRef.current;
+    if (want < 0 || Math.abs(want - issuedRef.current) < SEEK_EPS) return;
+    issuedRef.current = want;
+    seekingRef.current = true;
+    seekStartRef.current = performance.now();
+    try {
+      video.currentTime = want;
+    } catch {
+      seekingRef.current = false; // decoder hiccup: the next frame retries
+    }
+  }, []);
 
   // Create a detached video element imperatively (NOT in the DOM render path).
   // A detached element loads and seeks fine in all modern browsers.
@@ -56,13 +90,34 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
     texture.wrapT = THREE.ClampToEdgeWrapping;
 
     // VideoTexture auto-updates only while playing. Since we scrub a paused
-    // video we must push needsUpdate manually after each seek settles.
-    const onSeeked = () => { texture.needsUpdate = true; };
+    // video we push needsUpdate manually: on `seeked` (and re-converge to the
+    // latest target) and, more robustly, whenever the decoder presents a frame.
+    const onSeeked = () => {
+      seekingRef.current = false;
+      texture.needsUpdate = true;
+      issueSeekIfIdle(video); // chase the newest target if scroll moved meanwhile
+    };
     const onLoaded = () => { readyRef.current = true; texture.needsUpdate = true; };
     const onError = () => { failedRef.current = true; };
     video.addEventListener("seeked", onSeeked);
     video.addEventListener("loadeddata", onLoaded);
     video.addEventListener("error", onError);
+
+    // requestVideoFrameCallback fires when a frame is actually composited — a
+    // reliable "the new frame is ready" signal even when `seeked` is flaky
+    // (same-decoded-frame seeks or low readyState don't always fire `seeked`).
+    let rvfcHandle = 0;
+    const rvfc = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number;
+      cancelVideoFrameCallback?: (h: number) => void;
+    };
+    const onVideoFrame = () => {
+      texture.needsUpdate = true;
+      if (rvfc.requestVideoFrameCallback)
+        rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
+    };
+    if (rvfc.requestVideoFrameCallback)
+      rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
 
     textureRef.current = texture;
     if (matRef.current) matRef.current.map = texture;
@@ -74,13 +129,15 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("loadeddata", onLoaded);
       video.removeEventListener("error", onError);
+      if (rvfc.cancelVideoFrameCallback && rvfcHandle)
+        rvfc.cancelVideoFrameCallback(rvfcHandle);
       texture.dispose();
       textureRef.current = null;
       // Detach source to release network/decoder resources.
       video.src = "";
       video.load();
     };
-  }, []);
+  }, [issueSeekIfIdle]);
 
   useFrame(() => {
     const texture = textureRef.current;
@@ -154,15 +211,11 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
       texture.repeat.set(repeatX * (r - l), repeatY * (cropTop - b));
       texture.offset.set(offsetX + repeatX * l, offsetY + repeatY * b);
 
-      // Re-seek only when the target moved by more than ~a frame (1/30 s).
-      if (Math.abs(target - lastTime.current) >= 1 / 30) {
-        lastTime.current = target;
-        try {
-          video.currentTime = target;
-        } catch {
-          // Seek failed (decoder hiccup / data-saver): last decoded frame stays.
-        }
-      }
+      // Robust converging scrub: record the desired time and issue a seek only
+      // when idle; the `seeked` / stall paths converge to the latest target, so a
+      // dropped coalesced seek can never leave the frame frozen.
+      desiredRef.current = target;
+      issueSeekIfIdle(video);
     }
 
     // Placement: the crop rect, translated up by `rise` during the fly-out (the
