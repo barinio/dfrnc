@@ -25,6 +25,8 @@ import {
   galleryProgressFrom,
   galleryBackdropFor,
   galleryTitleFracFor,
+  galleryCardProgressFor,
+  galleryTitleFrameFracForCard,
   cardConveyorFor,
   cardFlyProgressFor,
   galleryCtaFromExit,
@@ -307,6 +309,43 @@ for (const f of FIGURES) {
   // lockstep. That coupling is verified visually, not here. Ordering invariants:
   ok(BACKDROP_FADE_END < CARDS_FLY_START && CARDS_FLY_START < TITLES_END, "fly start sits inside the card phase");
   ok(CARDS_FLY_END <= CTA_START, "last card finishes by the CTA");
+
+  // Piece B — title sequence by unified card progress `cp ∈ [0,9]` (card 1 =
+  // video, cards 2..9 = image cards). Continuous at the video→image handoff:
+  // both branches give cp = 1 at gp = VID_FLY_END.
+  eq(galleryCardProgressFor(0), 0, "cp = 0 at gallery start");
+  eq(galleryCardProgressFor(VID_FLY_END), 1, "cp = 1 at the video-card handoff");
+  ok(
+    Math.abs(galleryCardProgressFor(VID_FLY_END - 1e-6) - galleryCardProgressFor(VID_FLY_END)) < 1e-3,
+    "cp continuous across gp = VID_FLY_END",
+  );
+  eq(galleryCardProgressFor(1), 1 + GALLERY_IMAGES.length, "cp = 1 + N at the document bottom");
+  {
+    let prev = -1;
+    for (let gp = 0; gp <= 1.0001; gp += 0.002) {
+      const cp = galleryCardProgressFor(gp);
+      ok(cp >= prev - 1e-9, `cp monotonic @gp=${gp.toFixed(3)}`);
+      prev = cp;
+    }
+  }
+
+  // galleryTitleFrameFracForCard: the per-card frac mapping. Anchors + holds +
+  // monotonic non-decreasing across the whole cp range.
+  eq(galleryTitleFrameFracForCard(0), 0, "title frac 0 at cp 0");
+  eq(galleryTitleFrameFracForCard(1), 0.49, "title frac 0.49 once card 1 (video) is in");
+  eq(galleryTitleFrameFracForCard(3), 0.49, "title frac holds 0.49 over cards 2,3");
+  eq(galleryTitleFrameFracForCard(4), 0.6, "title frac 0.60 once card 4 is in");
+  eq(galleryTitleFrameFracForCard(6), 0.6, "title frac holds 0.60 over cards 5,6");
+  eq(galleryTitleFrameFracForCard(7), 1, "title frac 1.0 once card 7 is in");
+  eq(galleryTitleFrameFracForCard(9), 1, "title frac holds 1.0 over cards 8,9");
+  {
+    let prev = -1;
+    for (let cp = -0.5; cp <= 9.5; cp += 0.01) {
+      const f = galleryTitleFrameFracForCard(cp);
+      ok(f >= prev - 1e-9, `title frac monotonic @cp=${cp.toFixed(2)}`);
+      prev = f;
+    }
+  }
 
   console.log("✓ gallery timeline");
 }

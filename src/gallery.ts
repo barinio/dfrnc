@@ -224,3 +224,35 @@ export function cardFlyProgressFor(gp: number): number {
 export function galleryCtaFromExit(cardExit: number): number {
   return smoothstep(clamp01((cardExit - CTA_REVEAL_FROM) / (1 - CTA_REVEAL_FROM)));
 }
+
+// ── Unified card progress (titles sequence by which card is showing) ─────────
+// The gallery is 9 cards: card 1 = the morphing video (slide #1), cards 2..9 =
+// the GALLERY_IMAGES.length image cards. `cp ∈ [0,9]` is a single continuous
+// progress: card 1 spans [0,1] (its full-bleed → card morph + fly-out, keyed to
+// raw gp / VID_FLY_END), cards 2..9 span [1,9] (the image conveyor, keyed to the
+// remapped image-gallery progress). Continuous at gp = VID_FLY_END (cp = 1):
+// there the first branch hits 1 and `cardFlyProgressFor(imageGalleryProgress)`
+// is still 0 (the image cards have not begun flying), so both branches give 1.
+export function galleryCardProgressFor(gp: number): number {
+  if (gp < VID_FLY_END) return clamp01(gp / VID_FLY_END);
+  return 1 + cardFlyProgressFor(imageGalleryProgress(gp)) * GALLERY_IMAGES.length;
+}
+
+// Title-frame fraction (0..1 → titles.json frame range) as a function of the
+// unified card progress `cp`. Each title text squishes in while ITS card is the
+// one showing, then holds while the next cards pass (monotonic non-decreasing):
+//   cp [0,1]  card 1 / video morph → 0 .. 0.49  (WIR LIEFERN + STRATEGISCHE)
+//   cp [1,3]  cards 2,3            → hold 0.49
+//   cp [3,4]  card 4              → 0.49 .. 0.60 (DESIGN NACH MASS)
+//   cp [4,6]  cards 5,6            → hold 0.60
+//   cp [6,7]  card 7              → 0.60 .. 1.0  (UND DIE + GANZ GROSSEN BILDER)
+//   cp [7,9]  cards 8,9            → hold 1.0
+export function galleryTitleFrameFracForCard(cp: number): number {
+  const c = Math.min(Math.max(cp, 0), 9);
+  if (c <= 1) return lerp(0, 0.49, c);
+  if (c <= 3) return 0.49;
+  if (c <= 4) return lerp(0.49, 0.6, c - 3);
+  if (c <= 6) return 0.6;
+  if (c <= 7) return lerp(0.6, 1, c - 6);
+  return 1;
+}
