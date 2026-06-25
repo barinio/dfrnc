@@ -186,8 +186,8 @@ for (const f of FIGURES) {
   );
   eq(Math.abs(p0.x), (W / 2) * f.arc.legSpreadLandscape, `${f.name} spread`, 1e-6);
 }
-// Cascade layout: ordered overlapping windows. Order is and → awwwards →
-// tokyo → gba; the first starts at the phase top and the last lands within it.
+// Cascade layout: ordered overlapping windows. Order is and → tokyo → gba;
+// the first starts at the phase top and the last lands within it.
 eq(FIGURES[0].arc.window[0], 0, "first window starts at 0");
 ok(
   FIGURES[FIGURES.length - 1].arc.window[1] <= 1 + 1e-9,
@@ -199,25 +199,25 @@ for (let i = 1; i < FIGURES.length; i++) {
   ok(start > prevStart && end > prevEnd, `window ${i} ordered after ${i - 1}`);
 }
 const byName = (n: string) => FIGURES.find((f) => f.name === n)!;
-// awwwards launches the moment `and` reaches its apex (and's window midpoint).
+// tokyo launches the moment `and` reaches its apex (and's window midpoint) —
+// it took over this launch slot when the awwwards figure was removed.
 const and = byName("and");
 eq(
-  byName("awwwards").arc.window[0],
+  byName("tokyo").arc.window[0],
   (and.arc.window[0] + and.arc.window[1]) / 2,
-  "awwwards launches at and's apex",
+  "tokyo launches at and's apex",
   1e-9,
 );
-// The crossing pair: gba launches at 25% of tokyo's flight, on the opposite
-// side and on a HIGHER dome at a different depth — they pass without
-// colliding (per the design direction).
+// The crossing pair: gba launches while tokyo is still airborne (their windows
+// OVERLAP at the handoff, so two figures fly at once), on the opposite side and
+// on a HIGHER dome at a different depth — they pass without colliding (per the
+// design direction).
 const tokyo = byName("tokyo");
 const gba = byName("gba");
-eq(
-  gba.arc.window[0],
-  tokyo.arc.window[0] +
-    0.25 * (tokyo.arc.window[1] - tokyo.arc.window[0]),
-  "gba launches at 25% of tokyo's window",
-  1e-9,
+ok(
+  gba.arc.window[0] > tokyo.arc.window[0] &&
+    gba.arc.window[0] < tokyo.arc.window[1],
+  "gba launches during tokyo's flight (crossing pair windows overlap)",
 );
 ok(gba.arc.side !== tokyo.arc.side, "crossing pair flies opposite sides");
 ok(gba.arc.peakHeight > tokyo.arc.peakHeight, "gba flies higher than tokyo");
@@ -231,7 +231,7 @@ for (const name of ["and", "gba"]) {
     `${name} (icon) spins against its travel`,
   );
 }
-for (const name of ["tokyo", "awwwards"]) {
+for (const name of ["tokyo"]) {
   const f = FIGURES.find((x) => x.name === name)!;
   ok(
     Math.sign(f.arc.spinTurns) === f.arc.side,
