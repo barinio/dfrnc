@@ -1,4 +1,11 @@
-import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "./constants";
+import {
+  SCROLL_TRACK_VH,
+  GALLERY_TRACK_VH,
+  VID_MORPH_END,
+  VID_HOLD_END,
+  VID_FLY_END,
+  IMAGE_GALLERY_START,
+} from "./constants";
 
 // Pure data + scroll→state functions for the gallery section (the scroll
 // section appended AFTER the video). Mirrors playback.ts/arc.ts: no React, no
@@ -11,6 +18,9 @@ function clamp01(x: number): number {
 function smoothstep(x: number): number {
   const t = clamp01(x);
   return t * t * (3 - 2 * t);
+}
+function lerp(a: number, b: number, f: number): number {
+  return a + (b - a) * f;
 }
 
 // ── Card images (drop-in) ────────────────────────────────────────────────────
@@ -63,9 +73,96 @@ export function galleryProgressFrom(scrollY: number, innerHeight: number): numbe
   return galleryPx > 0 ? clamp01((scrollY - animY) / galleryPx) : 0;
 }
 
-// Black backdrop opacity: the held video fades to flat black for the gallery.
+// Width (raw gp) of the gallery black fade. Kept tiny so the flat black sits
+// BEHIND the full-bleed video and is already opaque before the morph reveals
+// anything around the shrinking card.
+const GALLERY_BLACK_FADE = 0.02;
+
+// Black background opacity for the gallery. It now lives BEHIND the video
+// (GalleryBackdrop z = −3.6): the video morphs/shrinks into slide #1 and the
+// vacated area reveals this black; the image cards later sit on it. Opaque for
+// essentially the whole gallery. (Window tightened from BACKDROP_FADE_END; the
+// 0 / 1 / 1 anchors the assertions check are unchanged.)
 export function galleryBackdropFor(gp: number): number {
-  return smoothstep(clamp01(gp / BACKDROP_FADE_END));
+  return smoothstep(clamp01(gp / GALLERY_BLACK_FADE));
+}
+
+// ── Video-card phase (slide #1 is the morphing FPV video) ────────────────────
+// Progress through the IMAGE gallery (slides 2..N + titles + CTA), which begins
+// only AFTER the video card has flown away. The existing card/title pure
+// functions are fed THIS (not raw gp) at their call sites, so they — and their
+// assertions — are unchanged; their input is simply the image-gallery sub-range.
+export function imageGalleryProgress(gp: number): number {
+  return clamp01((gp - IMAGE_GALLERY_START) / (1 - IMAGE_GALLERY_START));
+}
+
+export interface ScreenRect {
+  // Screen fractions, x: 0 = left … 1 = right, y: 0 = bottom … 1 = top.
+  l: number;
+  r: number;
+  b: number;
+  t: number;
+}
+
+// The on-screen rectangle (screen fractions) of a gallery card at rest, derived
+// from the SAME layout constants CardStack uses, so the video morph lands exactly
+// on an image card. Card band is centred at `bandCenterFromTop` = 0.46 down.
+export function cardScreenRect(aspect: number): ScreenRect {
+  const cyTop = 2 * GUTTER + TOP_TITLE_VH + CARDS_VH / 2; // 0.46 from top
+  const cy = 1 - cyTop; // from bottom
+  const halfH = CARDS_VH / 2;
+  // Card screen-width fraction: landscape keeps 3:2 (world cardH·ASPECT ÷ vw),
+  // portrait uses the fixed 86vw band.
+  const wFrac = aspect >= 1 ? (CARDS_VH * CARD_ASPECT) / aspect : CARDS_WIDTH_VW_PORTRAIT;
+  const halfW = wFrac / 2;
+  return { l: 0.5 - halfW, r: 0.5 + halfW, b: cy - halfH, t: cy + halfH };
+}
+
+export interface VideoCardMorph {
+  // Texture sub-window (screen fractions of the full-bleed cover image) the card
+  // shows — collapses full → card over the morph, then frozen.
+  crop: ScreenRect;
+  // Upward placement offset (screen-height fraction) during the fly-out.
+  rise: number;
+  // Plane opacity (1 until hold end, → 0 by fly end).
+  opacity: number;
+  // 0 → square corners (full-bleed), 1 → fully rounded card corners.
+  radius: number;
+  visible: boolean;
+}
+
+// Sub-stage windows (gp) inside the morph. The TOP edge leads the bottom so the
+// crop reads "from the top first"; the horizontal squeeze starts mid-vertical.
+const V_TOP_END = 0.07; // top edge reaches card top
+const V_BOT_END = 0.1; // bottom edge reaches card bottom (trails the top)
+const H_START = 0.08; // sides begin pulling in
+// How far the card rises during the fly-out (screen-height fraction).
+const RISE_VID = 0.6 * CARDS_VH;
+
+// Full-bleed FPV video → gallery slide #1: crop the top first, then the sides,
+// down to an image-card rect; hold; then rise + fade while the scrub continues.
+export function videoCardMorphFor(gp: number, aspect: number): VideoCardMorph {
+  const card = cardScreenRect(aspect);
+  const full: ScreenRect = { l: 0, r: 1, b: 0, t: 1 };
+  if (gp <= 0) return { crop: full, rise: 0, opacity: 1, radius: 0, visible: true };
+  if (gp >= VID_FLY_END)
+    return { crop: card, rise: RISE_VID, opacity: 0, radius: 1, visible: false };
+
+  // Vertical crop (top leads), then horizontal crop.
+  const aTop = smoothstep(clamp01(gp / V_TOP_END));
+  const aBot = smoothstep(clamp01(gp / V_BOT_END));
+  const h = smoothstep(clamp01((gp - H_START) / (VID_MORPH_END - H_START)));
+  const crop: ScreenRect = {
+    t: lerp(full.t, card.t, aTop),
+    b: lerp(full.b, card.b, aBot),
+    l: lerp(full.l, card.l, h),
+    r: lerp(full.r, card.r, h),
+  };
+
+  // Fly-out after the hold: texture window stays frozen at the card crop while
+  // the placement rises and fades (the scrub keeps playing inside the window).
+  const fly = smoothstep(clamp01((gp - VID_HOLD_END) / (VID_FLY_END - VID_HOLD_END)));
+  return { crop, rise: fly * RISE_VID, opacity: 1 - fly, radius: h, visible: 1 - fly > 0.001 };
 }
 
 // Normalized title scrub fraction (0→1) → maps to the titles.json frame range.

@@ -5,6 +5,7 @@ import {
   figureStateFor,
   figureVisibleFor,
   videoStateFor,
+  videoMasterTimeFor,
   lottieBleedFor,
 } from "../src/playback";
 import {
@@ -27,6 +28,9 @@ import {
   cardConveyorFor,
   cardFlyProgressFor,
   galleryCtaFromExit,
+  imageGalleryProgress,
+  cardScreenRect,
+  videoCardMorphFor,
   CTA_REVEAL_FROM,
   GALLERY_IMAGES,
   BACKDROP_FADE_END,
@@ -35,7 +39,15 @@ import {
   CARDS_FLY_END,
   CTA_START,
 } from "../src/gallery";
-import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../src/constants";
+import {
+  SCROLL_TRACK_VH,
+  GALLERY_TRACK_VH,
+  VIDEO_SPLIT,
+  VID_MORPH_END,
+  VID_HOLD_END,
+  VID_FLY_END,
+  IMAGE_GALLERY_START,
+} from "../src/constants";
 import {
   approach,
   tiltTarget,
@@ -297,6 +309,78 @@ for (const f of FIGURES) {
   ok(CARDS_FLY_END <= CTA_START, "last card finishes by the CTA");
 
   console.log("✓ gallery timeline");
+}
+
+// ── Video-card morph (slide #1 is the morphing FPV video) ────────────────────
+{
+  // videoMasterTimeFor: continuous + monotonic across the sp → gp boundary.
+  eq(videoMasterTimeFor(VIDEO_START, 0, "scroll"), 0, "vmt 0 at VIDEO_START");
+  eq(videoMasterTimeFor(1, 0, "scroll"), VIDEO_SPLIT, "vmt = VIDEO_SPLIT at sp=1 / gp=0");
+  eq(videoMasterTimeFor(1, VID_FLY_END, "scroll"), 1, "vmt = 1 when the card flies out");
+  ok(videoMasterTimeFor(1, VID_FLY_END + 0.2, "scroll") === 1, "vmt clamps at 1 after fly");
+  eq(videoMasterTimeFor(1, 1, "done"), 1, "vmt done: frozen last frame");
+  ok(
+    Math.abs(videoMasterTimeFor(1, 0, "scroll") - videoMasterTimeFor(1, 1e-9, "scroll")) < 1e-3,
+    "vmt continuous across the seam",
+  );
+  {
+    let prev = -1;
+    for (let sp = VIDEO_START; sp <= 1.0001; sp += 0.001) {
+      const t = videoMasterTimeFor(sp, 0, "scroll");
+      ok(t >= prev - 1e-9, `vmt monotonic (anim) @sp=${sp}`);
+      prev = t;
+    }
+    for (let gp = 0; gp <= VID_FLY_END + 1e-9; gp += 0.001) {
+      const t = videoMasterTimeFor(1, gp, "scroll");
+      ok(t >= prev - 1e-9, `vmt monotonic (gallery) @gp=${gp}`);
+      prev = t;
+    }
+  }
+
+  // imageGalleryProgress: 0 through the morph + hold, opens at IMAGE_GALLERY_START
+  // (before the video card finishes flying, so slide #2 rises in with no black gap).
+  eq(imageGalleryProgress(0), 0, "igp 0 at gallery start");
+  eq(imageGalleryProgress(IMAGE_GALLERY_START), 0, "igp 0 until the image gallery opens");
+  ok(imageGalleryProgress(IMAGE_GALLERY_START - 0.01) === 0, "igp still 0 during the hold");
+  ok(IMAGE_GALLERY_START < VID_FLY_END, "image gallery opens before the video card finishes flying");
+  ok(imageGalleryProgress(VID_FLY_END) > 0, "image gallery has begun by fly end (no black gap)");
+  eq(imageGalleryProgress(1), 1, "igp 1 at document bottom");
+  ok(imageGalleryProgress(0.7) > imageGalleryProgress(0.5), "igp monotonic");
+
+  // videoCardMorphFor: endpoints + crop collapses full → card, top-first.
+  const aspect = 0.5; // portrait phone
+  const card = cardScreenRect(aspect);
+  const m0 = videoCardMorphFor(0, aspect);
+  eq(m0.crop.l, 0, "morph full-bleed left @gp0");
+  eq(m0.crop.t, 1, "morph full-bleed top @gp0");
+  eq(m0.opacity, 1, "morph opaque @gp0");
+  // Morph completes (crop == card rect) by VID_MORPH_END, and holds there.
+  for (const gp of [VID_MORPH_END, VID_HOLD_END]) {
+    const m = videoCardMorphFor(gp, aspect);
+    eq(m.crop.l, card.l, `morph crop = card left @gp=${gp}`, 1e-9);
+    eq(m.crop.r, card.r, `morph crop = card right @gp=${gp}`, 1e-9);
+    eq(m.crop.b, card.b, `morph crop = card bottom @gp=${gp}`, 1e-9);
+    eq(m.crop.t, card.t, `morph crop = card top @gp=${gp}`, 1e-9);
+  }
+  const mHold = videoCardMorphFor(VID_HOLD_END, aspect);
+  eq(mHold.rise, 0, "no rise during the hold");
+  eq(mHold.opacity, 1, "opaque during the hold");
+  // Top edge leads the bottom early on (reads "cropped from the top first"),
+  // and the width is still full while the vertical crop runs.
+  {
+    const mEarly = videoCardMorphFor(0.03, aspect);
+    const topDrop = 1 - mEarly.crop.t;
+    const botRise = mEarly.crop.b;
+    ok(topDrop > botRise, "top edge leads the bottom (crop from the top first)");
+    ok(mEarly.crop.l === 0 && mEarly.crop.r === 1, "width still full during the vertical crop");
+  }
+  // Fly-out: rises + fades to nothing as the clip reaches its end.
+  const mFly = videoCardMorphFor(VID_FLY_END, aspect);
+  eq(mFly.opacity, 0, "morph faded out by fly end");
+  ok(mFly.rise > 0, "morph risen by fly end");
+  ok(!mFly.visible, "morph invisible once flown");
+
+  console.log("✓ video-card morph");
 }
 
 // ── Cursor tilt ──────────────────────────────────────────────────────────────

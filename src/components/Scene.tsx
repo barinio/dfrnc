@@ -354,7 +354,7 @@ export default function Scene() {
                 ),
             )}
           </Suspense>
-          <VideoPlane scrollRef={scrollRef} phase={phase} />
+          <VideoPlane scrollRef={scrollRef} galleryRef={galleryRef} phase={phase} />
           <GalleryBackdrop galleryRef={galleryRef} />
           <NoiseDriver noiseRef={noiseRef} scrollRef={scrollRef} phase={phase} />
           <EffectComposer multisampling={0} stencilBuffer={false}>

@@ -2,7 +2,8 @@ import { useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { videoStateFor } from "../playback";
+import { videoStateFor, videoMasterTimeFor } from "../playback";
+import { videoCardMorphFor } from "../gallery";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
@@ -10,49 +11,22 @@ import type { Phase } from "../playback";
 // is inside the scene the Noise/SMAA postprocessing covers it (consistent film
 // grain), and the white Lottie letters (opaque, alphaTest) occlude it while
 // the alphaTest gaps reveal the bright video behind the typography.
+//
+// In the gallery (gp > 0) the same plane MORPHS into slide #1: it crops from
+// the top, then horizontally, down to an image-card rect, holds, then rises and
+// fades — scrubbing the whole time (videoMasterTimeFor). The crop is a true
+// texture sub-window of the full-bleed cover image (no squash); the black
+// GalleryBackdrop sits behind it (z = −3.6) so the vacated area reads black.
 
 const PLANE_Z = -3.5;
 
-// (videoTime seconds → object-position-x %) keyframes for the portrait crop.
-// The 16:9 frame is cover-cropped on phones; the baked-in taglines drift away
-// from frame-center during parts of the clip, so the crop window pans to keep
-// them centered.
-// Tuned from portrait screenshots (390×844) at sp 0.82-0.98:
-//   t≈2.6-5.2s  "WIR SIND EIN INTERNATIONALES KREATIVSTUDIO" sits right-of-center
-//   t≈8-12s     "ZUHAUSE IM HERZEN DER SCHWEIZ" is heavily right-clipped
-// Increasing % shifts the visible window rightward (shows more right side of source).
-const PAN_KEYFRAMES: ReadonlyArray<readonly [number, number]> = [
-  [0, 50],
-  [2.0, 50],
-  [2.6, 52],   // "WIR SIND..." right-of-center; gentle rightward shift
-  [5.5, 51],   // tagline still slightly right; taper
-  [7.5, 50],   // no tagline (aerial bridge); return to center
-  [9.5, 50],   // transition into second tagline segment
-  [10.0, 72],  // "ZUHAUSE IM HERZEN DER SCHWEIZ" — right-of-center
-  [11.5, 78],  // text grows as drone flies into sign; keep shifting right
-  [12.5, 72],  // taper as text begins to fade
-  [13.0, 50],  // tagline fades; ease back to center
-  [14.24, 50],
-];
-
-function panXFor(time: number): number {
-  const k = PAN_KEYFRAMES;
-  if (time <= k[0][0]) return k[0][1];
-  for (let i = 1; i < k.length; i++) {
-    if (time <= k[i][0]) {
-      const f = (time - k[i - 1][0]) / (k[i][0] - k[i - 1][0]);
-      return k[i - 1][1] + f * (k[i][1] - k[i - 1][1]);
-    }
-  }
-  return k[k.length - 1][1];
-}
-
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
+  galleryRef: MutableRefObject<number>;
   phase: Phase;
 }
 
-export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
+export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneProps) {
   const { camera, viewport } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
@@ -122,7 +96,15 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
       return;
     }
 
-    const { t, opacity } = videoStateFor(scrollRef.current, phase);
+    const sp = scrollRef.current;
+    const gp = galleryRef.current;
+    const aspect = viewport.width / viewport.height;
+    // Scrub time spans the whole clip life (past sp = 1 into the gallery), so
+    // the frame never freezes while the card morphs / holds / flies.
+    const t = videoMasterTimeFor(sp, gp, phase);
+    const morph = videoCardMorphFor(gp, aspect);
+    // sp-based reveal fade-in (behind the typography) × gp-based fly-out fade.
+    const opacity = videoStateFor(sp, phase).opacity * morph.opacity;
     mat.opacity = opacity;
     // Never show the plane before the video has a decodable first frame —
     // sampling a not-yet-ready VideoTexture yields black. readyRef flips true
@@ -132,31 +114,45 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
 
     if (!mesh.visible) return;
 
+    // Camera frustum size at PLANE_Z — the full-bleed reference rect.
+    const cam = camera as THREE.PerspectiveCamera;
+    const distance = cam.position.z - PLANE_Z;
+    const fullH = 2 * distance * Math.tan((cam.fov * Math.PI) / 360);
+    const fullW = fullH * aspect;
+
+    // morph.crop is the on-screen rect (screen fractions) the card occupies —
+    // full [0,1,0,1] at gp ≤ 0, collapsing to the image-card rect over the morph.
+    const { l, r, b, t: cropTop } = morph.crop;
+
     const video = texture.image as HTMLVideoElement;
     const dur = video.duration;
     if (Number.isFinite(dur) && dur > 0) {
       // Clamp short of the end so the held last frame never flickers black.
       const target = Math.min(t * dur, dur - 0.05);
 
-      // Update texture transform (cover-crop + pan).
-      const planeAspect = viewport.width / viewport.height;
+      // Full-bleed cover-crop: maps the 16:9 source onto the WHOLE screen,
+      // always CENTERED (no pan — the clip is framed center).
       const videoAspect = 16 / 9;
-      if (planeAspect < videoAspect) {
-        // Viewport narrower than video (portrait phones): crop sides.
-        // Pan keyframes were tuned for portrait orientation (390×844);
-        // non-portrait narrow aspects (16:10, 4:3 tablets) stay center-cropped.
-        const portrait = viewport.height > viewport.width;
-        const repeat = new THREE.Vector2(planeAspect / videoAspect, 1);
-        texture.repeat.copy(repeat);
-        texture.offset.set(
-          (1 - repeat.x) * (portrait ? panXFor(target) / 100 : 0.5),
-          0,
-        );
+      let repeatX: number, repeatY: number, offsetX: number, offsetY: number;
+      if (aspect < videoAspect) {
+        // Viewport narrower than video (portrait phones): crop sides, centered.
+        repeatX = aspect / videoAspect;
+        repeatY = 1;
+        offsetX = (1 - repeatX) * 0.5;
+        offsetY = 0;
       } else {
         // Viewport wider/flatter (landscape): crop top/bottom, centered.
-        texture.repeat.set(1, videoAspect / planeAspect);
-        texture.offset.set(0, (1 - texture.repeat.y) / 2);
+        repeatX = 1;
+        repeatY = videoAspect / aspect;
+        offsetX = 0;
+        offsetY = (1 - repeatY) / 2;
       }
+
+      // Morph crop: show only the SUB-window of the full-bleed cover image that
+      // lies under the crop rect (linear in screen fractions) — a true crop, no
+      // squash. At gp ≤ 0 (rect = full screen) this is the identity mapping.
+      texture.repeat.set(repeatX * (r - l), repeatY * (cropTop - b));
+      texture.offset.set(offsetX + repeatX * l, offsetY + repeatY * b);
 
       // Re-seek only when the target moved by more than ~a frame (1/30 s).
       if (Math.abs(target - lastTime.current) >= 1 / 30) {
@@ -169,13 +165,15 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
       }
     }
 
-    // Scale the unit plane to fill the camera frustum at PLANE_Z
-    // (allocation-free: no geometry rebuild on resize).
-    const cam = camera as THREE.PerspectiveCamera;
-    const distance = cam.position.z - PLANE_Z;
-    const h = 2 * distance * Math.tan((cam.fov * Math.PI) / 360);
-    const w = h * (viewport.width / viewport.height);
-    mesh.scale.set(w, h, 1);
+    // Placement: the crop rect, translated up by `rise` during the fly-out (the
+    // texture window stays frozen at the card crop, so the card keeps its content
+    // and just rises off-screen). Allocation-free.
+    const placeB = b + morph.rise;
+    const placeT = cropTop + morph.rise;
+    const cx = (l + r) / 2;
+    const cy = (placeB + placeT) / 2;
+    mesh.scale.set((r - l) * fullW, (placeT - placeB) * fullH, 1);
+    mesh.position.set((cx * 2 - 1) * (fullW / 2), (cy * 2 - 1) * (fullH / 2), PLANE_Z);
   });
 
   return (

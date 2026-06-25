@@ -5,7 +5,7 @@ import * as THREE from "three";
 import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import titlesData from "../assets/titles.json";
-import { galleryTitleFracFor, GUTTER, MAX_ASPECT } from "../gallery";
+import { galleryTitleFracFor, imageGalleryProgress, GUTTER, MAX_ASPECT } from "../gallery";
 
 // titles.json scrubbed by gallery progress. The 1000×1000 comp encodes the 3
 // title frames at the right top(≈8%)/bottom(≈16%) positions, so a full-frame
@@ -88,7 +88,10 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
   useFrame((_s, delta) => {
     const anim = animRef.current;
     if (!anim || !texRef.current) return;
-    const target = galleryTitleFracFor(galleryRef.current); // 0..1
+    // Titles live in the IMAGE-gallery sub-range — hidden through the whole
+    // video-card phase (igp = 0 until the video slide #1 has flown away).
+    const igp = imageGalleryProgress(galleryRef.current);
+    const target = galleryTitleFracFor(igp); // 0..1
     let frac: number;
     if (reducedMotion) {
       frac = target; // discrete, no smoothing
@@ -103,7 +106,9 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     // the leaving card's own fade (1 − exit), so text and card leave together.
     // Driven every frame (not on Lottie-frame change) since exit moves while the
     // held last frame is static.
-    if (matRef.current) matRef.current.opacity = 1 - THREE.MathUtils.clamp(cardExitRef.current, 0, 1);
+    if (matRef.current)
+      matRef.current.opacity =
+        igp <= 1e-4 ? 0 : 1 - THREE.MathUtils.clamp(cardExitRef.current, 0, 1);
     if (frame === lastFrameRef.current) return;
     lastFrameRef.current = frame;
     anim.goToAndStop(frame, true);

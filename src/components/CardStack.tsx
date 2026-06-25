@@ -6,6 +6,7 @@ import GalleryCard from "./GalleryCard";
 import {
   cardConveyorFor,
   cardFlyProgressFor,
+  imageGalleryProgress,
   GALLERY_IMAGES,
   CARDS_VH,
   CARD_ASPECT,
@@ -127,13 +128,16 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     const group = groupRef.current;
     if (!group) return;
 
-    const gp = galleryRef.current;
-    const { span } = cardConveyorFor(gp);
+    // The image conveyor (slides 2..N) runs in the IMAGE-gallery sub-range, which
+    // opens only AFTER the video card (slide #1) has flown away (igp > 0 ⟺ gp >
+    // VID_FLY_END). All card timing below is in this remapped space.
+    const igp = imageGalleryProgress(galleryRef.current);
+    const { span } = cardConveyorFor(igp);
 
-    // Show the stack only once the gallery's card phase begins — i.e. after the
-    // video AND the black backdrop fade (span > 0 ⟺ gp > BACKDROP_FADE_END).
-    // During the intro/figures/video (gp = 0) the whole stack is hidden, so it
-    // can't peek up from the bottom behind the intro typography.
+    // Show the stack only once the image-card phase begins — i.e. after the
+    // video card has flown and the black backdrop is up (span > 0 ⟺ igp >
+    // BACKDROP_FADE_END). During the intro/figures/video/video-card phase
+    // (igp = 0) the whole stack is hidden, so it can't peek up from the bottom.
     group.visible = span > 1e-4;
     if (!group.visible) {
       cardExitRef.current = 0; // titles stay fully opaque before the card phase
@@ -144,7 +148,7 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     // Discrete slide index from the RETIMED fly window (round 3): the deck trails
     // the title scrub so a card leaves at the END of each text display. `span`
     // (above) still drives visibility + entrance over the full card phase.
-    const target = Math.round(cardFlyProgressFor(gp) * n);
+    const target = Math.round(cardFlyProgressFor(igp) * n);
 
     // Discrete-step displayed position: speed-capped exponential ease toward the
     // rounded target (single eased step; big scroll cascades). Reduced motion
@@ -250,7 +254,7 @@ function SlotCard({
   cardW: number;
   cardH: number;
 }) {
-  const { lead } = cardConveyorFor(galleryRef.current);
+  const { lead } = cardConveyorFor(imageGalleryProgress(galleryRef.current));
   const idx = lead + slot;
   const n = GALLERY_IMAGES.length;
   if (idx >= n) return null;
