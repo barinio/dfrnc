@@ -55,7 +55,13 @@ export const BACKDROP_FADE_END = 0.06;
 export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
 // CTA reveals over the TAIL of the last card's exit: cardExit ∈ [CTA_REVEAL_FROM, 1].
-export const CTA_REVEAL_FROM = 0.8;
+// The last card flies UP opaque (no opacity fade to hide behind), so the CTA must
+// already be coming up as the card clears the centre — not pop in once it's fully
+// gone. cardExit equals the leaving card's rise progress, and the card has cleared
+// screen-centre (where the wordmark sits) by ≈0.5, so revealing from 0.6 starts the
+// fade just as the centre opens up: no black gap, no late pop, and the wordmark
+// never bleeds over the still-present card.
+export const CTA_REVEAL_FROM = 0.6;
 
 // ── Round 3 retiming ─────────────────────────────────────────────────────────
 // The card conveyor TRAILS the title scrub so a card leaves at the END of each
