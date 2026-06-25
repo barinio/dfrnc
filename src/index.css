@@ -68,7 +68,9 @@ body.scroll-locked {
 }
 
 /* Gallery CTA — DOM overlay above the fixed canvas, shown only on the final
-   gallery frame (opacity driven imperatively from gallery progress). */
+   gallery frame (opacity driven imperatively from gallery progress). Reads as a
+   10th "slide": JUST the wordmark on the scene's existing dark backdrop — no
+   card or solid background of its own. */
 .gallery-cta {
     position: fixed;
     inset: 0;
@@ -76,22 +78,30 @@ body.scroll-locked {
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: #000000;
     opacity: 0;
     pointer-events: none;
     perspective: 800px;
 }
 
 .gallery-cta__link {
-    width: 50vmin;
-    text-align: center;
+    display: block;
+    width: min(86vw, 70rem);
     color: #ffffff;
     text-decoration: none;
-    font-family: "Arial Narrow", "Helvetica Neue Condensed", Arial, sans-serif;
-    font-weight: 700;
-    font-size: 4vmin;
-    line-height: 1.15;
     transform-style: preserve-3d;
     will-change: transform;
+}
+
+.gallery-cta__wordmark {
+    display: block;
+    width: 100%;
+}
+
+/* The inlined wordmark scales to its container, stays crisp (vector), and keeps
+   its baked-in white fills. */
+.gallery-cta__wordmark svg {
+    display: block;
+    width: 100%;
+    height: auto;
 }
 
