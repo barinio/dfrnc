@@ -3,7 +3,7 @@ import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { videoStateFor, videoMasterTimeFor } from "../playback";
-import { videoCardMorphFor } from "../gallery";
+import { videoCardMorphFor, CARD_RADIUS_VH } from "../gallery";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
@@ -13,10 +13,12 @@ import type { Phase } from "../playback";
 // the alphaTest gaps reveal the bright video behind the typography.
 //
 // In the gallery (gp > 0) the same plane MORPHS into slide #1: it crops from
-// the top, then horizontally, down to an image-card rect, holds, then rises and
-// fades — scrubbing the whole time (videoMasterTimeFor). The crop is a true
-// texture sub-window of the full-bleed cover image (no squash); the black
-// GalleryBackdrop sits behind it (z = −3.6) so the vacated area reads black.
+// the top, then horizontally, down to an image-card rect (gaining rounded
+// corners via a fragment SDF mask), holds, then flies straight UP off the top
+// FULLY OPAQUE (no dissolve — matching the image cards) — scrubbing the whole
+// time (videoMasterTimeFor). The crop is a true texture sub-window of the
+// full-bleed cover image (no squash); the black GalleryBackdrop sits behind it
+// (z = −3.6) so the vacated area reads black.
 
 const PLANE_Z = -3.5;
 
@@ -50,6 +52,48 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
   const readyRef = useRef(false);
   // Degraded mode per the spec's error handling: latched on 404/decode/data-saver.
   const failedRef = useRef(false);
+
+  // Rounded-corner mask uniforms, shared by reference with the patched material
+  // (set inside onBeforeCompile) so useFrame can drive them allocation-free.
+  // uSize = the card's world W/H (the mesh scale); uRadius = corner radius in the
+  // same world units (0 = square full-bleed → card radius once morphed).
+  const maskUniforms = useRef({
+    uRadius: { value: 0 },
+    uSize: { value: new THREE.Vector2(1, 1) },
+  });
+
+  // meshBasicMaterial has no corner radius, so inject a rounded-rect signed-
+  // distance alpha mask into the fragment. A dedicated vMaskUv = uv carries the
+  // raw [0,1] geometry UV (vMapUv is warped by the texture sub-window transform,
+  // so it can't be used here). fwidth gives a crisp ~1px antialiased edge; the
+  // discard keeps fully-outside fragments from writing anything.
+  const installMask = useCallback((shader: THREE.WebGLProgramParametersWithUniforms) => {
+    shader.uniforms.uRadius = maskUniforms.current.uRadius;
+    shader.uniforms.uSize = maskUniforms.current.uSize;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec2 vMaskUv;")
+      .replace("#include <uv_vertex>", "#include <uv_vertex>\n\tvMaskUv = uv;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        "#include <common>\nvarying vec2 vMaskUv;\nuniform float uRadius;\nuniform vec2 uSize;",
+      )
+      .replace(
+        "#include <dithering_fragment>",
+        `#include <dithering_fragment>
+	{
+		vec2 b = uSize * 0.5;
+		float rr = min(uRadius, min(b.x, b.y));
+		vec2 p = (vMaskUv - 0.5) * uSize;
+		vec2 q = abs(p) - b + rr;
+		float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr;
+		float aa = fwidth(d);
+		float mask = 1.0 - smoothstep(-aa, aa, d);
+		if (mask < 0.001) discard;
+		gl_FragColor.a *= mask;
+	}`,
+      );
+  }, []);
 
   // Issue a seek toward the latest desired time, but only when no seek is in
   // flight — coalesced seeks get dropped by the browser and the final one can be
@@ -160,14 +204,17 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
     // the frame never freezes while the card morphs / holds / flies.
     const t = videoMasterTimeFor(sp, gp, phase);
     const morph = videoCardMorphFor(gp, aspect);
-    // sp-based reveal fade-in (behind the typography) × gp-based fly-out fade.
+    // sp-based reveal fade-in (behind the typography). morph.opacity is always 1
+    // now — the card flies up OPAQUE (no dissolve), so it is hidden off `visible`
+    // (flown / gp ≥ VID_FLY_END), NOT off opacity.
     const opacity = videoStateFor(sp, phase).opacity * morph.opacity;
     mat.opacity = opacity;
     // Never show the plane before the video has a decodable first frame —
     // sampling a not-yet-ready VideoTexture yields black. readyRef flips true
     // in the loadeddata listener (early on fast connections; slow-network fallback
     // keeps the GradientBackground visible until the first frame is decoded).
-    mesh.visible = readyRef.current && opacity > 0.001;
+    // morph.visible drops false once the card has flown off the top.
+    mesh.visible = readyRef.current && morph.visible && opacity > 0.001;
 
     if (!mesh.visible) return;
 
@@ -225,8 +272,17 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
     const placeT = cropTop + morph.rise;
     const cx = (l + r) / 2;
     const cy = (placeB + placeT) / 2;
-    mesh.scale.set((r - l) * fullW, (placeT - placeB) * fullH, 1);
+    const scaleX = (r - l) * fullW;
+    const scaleY = (cropTop - b) * fullH; // = (placeT - placeB): rise is a translation
+    mesh.scale.set(scaleX, scaleY, 1);
     mesh.position.set((cx * 2 - 1) * (fullW / 2), (cy * 2 - 1) * (fullH / 2), PLANE_Z);
+
+    // Drive the rounded-corner mask: uSize = the card's world dimensions, uRadius
+    // grows with morph.radius to the SAME fraction of the card height the image
+    // cards use (CARD_RADIUS_VH / CARDS_VH applied to the card-format height
+    // CARDS_VH · fullH ⇒ CARD_RADIUS_VH · fullH). Square (0) at full-bleed.
+    maskUniforms.current.uSize.value.set(scaleX, scaleY);
+    maskUniforms.current.uRadius.value = morph.radius * CARD_RADIUS_VH * fullH;
   });
 
   return (
@@ -238,6 +294,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
         transparent={true}
         depthWrite={false}
         opacity={0}
+        onBeforeCompile={installMask}
       />
     </mesh>
   );

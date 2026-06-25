@@ -132,7 +132,8 @@ export interface VideoCardMorph {
   crop: ScreenRect;
   // Upward placement offset (screen-height fraction) during the fly-out.
   rise: number;
-  // Plane opacity (1 until hold end, → 0 by fly end).
+  // Plane opacity — always 1 here: the card flies up OPAQUE (no dissolve). Kept
+  // in the shape so the reveal-fade can still multiply it at the call site.
   opacity: number;
   // 0 → square corners (full-bleed), 1 → fully rounded card corners.
   radius: number;
@@ -144,19 +145,26 @@ export interface VideoCardMorph {
 const V_TOP_END = 0.07; // top edge reaches card top
 const V_BOT_END = 0.1; // bottom edge reaches card bottom (trails the top)
 const H_START = 0.08; // sides begin pulling in
-// How far the card rises during the fly-out (screen-height fraction).
-const RISE_VID = 0.6 * CARDS_VH;
+// How far the card rises during the fly-out (screen-height fraction). Matches
+// CardStack's RISE_OFF (≈1.9 card-heights): the card flies straight UP off the
+// top FULLY OPAQUE (no opacity fade — "слайди без опасіті улітають"), far enough
+// to clear the frame. card.b ≈ 0.22 + this ≫ 1, so the bottom edge exits the top.
+const RISE_VID = 1.9 * CARDS_VH;
 
 // Full-bleed FPV video → gallery slide #1: crop the top first, then the sides,
-// down to an image-card rect; hold; then rise + fade while the scrub continues.
+// down to an image-card rect; hold; then fly straight UP off the top — OPAQUE,
+// no dissolve (matches the image cards) — while the scrub continues.
 export function videoCardMorphFor(gp: number, aspect: number): VideoCardMorph {
   const card = cardScreenRect(aspect);
   const full: ScreenRect = { l: 0, r: 1, b: 0, t: 1 };
   if (gp <= 0) return { crop: full, rise: 0, opacity: 1, radius: 0, visible: true };
+  // Off the top and gone: keep opacity 1 (no fade); VideoPlane hides the plane
+  // off `visible` (flown), not off opacity.
   if (gp >= VID_FLY_END)
-    return { crop: card, rise: RISE_VID, opacity: 0, radius: 1, visible: false };
+    return { crop: card, rise: RISE_VID, opacity: 1, radius: 1, visible: false };
 
-  // Vertical crop (top leads), then horizontal crop.
+  // Vertical crop (top leads), then horizontal crop. The radius grows over the
+  // horizontal-crop stage so the card lands fully rounded at card format.
   const aTop = smoothstep(clamp01(gp / V_TOP_END));
   const aBot = smoothstep(clamp01(gp / V_BOT_END));
   const h = smoothstep(clamp01((gp - H_START) / (VID_MORPH_END - H_START)));
@@ -167,10 +175,11 @@ export function videoCardMorphFor(gp: number, aspect: number): VideoCardMorph {
     r: lerp(full.r, card.r, h),
   };
 
-  // Fly-out after the hold: texture window stays frozen at the card crop while
-  // the placement rises and fades (the scrub keeps playing inside the window).
+  // Fly-out after the hold: the texture window stays frozen at the card crop
+  // while the placement rises straight up — staying FULLY OPAQUE (no dissolve),
+  // matching the image cards. The scrub keeps playing inside the window.
   const fly = smoothstep(clamp01((gp - VID_HOLD_END) / (VID_FLY_END - VID_HOLD_END)));
-  return { crop, rise: fly * RISE_VID, opacity: 1 - fly, radius: h, visible: 1 - fly > 0.001 };
+  return { crop, rise: fly * RISE_VID, opacity: 1, radius: h, visible: true };
 }
 
 // Normalized title scrub fraction (0→1) → maps to the titles.json frame range.

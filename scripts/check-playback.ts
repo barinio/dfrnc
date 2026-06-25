@@ -365,6 +365,7 @@ for (const f of FIGURES) {
   const mHold = videoCardMorphFor(VID_HOLD_END, aspect);
   eq(mHold.rise, 0, "no rise during the hold");
   eq(mHold.opacity, 1, "opaque during the hold");
+  eq(mHold.radius, 1, "fully rounded by the hold");
   // Top edge leads the bottom early on (reads "cropped from the top first"),
   // and the width is still full while the vertical crop runs.
   {
@@ -374,11 +375,18 @@ for (const f of FIGURES) {
     ok(topDrop > botRise, "top edge leads the bottom (crop from the top first)");
     ok(mEarly.crop.l === 0 && mEarly.crop.r === 1, "width still full during the vertical crop");
   }
-  // Fly-out: rises + fades to nothing as the clip reaches its end.
+  // Fly-out: the card flies straight UP off the top, staying FULLY OPAQUE (no
+  // dissolve — matches the image cards); the clip reaches its last frame as it
+  // flies. It is hidden off `visible` (flown), not off opacity.
+  const mMidFly = videoCardMorphFor((VID_HOLD_END + VID_FLY_END) / 2, aspect);
+  eq(mMidFly.opacity, 1, "opaque mid-fly (no dissolve)");
+  ok(mMidFly.rise > 0, "rising mid-fly");
   const mFly = videoCardMorphFor(VID_FLY_END, aspect);
-  eq(mFly.opacity, 0, "morph faded out by fly end");
-  ok(mFly.rise > 0, "morph risen by fly end");
-  ok(!mFly.visible, "morph invisible once flown");
+  eq(mFly.opacity, 1, "morph stays opaque through the fly-out (no fade)");
+  ok(mFly.rise > mMidFly.rise, "morph still rising to fly end");
+  // Risen far enough that the card's bottom edge has cleared the top of frame.
+  ok(mFly.rise + card.b > 1, "risen card has fully cleared the top of the frame");
+  ok(!mFly.visible, "morph invisible once flown (gp ≥ VID_FLY_END)");
 
   console.log("✓ video-card morph");
 }
