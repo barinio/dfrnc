@@ -240,19 +240,26 @@ export function galleryCardProgressFor(gp: number): number {
 
 // Title-frame fraction (0..1 → titles.json frame range) as a function of the
 // unified card progress `cp`. Each title text squishes in while ITS card is the
-// one showing, then holds while the next cards pass (monotonic non-decreasing):
-//   cp [0,1]  card 1 / video morph → 0 .. 0.49  (WIR LIEFERN + STRATEGISCHE)
-//   cp [1,3]  cards 2,3            → hold 0.49
-//   cp [3,4]  card 4              → 0.49 .. 0.60 (DESIGN NACH MASS)
-//   cp [4,6]  cards 5,6            → hold 0.60
-//   cp [6,7]  card 7              → 0.60 .. 1.0  (UND DIE + GANZ GROSSEN BILDER)
-//   cp [7,9]  cards 8,9            → hold 1.0
+// one showing, then HOLDS on the comp's SETTLED frame (one text per band) while
+// the next cards pass (monotonic non-decreasing):
+//   cp [0,1]  card 1 / video morph → 0 .. 0.455 (WIR LIEFERN + STRATEGISCHE in)
+//   cp [1,3]  cards 2,3            → hold 0.455 (clean STRATEGISCHE — frame 45)
+//   cp [3,4]  card 4              → 0.455 .. 0.727 (DESIGN NACH MASS slides in)
+//   cp [4,6]  cards 5,6            → hold 0.727 (clean DESIGN NACH MASS — frame 72)
+//   cp [6,7]  card 7              → 0.727 .. 0.99 (UND DIE + GANZ GROSSEN BILDER)
+//   cp [7,9]  cards 8,9            → hold 0.99 (clean — frame 98)
+// The holds land on the comp's CLEAN frames (verified render: 45 / 72 / 98), so
+// the strategische↔design↔ganz-grossen overlaps only flash by DURING each
+// trigger card's slide-in (cp 3→4, 6→7) — never held static across 3 cards.
+const TITLE_F_STRAT = 0.455; // frame 45 — WIR LIEFERN / STRATEGISCHE KOMMUNIKATION
+const TITLE_F_DESIGN = 0.727; // frame 72 — WIR LIEFERN / DESIGN NACH MASS
+const TITLE_F_GROSS = 0.99; // frame 98 — UND DIE / GANZ GROSSEN BILDER
 export function galleryTitleFrameFracForCard(cp: number): number {
   const c = Math.min(Math.max(cp, 0), 9);
-  if (c <= 1) return lerp(0, 0.49, c);
-  if (c <= 3) return 0.49;
-  if (c <= 4) return lerp(0.49, 0.6, c - 3);
-  if (c <= 6) return 0.6;
-  if (c <= 7) return lerp(0.6, 1, c - 6);
-  return 1;
+  if (c <= 1) return lerp(0, TITLE_F_STRAT, c);
+  if (c <= 3) return TITLE_F_STRAT;
+  if (c <= 4) return lerp(TITLE_F_STRAT, TITLE_F_DESIGN, c - 3);
+  if (c <= 6) return TITLE_F_DESIGN;
+  if (c <= 7) return lerp(TITLE_F_DESIGN, TITLE_F_GROSS, c - 6);
+  return TITLE_F_GROSS;
 }

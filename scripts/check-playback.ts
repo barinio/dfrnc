@@ -329,15 +329,16 @@ for (const f of FIGURES) {
     }
   }
 
-  // galleryTitleFrameFracForCard: the per-card frac mapping. Anchors + holds +
-  // monotonic non-decreasing across the whole cp range.
+  // galleryTitleFrameFracForCard: the per-card frac mapping. Holds land on the
+  // comp's CLEAN frames (45/72/98 → 0.455/0.727/0.99) so the texts never sit in a
+  // half-overlapped state. Anchors + holds + monotonic non-decreasing.
   eq(galleryTitleFrameFracForCard(0), 0, "title frac 0 at cp 0");
-  eq(galleryTitleFrameFracForCard(1), 0.49, "title frac 0.49 once card 1 (video) is in");
-  eq(galleryTitleFrameFracForCard(3), 0.49, "title frac holds 0.49 over cards 2,3");
-  eq(galleryTitleFrameFracForCard(4), 0.6, "title frac 0.60 once card 4 is in");
-  eq(galleryTitleFrameFracForCard(6), 0.6, "title frac holds 0.60 over cards 5,6");
-  eq(galleryTitleFrameFracForCard(7), 1, "title frac 1.0 once card 7 is in");
-  eq(galleryTitleFrameFracForCard(9), 1, "title frac holds 1.0 over cards 8,9");
+  eq(galleryTitleFrameFracForCard(1), 0.455, "title frac = clean STRATEGISCHE once card 1 is in");
+  eq(galleryTitleFrameFracForCard(3), 0.455, "title frac holds clean STRATEGISCHE over cards 2,3");
+  eq(galleryTitleFrameFracForCard(4), 0.727, "title frac = clean DESIGN NACH MASS once card 4 is in");
+  eq(galleryTitleFrameFracForCard(6), 0.727, "title frac holds clean DESIGN NACH MASS over cards 5,6");
+  eq(galleryTitleFrameFracForCard(7), 0.99, "title frac = clean GANZ GROSSEN BILDER once card 7 is in");
+  eq(galleryTitleFrameFracForCard(9), 0.99, "title frac holds clean over cards 8,9");
   {
     let prev = -1;
     for (let cp = -0.5; cp <= 9.5; cp += 0.01) {
