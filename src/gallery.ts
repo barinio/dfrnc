@@ -72,12 +72,20 @@ export const CTA_REVEAL_FROM = 0.6;
 
 // ── Round 3 retiming ─────────────────────────────────────────────────────────
 // The card conveyor TRAILS the title scrub so a card leaves at the END of each
-// text display. The first card lingers through the title grow-in; the last card
-// flies up while the title fades out in lockstep (the fade is driven by the last
-// card's exit progress in CardStack/GalleryTitles, not a gp window, so they are
-// exactly synchronized). Tuning dials — feel is judged in-browser.
-export const CARDS_FLY_START = 0.22; // first card holds until here (title still growing in)
-export const CARDS_FLY_END = CTA_START; // last card gone by the CTA
+// text display. The last card flies up while the title fades out in lockstep (the
+// fade is driven by the last card's exit progress in CardStack/GalleryTitles, not
+// a gp window, so they are exactly synchronized). Tuning dials — feel is judged
+// in-browser.
+//
+// CARDS_FLY_START is in IMAGE-gallery-progress (igp) units. The video card clears
+// the frame at gp = VID_FLY_END (0.4) ⇒ igp ≈ 0.09; the first image card must
+// start leaving right after, not ~60vh later, so the linger was pulled in from
+// 0.22 → 0.11 (first card flies at gp ≈ 0.41, "almost immediately" after the
+// video card). CARDS_FLY_END moves by the SAME amount (was = CTA_START 0.82) so
+// the per-card span stays (END−START)/8 = 0.075 igp — i.e. cards 2..9 keep the
+// exact cadence they had; only the first card's dead linger shrank.
+export const CARDS_FLY_START = 0.11; // first image card starts leaving as the video card clears
+export const CARDS_FLY_END = 0.71; // = START + 8 × 0.075 → identical per-card cadence to before
 
 // scrollY → gp, mapped PIECEWISE across two sub-tracks so each gallery phase gets
 // its own scroll budget. The video-card phase gp ∈ [0, VID_FLY_END] rides the

@@ -329,7 +329,7 @@ for (const f of FIGURES) {
 
   // Round 3 — retimed fly window: 0 through the first-card linger, 1 by fly end.
   eq(cardFlyProgressFor(CARDS_FLY_START), 0, "fly progress 0 at fly start");
-  eq(cardFlyProgressFor(0.15), 0, "fly progress 0 during the first-card linger");
+  eq(cardFlyProgressFor(0.05), 0, "fly progress 0 during the first-card linger");
   eq(cardFlyProgressFor(CARDS_FLY_END), 1, "fly progress 1 by fly end");
   ok(cardFlyProgressFor(0.5) > cardFlyProgressFor(0.35), "fly progress monotonic");
   // First card has flown by the time text 1 is readable (title frac ≈ 0.5).
