@@ -78,12 +78,17 @@ export interface FigureDef {
 //   • tokyo launches the MOMENT `and` reaches its apex (and's window midpoint
 //     0.15) — it took over this launch slot when the awwwards figure was
 //     removed — flying a LOWER dome right-to-left while…
-//   • gba launches as tokyo is landing (their windows still overlap at the
-//     handoff), flying a HIGHER dome left-to-right on the opposite side at a
-//     different depth (z) so the two paths never collide. gba is the LAST
-//     figure: it is ≈¾ through its arc when the Lottie scrub / video reveal
-//     begins (LOTTIE_SCRUB_START 0.5 maps to gba's phase ≈0.82), so the
-//     background continuation only resumes once the last icon is almost down.
+//     gba launches at 0.30 — the EARLIEST possible without a third figure in the
+//     air: `and` lands at 0.30, so any earlier overlaps and+tokyo+gba (the design
+//     keeps ≤2 airborne). It launches while tokyo is still descending, flying a
+//     HIGHER dome left-to-right on the opposite side at a different depth (z) so
+//     the two paths never collide. (The removed `awwwards` figure used to fill
+//     this slot; when it went, gba was left launching only as tokyo LANDED, which
+//     read as a late, detached final flight.) gba is the LAST figure and lands at
+//     0.85 → sp ≈0.51, just AFTER the Lottie scrub / video reveal begins
+//     (LOTTIE_SCRUB_START 0.5): it is ≈95% down by then (was ¾ at the slower
+//     0.95 end), so the arc is ~13% snappier and the background continuation
+//     resumes right as the last icon finishes — no dead air, no lingering tail.
 // Icons (and/gba) spin AGAINST their travel at distinct rates; the text logo
 // (tokyo) spins with it. NO opacity fades (FIGURE_FADE = 0): every figure
 // enters/exits below the frame (rootDepth ≈ 1.4 sinks the entry/exit roots
@@ -158,8 +163,14 @@ export const FIGURES: FigureDef[] = [
       rollPeak: -0.25,
       swingAmount: 0.45,
       z: -0.7,
-      // Last figure; ≈¾ through its arc at LOTTIE_SCRUB_START (sp 0.5).
-      window: [0.485, 0.95],
+      // Launches at 0.30 — the EARLIEST it can without three figures airborne at
+      // once (`and` lands at 0.30; any earlier overlaps and+tokyo+gba). Lands at
+      // 0.85 (was 0.95), the snappier end: 0.95 lingered to sp 0.557, while 0.85
+      // lands at sp ≈0.51 — still just AFTER the scrub starts (sp 0.5) so the
+      // lottie is scrubbing during the exit (no dead air), but the arc is ~13%
+      // narrower (faster) and the whole flight reads earlier. End must stay ≥0.824
+      // phase (→ sp >0.5) or the background would resume before the icon is down.
+      window: [0.3, 0.85],
     },
     // gba's chunky, thick body has the longest internal light paths of the set,
     // so the Beer-Lambert tint saturates blue hardest. Kept the WEAKEST of the
