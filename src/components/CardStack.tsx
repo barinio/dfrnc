@@ -23,11 +23,21 @@ import { approach } from "../cursorTilt";
 const PLANE_Z = 0; // centre of the frustum → pronounced perspective for the tilt
 
 // Hover (radiance.family): parallax + scale apply ONLY while the cursor is over
-// the card. No always-on tilt or idle drift.
-const HOVER_SCALE = 1.03; // front card grows 1 → 1.03 on hover (small — full-size card)
-const HOVER_TILT_MAX = 0.06; // ~3.4° max parallax tilt on hover (radians)
+// the card. No always-on tilt or idle drift. The ONE interactive card is the
+// frontmost (slot 0); it reacts for its WHOLE on-screen life (not just a brief
+// settle window) and hands off to the next when it flies off the top.
+const HOVER_SCALE = 1.05; // front card grows 1 → 1.05 on hover (was 1.03 — too subtle to notice)
+const HOVER_TILT_MAX = 0.16; // ~9° max parallax tilt on hover (radians; was 0.06 ≈ 3.4°)
 const HOVER_RATE = 9; // ease rate for the hover scale/tilt
-const HOVER_PAD = 1.06; // hover hit-region padding (reduces edge flicker)
+const HOVER_PAD = 1.08; // hover hit-region padding (reduces edge flicker, forgiving)
+// Where the interactive role HANDS OFF: the front card (slot 0) rises off the
+// top as local → 1; by this local it has cleared the frame, so the NEXT card
+// (slot 1, now the front-most still on screen) becomes the interactive one —
+// "as soon as the front slide goes off-screen, the next becomes interactive".
+// Each card's eased tilt is per-card, so the leaving card un-tilts smoothly while
+// the incoming one tilts up — no pop at the swap. ~0.6 ⇒ the front card's centre
+// has cleared the top edge (mostly off screen) when its successor takes over.
+const CARD_LEAVE_AT = 0.6;
 
 // Depth stack by AGE (continuous depth d, 0 = front): the front card (next to
 // leave) has the HIGHEST z + largest scale; each card behind is deeper + a touch
@@ -72,9 +82,13 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
   // snap to its new spot still showing the previous image, then pop — the visible
   // "jump when a new picture arrives". Fixed by never changing any card's content.)
   const cardRefs = useRef<(THREE.Group | null)[]>([]);
-  const rotX = useRef(0);
-  const rotY = useRef(0);
-  const hover = useRef(0); // eased 0..1 hover amount
+  // Per-card eased parallax state (one entry per image card). The interactive
+  // role moves from the front card to the next as cards leave; easing EACH card's
+  // tilt/scale independently lets the leaving card relax to flat while the
+  // incoming one tilts up, with no snap at the hand-off.
+  const cardRotX = useRef<number[]>([]);
+  const cardRotY = useRef<number[]>([]);
+  const cardAmt = useRef<number[]>([]); // eased 0..1 hover amount per card
 
   // Pointer in normalized device coords, tracked on window so it works despite
   // the canvas layer being pointer-events:none. Used for the hover hit-test +
@@ -153,27 +167,40 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     // begins flipping out, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
 
-    // Hover amount (eased) — applied to the FRONT/settled card only. The resting
-    // Position slot cycles centre / upper-left / right, so the hit-region must
-    // FOLLOW the front card to its actual on-screen spot; testing against
-    // screen-centre let only the centred cards (idx 0,3,6) react, so it looked
-    // like only the first card had parallax.
-    // its resting NDC centre = the band centre plus the card's P.x/P.y offset.
-    const Pfront = galleryCardPositionFor(lead + 1);
-    const frontCenterX = (2 * Pfront.x * cardW) / viewport.width;
-    const frontCenterY = hoverCenterY + (2 * Pfront.y * cardH) / viewport.height;
+    // The ONE interactive card. While the front card (slot 0 = index `lead`) is
+    // still on screen it is the active one; once it has risen off the top (local ≥
+    // CARD_LEAVE_AT) the NEXT card (lead + 1, now the front-most still on screen)
+    // takes over and stays active until IT leaves — exactly the requested hand-off.
+    const activeIdx = Math.min(
+      local >= CARD_LEAVE_AT ? lead + 1 : lead,
+      n - 1,
+    );
+    // The active card's live on-screen centre (NDC). It FOLLOWS the card: to its
+    // cycling rest spot (centre / upper-left / right) and, while it is the rising
+    // slot-0 card, UP as it flies off. The incoming slot-1 card sits at rest (no
+    // rise). Testing against this moving centre is what makes the parallax track
+    // the card across its whole life instead of only a brief settled window.
+    const activeIsRising = activeIdx === lead; // slot 0 → rises by `local`
+    const Pa = galleryCardPositionFor(activeIdx + 1);
+    const activeRiseY = activeIsRising ? local * RISE_OFF : 0;
+    const activeCenterX = (2 * Pa.x * stackReveal * cardW) / viewport.width;
+    const activeCenterY =
+      hoverCenterY +
+      (2 * (Pa.y * stackReveal + activeRiseY) * cardH) / viewport.height;
     const px = ptr.current.x;
     const py = ptr.current.y;
-    const relX = px - frontCenterX;
-    const relY = py - frontCenterY;
+    const relX = px - activeCenterX;
+    const relY = py - activeCenterY;
     const over =
       !reducedMotion &&
       gp >= VID_FLY_END &&
       Math.abs(relX) < hoverHalfX &&
       Math.abs(relY) < hoverHalfY;
-    hover.current = approach(hover.current, over ? 1 : 0, delta, HOVER_RATE);
-    rotX.current = approach(rotX.current, -relY * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
-    rotY.current = approach(rotY.current, relX * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
+    // Tilt target for the active card (toward the cursor); the per-card easing
+    // happens in the loop so a non-active card relaxes to flat on its own.
+    const tiltTargetX = over ? -relY * HOVER_TILT_MAX : 0;
+    const tiltTargetY = over ? relX * HOVER_TILT_MAX : 0;
+    const ampTarget = over ? 1 : 0;
     group.rotation.set(0, 0, 0);
     group.scale.setScalar(1);
 
@@ -187,6 +214,15 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     for (let i = 0; i < n; i++) {
       const ref = cardRefs.current[i];
       if (!ref) continue;
+
+      // Per-card eased parallax (active card → its target, every other card → 0).
+      // Done for ALL cards each frame (even hidden ones decay toward rest) so the
+      // hand-off between the leaving and incoming card is smooth on both meshes.
+      const isActive = i === activeIdx;
+      cardRotX.current[i] = approach(cardRotX.current[i] ?? 0, isActive ? tiltTargetX : 0, delta, HOVER_RATE);
+      cardRotY.current[i] = approach(cardRotY.current[i] ?? 0, isActive ? tiltTargetY : 0, delta, HOVER_RATE);
+      cardAmt.current[i] = approach(cardAmt.current[i] ?? 0, isActive ? ampTarget : 0, delta, HOVER_RATE);
+
       const slot = i - lead;
       if (slot < 0 || slot > 3) {
         ref.visible = false;
@@ -198,29 +234,24 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
       let z: number;
       let scale: number;
       const d = i - displayed; // = slot − local: continuous depth as the stack advances
+      const hoverScale = Math.min(1 + (HOVER_SCALE - 1) * cardAmt.current[i], maxHoverScale);
 
       if (slot === 0) {
-        // The FRONT card (slot 0 is the only slot with d = −local ≤ 0). It is
-        // settled at local 0 and flies straight UP off the top as local → 1
-        // (opaque, no fade). Hover tilt + scale apply while it is settled and
-        // fade out as it starts to leave (settle over local 0 → 0.2). Applying
-        // them HERE — not only at the exact local 0 — is what makes EVERY front
-        // card react in turn: the old `d < 0` guard dropped the card into a
-        // no-hover "leaving" path the instant local rose above 0, so only the
-        // very first card (before any swap) ever tilted.
-        const settle = 1 - THREE.MathUtils.clamp(local / 0.2, 0, 1);
-        const amt = hover.current * settle;
+        // The FRONT card (slot 0 is the only slot with d = −local ≤ 0): settled at
+        // local 0, flies straight UP off the top as local → 1 (opaque, no fade).
         z = DEPTH[0].z;
-        scale = DEPTH[0].scale * Math.min(1 + (HOVER_SCALE - 1) * amt, maxHoverScale);
+        scale = DEPTH[0].scale * hoverScale;
         y = P.y * stackReveal + local * RISE_OFF; // local = −d: 0 when settled, rises as it leaves
-        ref.rotation.set(rotX.current * settle, rotY.current * settle, 0);
       } else {
-        // Cards behind (d > 0 always for slot ≥ 1): age-ordered depth, no hover.
+        // Cards behind (d > 0 always for slot ≥ 1): age-ordered depth. The card at
+        // slot 1 may be the ACTIVE one (after a hand-off) — it then gets the hover
+        // scale/tilt too, from its own per-card eased state, while at rest.
         const ds = depthAt(d);
         z = ds.z;
-        scale = ds.scale;
-        ref.rotation.set(0, 0, 0);
+        scale = ds.scale * hoverScale;
       }
+      // Per-card eased tilt (zero for every non-active card, so they stay flat).
+      ref.rotation.set(cardRotX.current[i], cardRotY.current[i], 0);
 
       ref.visible = true;
       ref.position.set(x * cardW, y * cardH, z);
