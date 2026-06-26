@@ -67,9 +67,22 @@ export const SCROLL_TRACK_VH = 800;
 // Additional scrollable track (vh) appended AFTER the animation track for the
 // gallery section. The animation timeline (sp) is unchanged — it stays clamped
 // at 1 through the whole gallery; only `gp` (gallery progress) advances here.
-// Raised from 400 → 700 so the image gallery still gets ≈400vh AFTER the
-// ≈0.4-of-gp video-card phase (see the video-card constants below).
-export const GALLERY_TRACK_VH = 700;
+//
+// The gallery is mapped scrollY → gp PIECEWISE across two sub-tracks (see
+// galleryProgressFrom) so each phase gets its OWN scroll budget:
+//   • VIDEO_CARD_TRACK_VH drives gp ∈ [0, VID_FLY_END] (the FPV morphing into
+//     slide #1, holding, flying away). Given a SHORT track so the morph feels
+//     responsive: the old single 700vh track linear-mapped the morph onto
+//     ~112vh (≈2 screens) and the scroll felt like it stuck. 140vh ⇒ morph
+//     ≈56vh.
+//   • IMAGE_GALLERY_TRACK_VH drives gp ∈ [VID_FLY_END, 1] (8 image cards +
+//     titles + CTA). Kept at the old 0.6 × 700 = 420vh so the image-card cadence
+//     is UNCHANGED — only the video-card phase was compressed.
+export const VIDEO_CARD_TRACK_VH = 140;
+export const IMAGE_GALLERY_TRACK_VH = 420;
+// Total appended gallery track. The App.tsx scroll-track spacer and the gp
+// denominator in check-playback both use this sum.
+export const GALLERY_TRACK_VH = VIDEO_CARD_TRACK_VH + IMAGE_GALLERY_TRACK_VH;
 
 // ── Video-card phase (gp units) ──────────────────────────────────────────────
 // The FPV video does NOT fade out into the gallery — it shrinks into gallery

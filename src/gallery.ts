@@ -1,6 +1,7 @@
 import {
   SCROLL_TRACK_VH,
-  GALLERY_TRACK_VH,
+  VIDEO_CARD_TRACK_VH,
+  IMAGE_GALLERY_TRACK_VH,
   VID_MORPH_END,
   VID_HOLD_END,
   VID_FLY_END,
@@ -72,13 +73,24 @@ export const CTA_REVEAL_FROM = 0.6;
 export const CARDS_FLY_START = 0.22; // first card holds until here (title still growing in)
 export const CARDS_FLY_END = CTA_START; // last card gone by the CTA
 
-// scrollY → gp. The animation track owns scroll up to its end (sp = 1 there);
-// the gallery owns the GALLERY_TRACK_VH appended beyond it. innerHeight makes
-// the vh-based track heights concrete. Mirrors useScrollProgress' anim mapping.
+// scrollY → gp, mapped PIECEWISE across two sub-tracks so each gallery phase gets
+// its own scroll budget. The video-card phase gp ∈ [0, VID_FLY_END] rides the
+// short VIDEO_CARD_TRACK_VH (so the morph is responsive, not sluggish); the image
+// gallery gp ∈ [VID_FLY_END, 1] rides IMAGE_GALLERY_TRACK_VH at its own (slower)
+// cadence. The slope changes at the seam but gp is continuous there (= VID_FLY_END
+// at the boundary), so scroll never jumps. The animation track owns scroll up to
+// its end (sp = 1 there). innerHeight makes the vh-based heights concrete; mirrors
+// useScrollProgress' anim mapping.
 export function galleryProgressFrom(scrollY: number, innerHeight: number): number {
   const animY = ((SCROLL_TRACK_VH - 100) / 100) * innerHeight;
-  const galleryPx = (GALLERY_TRACK_VH / 100) * innerHeight;
-  return galleryPx > 0 ? clamp01((scrollY - animY) / galleryPx) : 0;
+  const s = scrollY - animY;
+  if (s <= 0) return 0;
+  const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * innerHeight;
+  const imagePx = (IMAGE_GALLERY_TRACK_VH / 100) * innerHeight;
+  if (s <= videoCardPx)
+    return videoCardPx > 0 ? (s / videoCardPx) * VID_FLY_END : 0;
+  const r = imagePx > 0 ? (s - videoCardPx) / imagePx : 1;
+  return clamp01(VID_FLY_END + r * (1 - VID_FLY_END));
 }
 
 // Width (raw gp) of the gallery black fade. Kept tiny so the flat black sits

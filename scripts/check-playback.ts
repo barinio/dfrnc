@@ -44,6 +44,8 @@ import {
 import {
   SCROLL_TRACK_VH,
   GALLERY_TRACK_VH,
+  VIDEO_CARD_TRACK_VH,
+  IMAGE_GALLERY_TRACK_VH,
   VIDEO_SPLIT,
   VID_MORPH_END,
   VID_HOLD_END,
@@ -141,14 +143,17 @@ ok(FIGURES_END < VIDEO_START, "figures end before the video starts");
 const last = FIGURES[FIGURES.length - 1].arc.window;
 ok(spFor(last[1]) <= FIGURES_END + 1e-9, "last flight ends within the figures phase");
 ok(spFor(last[1]) < VIDEO_START, "last flight ends before the video starts");
-// The last figure's local t at LOTTIE_SCRUB_START should be ≈0.75 (¾ done).
+// The last figure's local t at LOTTIE_SCRUB_START should be between ≈¾ done and
+// just-landed: the supervisor wants the icon nearly/just down when the background
+// continuation resumes — no dead air, no slow lingering tail. (Was pinned at ≈¾;
+// gba's snappier 0.85 end lands it ~95% down at the scrub start.)
 const lastTatScrub =
   (((LOTTIE_SCRUB_START - FIGURES_START) / (FIGURES_END - FIGURES_START)) -
     last[0]) /
   (last[1] - last[0]);
 ok(
-  Math.abs(lastTatScrub - 0.75) < 0.06,
-  `last figure ≈¾ done when scrub starts (got ${lastTatScrub.toFixed(3)})`,
+  lastTatScrub >= 0.7 && lastTatScrub <= 1.02,
+  `last figure ≈¾-down…just-landed when scrub starts (got ${lastTatScrub.toFixed(3)})`,
 );
 ok(
   lottieTimeFor(spFor(last[1]), "scroll") > LOTTIE_INTRO_S + 1e-9,
@@ -260,11 +265,28 @@ for (const f of FIGURES) {
   const animY = ((SCROLL_TRACK_VH - 100) / 100) * H;
   const galleryPx = (GALLERY_TRACK_VH / 100) * H;
 
-  // gp is 0 at/under the animation track end, 1 at the document bottom.
+  // gp is 0 at/under the animation track end, 1 at the document bottom. The
+  // scrollY → gp mapping is PIECEWISE: the video-card phase gp[0, VID_FLY_END]
+  // rides its own short track (so the morph isn't sluggish), the image gallery
+  // gp[VID_FLY_END, 1] rides the rest. Continuous (gp = VID_FLY_END) at the seam.
+  const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * H;
+  const imagePx = (IMAGE_GALLERY_TRACK_VH / 100) * H;
   eq(galleryProgressFrom(animY, H), 0, "gp = 0 at anim track end");
   eq(galleryProgressFrom(animY - 500, H), 0, "gp clamps to 0 above gallery");
   eq(galleryProgressFrom(animY + galleryPx, H), 1, "gp = 1 at document bottom");
-  eq(galleryProgressFrom(animY + galleryPx / 2, H), 0.5, "gp = 0.5 at gallery midpoint");
+  ok(Math.abs(videoCardPx + imagePx - galleryPx) < 1e-6, "the two sub-tracks sum to the gallery track");
+  eq(galleryProgressFrom(animY + videoCardPx, H), VID_FLY_END, "gp = VID_FLY_END at the video-card/image seam");
+  eq(galleryProgressFrom(animY + videoCardPx / 2, H), VID_FLY_END / 2, "gp linear within the video-card track");
+  eq(
+    galleryProgressFrom(animY + videoCardPx + imagePx / 2, H),
+    VID_FLY_END + 0.5 * (1 - VID_FLY_END),
+    "gp linear within the image track",
+  );
+  ok(
+    galleryProgressFrom(animY + galleryPx * 0.9, H) >
+      galleryProgressFrom(animY + galleryPx * 0.1, H),
+    "gp monotonic across the gallery",
+  );
 
   // Backdrop: 0 at gp 0, 1 by BACKDROP_FADE_END, stays opaque after.
   eq(galleryBackdropFor(0), 0, "backdrop 0 at gp 0");
