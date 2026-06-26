@@ -10,6 +10,8 @@ import {
   VIDEO_START,
   VIDEO_FADE,
   FIGURE_FADE,
+  VIDEO_SPLIT,
+  VID_FLY_END,
 } from "./constants";
 
 // Single source of truth for the scroll-driven timeline. LottiePlane, the
@@ -122,6 +124,21 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
     t: clamp01((sp - VIDEO_START) / (1 - VIDEO_START)),
     opacity,
   };
+}
+
+// Video time across the WHOLE life of the clip — extended past sp = 1 into the
+// gallery so the FPV plays continuously while it morphs into slide #1, holds and
+// flies away (never a frozen frame). Monotonic and continuous across the
+// sp → gp boundary (gp > 0 ⟺ sp = 1):
+//   anim track  sp ∈ [VIDEO_START, 1]  → t ∈ [0, VIDEO_SPLIT]
+//   gallery     gp ∈ [0, VID_FLY_END]  → t ∈ [VIDEO_SPLIT, 1]   (last frame as it flies)
+// Replaces videoStateFor.t as the scrub source; videoStateFor stays for the
+// sp-based reveal opacity + grain mix. "done" (reduced motion): frozen last frame.
+export function videoMasterTimeFor(sp: number, gp: number, phase: Phase): number {
+  if (phase === "done") return 1;
+  if (gp <= 0)
+    return clamp01((sp - VIDEO_START) / (1 - VIDEO_START)) * VIDEO_SPLIT;
+  return clamp01(VIDEO_SPLIT + (clamp01(gp / VID_FLY_END)) * (1 - VIDEO_SPLIT));
 }
 
 // 0 → the Lottie keeps its framed inset margin; 1 → full-bleed. The frame

@@ -5,6 +5,7 @@ import {
   figureStateFor,
   figureVisibleFor,
   videoStateFor,
+  videoMasterTimeFor,
   lottieBleedFor,
 } from "../src/playback";
 import {
@@ -24,9 +25,14 @@ import {
   galleryProgressFrom,
   galleryBackdropFor,
   galleryTitleFracFor,
+  galleryCardProgressFor,
+  galleryTitleFrameFracForCard,
   cardConveyorFor,
   cardFlyProgressFor,
   galleryCtaFromExit,
+  imageGalleryProgress,
+  cardScreenRect,
+  videoCardMorphFor,
   CTA_REVEAL_FROM,
   GALLERY_IMAGES,
   BACKDROP_FADE_END,
@@ -35,7 +41,17 @@ import {
   CARDS_FLY_END,
   CTA_START,
 } from "../src/gallery";
-import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../src/constants";
+import {
+  SCROLL_TRACK_VH,
+  GALLERY_TRACK_VH,
+  VIDEO_CARD_TRACK_VH,
+  IMAGE_GALLERY_TRACK_VH,
+  VIDEO_SPLIT,
+  VID_MORPH_END,
+  VID_HOLD_END,
+  VID_FLY_END,
+  IMAGE_GALLERY_START,
+} from "../src/constants";
 import {
   approach,
   tiltTarget,
@@ -127,14 +143,17 @@ ok(FIGURES_END < VIDEO_START, "figures end before the video starts");
 const last = FIGURES[FIGURES.length - 1].arc.window;
 ok(spFor(last[1]) <= FIGURES_END + 1e-9, "last flight ends within the figures phase");
 ok(spFor(last[1]) < VIDEO_START, "last flight ends before the video starts");
-// The last figure's local t at LOTTIE_SCRUB_START should be ≈0.75 (¾ done).
+// The last figure's local t at LOTTIE_SCRUB_START should be between ≈¾ done and
+// just-landed: the supervisor wants the icon nearly/just down when the background
+// continuation resumes — no dead air, no slow lingering tail. (Was pinned at ≈¾;
+// gba's snappier 0.85 end lands it ~95% down at the scrub start.)
 const lastTatScrub =
   (((LOTTIE_SCRUB_START - FIGURES_START) / (FIGURES_END - FIGURES_START)) -
     last[0]) /
   (last[1] - last[0]);
 ok(
-  Math.abs(lastTatScrub - 0.75) < 0.06,
-  `last figure ≈¾ done when scrub starts (got ${lastTatScrub.toFixed(3)})`,
+  lastTatScrub >= 0.7 && lastTatScrub <= 1.02,
+  `last figure ≈¾-down…just-landed when scrub starts (got ${lastTatScrub.toFixed(3)})`,
 );
 ok(
   lottieTimeFor(spFor(last[1]), "scroll") > LOTTIE_INTRO_S + 1e-9,
@@ -174,8 +193,8 @@ for (const f of FIGURES) {
   );
   eq(Math.abs(p0.x), (W / 2) * f.arc.legSpreadLandscape, `${f.name} spread`, 1e-6);
 }
-// Cascade layout: ordered overlapping windows. Order is and → awwwards →
-// tokyo → gba; the first starts at the phase top and the last lands within it.
+// Cascade layout: ordered overlapping windows. Order is and → tokyo → gba;
+// the first starts at the phase top and the last lands within it.
 eq(FIGURES[0].arc.window[0], 0, "first window starts at 0");
 ok(
   FIGURES[FIGURES.length - 1].arc.window[1] <= 1 + 1e-9,
@@ -187,25 +206,25 @@ for (let i = 1; i < FIGURES.length; i++) {
   ok(start > prevStart && end > prevEnd, `window ${i} ordered after ${i - 1}`);
 }
 const byName = (n: string) => FIGURES.find((f) => f.name === n)!;
-// awwwards launches the moment `and` reaches its apex (and's window midpoint).
+// tokyo launches the moment `and` reaches its apex (and's window midpoint) —
+// it took over this launch slot when the awwwards figure was removed.
 const and = byName("and");
 eq(
-  byName("awwwards").arc.window[0],
+  byName("tokyo").arc.window[0],
   (and.arc.window[0] + and.arc.window[1]) / 2,
-  "awwwards launches at and's apex",
+  "tokyo launches at and's apex",
   1e-9,
 );
-// The crossing pair: gba launches at 25% of tokyo's flight, on the opposite
-// side and on a HIGHER dome at a different depth — they pass without
-// colliding (per the design direction).
+// The crossing pair: gba launches while tokyo is still airborne (their windows
+// OVERLAP at the handoff, so two figures fly at once), on the opposite side and
+// on a HIGHER dome at a different depth — they pass without colliding (per the
+// design direction).
 const tokyo = byName("tokyo");
 const gba = byName("gba");
-eq(
-  gba.arc.window[0],
-  tokyo.arc.window[0] +
-    0.25 * (tokyo.arc.window[1] - tokyo.arc.window[0]),
-  "gba launches at 25% of tokyo's window",
-  1e-9,
+ok(
+  gba.arc.window[0] > tokyo.arc.window[0] &&
+    gba.arc.window[0] < tokyo.arc.window[1],
+  "gba launches during tokyo's flight (crossing pair windows overlap)",
 );
 ok(gba.arc.side !== tokyo.arc.side, "crossing pair flies opposite sides");
 ok(gba.arc.peakHeight > tokyo.arc.peakHeight, "gba flies higher than tokyo");
@@ -219,7 +238,7 @@ for (const name of ["and", "gba"]) {
     `${name} (icon) spins against its travel`,
   );
 }
-for (const name of ["tokyo", "awwwards"]) {
+for (const name of ["tokyo"]) {
   const f = FIGURES.find((x) => x.name === name)!;
   ok(
     Math.sign(f.arc.spinTurns) === f.arc.side,
@@ -246,11 +265,28 @@ for (const f of FIGURES) {
   const animY = ((SCROLL_TRACK_VH - 100) / 100) * H;
   const galleryPx = (GALLERY_TRACK_VH / 100) * H;
 
-  // gp is 0 at/under the animation track end, 1 at the document bottom.
+  // gp is 0 at/under the animation track end, 1 at the document bottom. The
+  // scrollY → gp mapping is PIECEWISE: the video-card phase gp[0, VID_FLY_END]
+  // rides its own short track (so the morph isn't sluggish), the image gallery
+  // gp[VID_FLY_END, 1] rides the rest. Continuous (gp = VID_FLY_END) at the seam.
+  const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * H;
+  const imagePx = (IMAGE_GALLERY_TRACK_VH / 100) * H;
   eq(galleryProgressFrom(animY, H), 0, "gp = 0 at anim track end");
   eq(galleryProgressFrom(animY - 500, H), 0, "gp clamps to 0 above gallery");
   eq(galleryProgressFrom(animY + galleryPx, H), 1, "gp = 1 at document bottom");
-  eq(galleryProgressFrom(animY + galleryPx / 2, H), 0.5, "gp = 0.5 at gallery midpoint");
+  ok(Math.abs(videoCardPx + imagePx - galleryPx) < 1e-6, "the two sub-tracks sum to the gallery track");
+  eq(galleryProgressFrom(animY + videoCardPx, H), VID_FLY_END, "gp = VID_FLY_END at the video-card/image seam");
+  eq(galleryProgressFrom(animY + videoCardPx / 2, H), VID_FLY_END / 2, "gp linear within the video-card track");
+  eq(
+    galleryProgressFrom(animY + videoCardPx + imagePx / 2, H),
+    VID_FLY_END + 0.5 * (1 - VID_FLY_END),
+    "gp linear within the image track",
+  );
+  ok(
+    galleryProgressFrom(animY + galleryPx * 0.9, H) >
+      galleryProgressFrom(animY + galleryPx * 0.1, H),
+    "gp monotonic across the gallery",
+  );
 
   // Backdrop: 0 at gp 0, 1 by BACKDROP_FADE_END, stays opaque after.
   eq(galleryBackdropFor(0), 0, "backdrop 0 at gp 0");
@@ -296,7 +332,125 @@ for (const f of FIGURES) {
   ok(BACKDROP_FADE_END < CARDS_FLY_START && CARDS_FLY_START < TITLES_END, "fly start sits inside the card phase");
   ok(CARDS_FLY_END <= CTA_START, "last card finishes by the CTA");
 
+  // Piece B — title sequence by unified card progress `cp ∈ [0,9]` (card 1 =
+  // video, cards 2..9 = image cards). Continuous at the video→image handoff:
+  // both branches give cp = 1 at gp = VID_FLY_END.
+  eq(galleryCardProgressFor(0), 0, "cp = 0 at gallery start");
+  eq(galleryCardProgressFor(VID_FLY_END), 1, "cp = 1 at the video-card handoff");
+  ok(
+    Math.abs(galleryCardProgressFor(VID_FLY_END - 1e-6) - galleryCardProgressFor(VID_FLY_END)) < 1e-3,
+    "cp continuous across gp = VID_FLY_END",
+  );
+  eq(galleryCardProgressFor(1), 1 + GALLERY_IMAGES.length, "cp = 1 + N at the document bottom");
+  {
+    let prev = -1;
+    for (let gp = 0; gp <= 1.0001; gp += 0.002) {
+      const cp = galleryCardProgressFor(gp);
+      ok(cp >= prev - 1e-9, `cp monotonic @gp=${gp.toFixed(3)}`);
+      prev = cp;
+    }
+  }
+
+  // galleryTitleFrameFracForCard: the per-card frac mapping. Holds land on the
+  // comp's CLEAN frames (45/72/98 → 0.455/0.727/0.99) so the texts never sit in a
+  // half-overlapped state. Anchors + holds + monotonic non-decreasing.
+  eq(galleryTitleFrameFracForCard(0), 0, "title frac 0 at cp 0");
+  eq(galleryTitleFrameFracForCard(1), 0.455, "title frac = clean STRATEGISCHE once card 1 is in");
+  eq(galleryTitleFrameFracForCard(3), 0.455, "title frac holds clean STRATEGISCHE over cards 2,3");
+  eq(galleryTitleFrameFracForCard(4), 0.727, "title frac = clean DESIGN NACH MASS once card 4 is in");
+  eq(galleryTitleFrameFracForCard(6), 0.727, "title frac holds clean DESIGN NACH MASS over cards 5,6");
+  eq(galleryTitleFrameFracForCard(7), 0.99, "title frac = clean GANZ GROSSEN BILDER once card 7 is in");
+  eq(galleryTitleFrameFracForCard(9), 0.99, "title frac holds clean over cards 8,9");
+  {
+    let prev = -1;
+    for (let cp = -0.5; cp <= 9.5; cp += 0.01) {
+      const f = galleryTitleFrameFracForCard(cp);
+      ok(f >= prev - 1e-9, `title frac monotonic @cp=${cp.toFixed(2)}`);
+      prev = f;
+    }
+  }
+
   console.log("✓ gallery timeline");
+}
+
+// ── Video-card morph (slide #1 is the morphing FPV video) ────────────────────
+{
+  // videoMasterTimeFor: continuous + monotonic across the sp → gp boundary.
+  eq(videoMasterTimeFor(VIDEO_START, 0, "scroll"), 0, "vmt 0 at VIDEO_START");
+  eq(videoMasterTimeFor(1, 0, "scroll"), VIDEO_SPLIT, "vmt = VIDEO_SPLIT at sp=1 / gp=0");
+  eq(videoMasterTimeFor(1, VID_FLY_END, "scroll"), 1, "vmt = 1 when the card flies out");
+  ok(videoMasterTimeFor(1, VID_FLY_END + 0.2, "scroll") === 1, "vmt clamps at 1 after fly");
+  eq(videoMasterTimeFor(1, 1, "done"), 1, "vmt done: frozen last frame");
+  ok(
+    Math.abs(videoMasterTimeFor(1, 0, "scroll") - videoMasterTimeFor(1, 1e-9, "scroll")) < 1e-3,
+    "vmt continuous across the seam",
+  );
+  {
+    let prev = -1;
+    for (let sp = VIDEO_START; sp <= 1.0001; sp += 0.001) {
+      const t = videoMasterTimeFor(sp, 0, "scroll");
+      ok(t >= prev - 1e-9, `vmt monotonic (anim) @sp=${sp}`);
+      prev = t;
+    }
+    for (let gp = 0; gp <= VID_FLY_END + 1e-9; gp += 0.001) {
+      const t = videoMasterTimeFor(1, gp, "scroll");
+      ok(t >= prev - 1e-9, `vmt monotonic (gallery) @gp=${gp}`);
+      prev = t;
+    }
+  }
+
+  // imageGalleryProgress: 0 through the morph + hold, opens at IMAGE_GALLERY_START
+  // (before the video card finishes flying, so slide #2 rises in with no black gap).
+  eq(imageGalleryProgress(0), 0, "igp 0 at gallery start");
+  eq(imageGalleryProgress(IMAGE_GALLERY_START), 0, "igp 0 until the image gallery opens");
+  ok(imageGalleryProgress(IMAGE_GALLERY_START - 0.01) === 0, "igp still 0 during the hold");
+  ok(IMAGE_GALLERY_START < VID_FLY_END, "image gallery opens before the video card finishes flying");
+  ok(imageGalleryProgress(VID_FLY_END) > 0, "image gallery has begun by fly end (no black gap)");
+  eq(imageGalleryProgress(1), 1, "igp 1 at document bottom");
+  ok(imageGalleryProgress(0.7) > imageGalleryProgress(0.5), "igp monotonic");
+
+  // videoCardMorphFor: endpoints + crop collapses full → card, top-first.
+  const aspect = 0.5; // portrait phone
+  const card = cardScreenRect(aspect);
+  const m0 = videoCardMorphFor(0, aspect);
+  eq(m0.crop.l, 0, "morph full-bleed left @gp0");
+  eq(m0.crop.t, 1, "morph full-bleed top @gp0");
+  eq(m0.opacity, 1, "morph opaque @gp0");
+  // Morph completes (crop == card rect) by VID_MORPH_END, and holds there.
+  for (const gp of [VID_MORPH_END, VID_HOLD_END]) {
+    const m = videoCardMorphFor(gp, aspect);
+    eq(m.crop.l, card.l, `morph crop = card left @gp=${gp}`, 1e-9);
+    eq(m.crop.r, card.r, `morph crop = card right @gp=${gp}`, 1e-9);
+    eq(m.crop.b, card.b, `morph crop = card bottom @gp=${gp}`, 1e-9);
+    eq(m.crop.t, card.t, `morph crop = card top @gp=${gp}`, 1e-9);
+  }
+  const mHold = videoCardMorphFor(VID_HOLD_END, aspect);
+  eq(mHold.rise, 0, "no rise during the hold");
+  eq(mHold.opacity, 1, "opaque during the hold");
+  eq(mHold.radius, 1, "fully rounded by the hold");
+  // Top edge leads the bottom early on (reads "cropped from the top first"),
+  // and the width is still full while the vertical crop runs.
+  {
+    const mEarly = videoCardMorphFor(0.03, aspect);
+    const topDrop = 1 - mEarly.crop.t;
+    const botRise = mEarly.crop.b;
+    ok(topDrop > botRise, "top edge leads the bottom (crop from the top first)");
+    ok(mEarly.crop.l === 0 && mEarly.crop.r === 1, "width still full during the vertical crop");
+  }
+  // Fly-out: the card flies straight UP off the top, staying FULLY OPAQUE (no
+  // dissolve — matches the image cards); the clip reaches its last frame as it
+  // flies. It is hidden off `visible` (flown), not off opacity.
+  const mMidFly = videoCardMorphFor((VID_HOLD_END + VID_FLY_END) / 2, aspect);
+  eq(mMidFly.opacity, 1, "opaque mid-fly (no dissolve)");
+  ok(mMidFly.rise > 0, "rising mid-fly");
+  const mFly = videoCardMorphFor(VID_FLY_END, aspect);
+  eq(mFly.opacity, 1, "morph stays opaque through the fly-out (no fade)");
+  ok(mFly.rise > mMidFly.rise, "morph still rising to fly end");
+  // Risen far enough that the card's bottom edge has cleared the top of frame.
+  ok(mFly.rise + card.b > 1, "risen card has fully cleared the top of the frame");
+  ok(!mFly.visible, "morph invisible once flown (gp ≥ VID_FLY_END)");
+
+  console.log("✓ video-card morph");
 }
 
 // ── Cursor tilt ──────────────────────────────────────────────────────────────

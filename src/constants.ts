@@ -46,10 +46,10 @@ export const LOTTIE_END = 0.78;
 // through. Measured from real export (Animation - 1781083424055.json).
 export const VIDEO_START = 0.63;
 
-// Scroll-progress width of the video fade after VIDEO_START — fully in at
-// VIDEO_START + VIDEO_FADE = 0.69 ≈ Lottie 6.8s, well before the zoom ends
-// at ~8.5s.
-export const VIDEO_FADE = 0.05;
+// Scroll-progress width of the video fade after VIDEO_START. Tuned so the video
+// reaches 100% opacity at VIDEO time ≈ 1.5s (direction): with VIDEO_SPLIT below,
+// 1.5s ≈ clip-fraction 0.064, reached at sp = VIDEO_START + VIDEO_FADE.
+export const VIDEO_FADE = 0.028;
 
 // Fraction of a figure's own flight window spent fading opacity in/out.
 // ZERO by design: per supervisor direction the figures must NOT change opacity —
@@ -67,6 +67,42 @@ export const SCROLL_TRACK_VH = 800;
 // Additional scrollable track (vh) appended AFTER the animation track for the
 // gallery section. The animation timeline (sp) is unchanged — it stays clamped
 // at 1 through the whole gallery; only `gp` (gallery progress) advances here.
-// Kept short so a modest, "short natural" swipe advances one card slide in the
-// discrete-step slider (see 2026-06-23-gallery-card-swiper-design.md).
-export const GALLERY_TRACK_VH = 400;
+//
+// The gallery is mapped scrollY → gp PIECEWISE across two sub-tracks (see
+// galleryProgressFrom) so each phase gets its OWN scroll budget:
+//   • VIDEO_CARD_TRACK_VH drives gp ∈ [0, VID_FLY_END] (the FPV morphing into
+//     slide #1, holding, flying away). Given a SHORT track so the morph feels
+//     responsive: the old single 700vh track linear-mapped the morph onto
+//     ~112vh (≈2 screens) and the scroll felt like it stuck. 140vh ⇒ morph
+//     ≈56vh.
+//   • IMAGE_GALLERY_TRACK_VH drives gp ∈ [VID_FLY_END, 1] (8 image cards +
+//     titles + CTA). Kept at the old 0.6 × 700 = 420vh so the image-card cadence
+//     is UNCHANGED — only the video-card phase was compressed.
+export const VIDEO_CARD_TRACK_VH = 140;
+export const IMAGE_GALLERY_TRACK_VH = 420;
+// Total appended gallery track. The App.tsx scroll-track spacer and the gp
+// denominator in check-playback both use this sum.
+export const GALLERY_TRACK_VH = VIDEO_CARD_TRACK_VH + IMAGE_GALLERY_TRACK_VH;
+
+// ── Video-card phase (gp units) ──────────────────────────────────────────────
+// The FPV video does NOT fade out into the gallery — it shrinks into gallery
+// slide #1 (cropped top-first, then horizontally), holds as the front card, and
+// flies away, scrubbing the whole time (see 2026-06-25-video-card-morph-design.md).
+//   [0, VID_MORPH_END]        full-bleed → card-shaped (crop top, then horizontal)
+//   [VID_MORPH_END, VID_HOLD_END]  holds as slide #1 (still scrubbing)
+//   [VID_HOLD_END, VID_FLY_END]    rises + fades; the clip reaches its last frame
+//   [VID_FLY_END, 1]          image conveyor + titles + CTA (remapped image-gallery)
+export const VID_MORPH_END = 0.16;
+export const VID_HOLD_END = 0.26;
+export const VID_FLY_END = 0.4;
+// The image gallery (slides 2..N) begins its progress slightly BEFORE the video
+// card has fully flown, so slide #2 rises in over the tail of the video slide's
+// exit — no black gap at the handoff (supervisor: "no black gap"). Sits between
+// VID_HOLD_END and VID_FLY_END.
+export const IMAGE_GALLERY_START = 0.34;
+// Fraction of the clip reached at the end of the anim track (sp = 1) = the video
+// time at which the morph begins. Tuned to land JUST AFTER the "zuhause im herzen
+// der schweiz" sign (read ≈18–18.5s, drone passes it by ≈20s; clip ≈23.56s) →
+// 20s / 23.56s ≈ 0.84. The tail [VIDEO_SPLIT, 1] scrubs across the video-card
+// phase, so the frame never freezes. Re-tune if the clip is swapped.
+export const VIDEO_SPLIT = 0.84;

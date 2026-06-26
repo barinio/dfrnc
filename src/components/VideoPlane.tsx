@@ -1,8 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { videoStateFor } from "../playback";
+import { videoStateFor, videoMasterTimeFor } from "../playback";
+import { videoCardMorphFor, CARD_RADIUS_VH } from "../gallery";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
@@ -10,60 +11,111 @@ import type { Phase } from "../playback";
 // is inside the scene the Noise/SMAA postprocessing covers it (consistent film
 // grain), and the white Lottie letters (opaque, alphaTest) occlude it while
 // the alphaTest gaps reveal the bright video behind the typography.
+//
+// In the gallery (gp > 0) the same plane MORPHS into slide #1: it crops from
+// the top, then horizontally, down to an image-card rect (gaining rounded
+// corners via a fragment SDF mask), holds, then flies straight UP off the top
+// FULLY OPAQUE (no dissolve — matching the image cards) — scrubbing the whole
+// time (videoMasterTimeFor). The crop is a true texture sub-window of the
+// full-bleed cover image (no squash); the black GalleryBackdrop sits behind it
+// (z = −3.6) so the vacated area reads black.
 
 const PLANE_Z = -3.5;
 
-// (videoTime seconds → object-position-x %) keyframes for the portrait crop.
-// The 16:9 frame is cover-cropped on phones; the baked-in taglines drift away
-// from frame-center during parts of the clip, so the crop window pans to keep
-// them centered.
-// Tuned from portrait screenshots (390×844) at sp 0.82-0.98:
-//   t≈2.6-5.2s  "WIR SIND EIN INTERNATIONALES KREATIVSTUDIO" sits right-of-center
-//   t≈8-12s     "ZUHAUSE IM HERZEN DER SCHWEIZ" is heavily right-clipped
-// Increasing % shifts the visible window rightward (shows more right side of source).
-const PAN_KEYFRAMES: ReadonlyArray<readonly [number, number]> = [
-  [0, 50],
-  [2.0, 50],
-  [2.6, 52],   // "WIR SIND..." right-of-center; gentle rightward shift
-  [5.5, 51],   // tagline still slightly right; taper
-  [7.5, 50],   // no tagline (aerial bridge); return to center
-  [9.5, 50],   // transition into second tagline segment
-  [10.0, 72],  // "ZUHAUSE IM HERZEN DER SCHWEIZ" — right-of-center
-  [11.5, 78],  // text grows as drone flies into sign; keep shifting right
-  [12.5, 72],  // taper as text begins to fade
-  [13.0, 50],  // tagline fades; ease back to center
-  [14.24, 50],
-];
-
-function panXFor(time: number): number {
-  const k = PAN_KEYFRAMES;
-  if (time <= k[0][0]) return k[0][1];
-  for (let i = 1; i < k.length; i++) {
-    if (time <= k[i][0]) {
-      const f = (time - k[i - 1][0]) / (k[i][0] - k[i - 1][0]);
-      return k[i - 1][1] + f * (k[i][1] - k[i - 1][1]);
-    }
-  }
-  return k[k.length - 1][1];
-}
+// Scrub robustness: the paused video is seeked every frame. Issue at most ONE
+// seek at a time (browsers silently DROP coalesced seeks, and the last one can
+// be lost → the frame freezes) and always re-converge to the latest target once
+// the previous seek settles.
+const SEEK_EPS = 1 / 50; // ~a frame; below a visible step, above seek jitter
+const SEEK_STALL_MS = 400; // a seek whose `seeked` never fires is treated as dropped
 
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
+  galleryRef: MutableRefObject<number>;
   phase: Phase;
 }
 
-export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
+export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneProps) {
   const { camera, viewport } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
   const textureRef = useRef<THREE.VideoTexture | null>(null);
-  const lastTime = useRef<number>(-1);
+  // Scrub state: latest desired time (from scroll), the time we last ISSUED a
+  // seek to, whether a seek is in flight, and when it started (stall watchdog).
+  const desiredRef = useRef<number>(-1);
+  const issuedRef = useRef<number>(-1);
+  const seekingRef = useRef(false);
+  const seekStartRef = useRef(0);
   // True once the video has a decodable first frame (loadeddata fired).
   // Buffering starts at page load (component always mounted, preload=auto);
   // this gate is the slow-network fallback so the plane never shows black.
   const readyRef = useRef(false);
   // Degraded mode per the spec's error handling: latched on 404/decode/data-saver.
   const failedRef = useRef(false);
+
+  // Rounded-corner mask uniforms, shared by reference with the patched material
+  // (set inside onBeforeCompile) so useFrame can drive them allocation-free.
+  // uSize = the card's world W/H (the mesh scale); uRadius = corner radius in the
+  // same world units (0 = square full-bleed → card radius once morphed).
+  const maskUniforms = useRef({
+    uRadius: { value: 0 },
+    uSize: { value: new THREE.Vector2(1, 1) },
+  });
+
+  // meshBasicMaterial has no corner radius, so inject a rounded-rect signed-
+  // distance alpha mask into the fragment. A dedicated vMaskUv = uv carries the
+  // raw [0,1] geometry UV (vMapUv is warped by the texture sub-window transform,
+  // so it can't be used here). fwidth gives a crisp ~1px antialiased edge; the
+  // discard keeps fully-outside fragments from writing anything.
+  const installMask = useCallback((shader: THREE.WebGLProgramParametersWithUniforms) => {
+    shader.uniforms.uRadius = maskUniforms.current.uRadius;
+    shader.uniforms.uSize = maskUniforms.current.uSize;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nvarying vec2 vMaskUv;")
+      .replace("#include <uv_vertex>", "#include <uv_vertex>\n\tvMaskUv = uv;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        "#include <common>\nvarying vec2 vMaskUv;\nuniform float uRadius;\nuniform vec2 uSize;",
+      )
+      .replace(
+        "#include <dithering_fragment>",
+        `#include <dithering_fragment>
+	{
+		vec2 b = uSize * 0.5;
+		float rr = min(uRadius, min(b.x, b.y));
+		vec2 p = (vMaskUv - 0.5) * uSize;
+		vec2 q = abs(p) - b + rr;
+		float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr;
+		float aa = fwidth(d);
+		float mask = 1.0 - smoothstep(-aa, aa, d);
+		if (mask < 0.001) discard;
+		gl_FragColor.a *= mask;
+	}`,
+      );
+  }, []);
+
+  // Issue a seek toward the latest desired time, but only when no seek is in
+  // flight — coalesced seeks get dropped by the browser and the final one can be
+  // lost, freezing the frame. The `seeked` handler and the stall watchdog re-call
+  // this so we always converge to the newest target. Allocation-free; safe to
+  // call every frame.
+  const issueSeekIfIdle = useCallback((video: HTMLVideoElement) => {
+    if (seekingRef.current) {
+      if (performance.now() - seekStartRef.current <= SEEK_STALL_MS) return;
+      seekingRef.current = false; // previous seek stalled / `seeked` never fired
+    }
+    const want = desiredRef.current;
+    if (want < 0 || Math.abs(want - issuedRef.current) < SEEK_EPS) return;
+    issuedRef.current = want;
+    seekingRef.current = true;
+    seekStartRef.current = performance.now();
+    try {
+      video.currentTime = want;
+    } catch {
+      seekingRef.current = false; // decoder hiccup: the next frame retries
+    }
+  }, []);
 
   // Create a detached video element imperatively (NOT in the DOM render path).
   // A detached element loads and seeks fine in all modern browsers.
@@ -82,13 +134,34 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
     texture.wrapT = THREE.ClampToEdgeWrapping;
 
     // VideoTexture auto-updates only while playing. Since we scrub a paused
-    // video we must push needsUpdate manually after each seek settles.
-    const onSeeked = () => { texture.needsUpdate = true; };
+    // video we push needsUpdate manually: on `seeked` (and re-converge to the
+    // latest target) and, more robustly, whenever the decoder presents a frame.
+    const onSeeked = () => {
+      seekingRef.current = false;
+      texture.needsUpdate = true;
+      issueSeekIfIdle(video); // chase the newest target if scroll moved meanwhile
+    };
     const onLoaded = () => { readyRef.current = true; texture.needsUpdate = true; };
     const onError = () => { failedRef.current = true; };
     video.addEventListener("seeked", onSeeked);
     video.addEventListener("loadeddata", onLoaded);
     video.addEventListener("error", onError);
+
+    // requestVideoFrameCallback fires when a frame is actually composited — a
+    // reliable "the new frame is ready" signal even when `seeked` is flaky
+    // (same-decoded-frame seeks or low readyState don't always fire `seeked`).
+    let rvfcHandle = 0;
+    const rvfc = video as HTMLVideoElement & {
+      requestVideoFrameCallback?: (cb: () => void) => number;
+      cancelVideoFrameCallback?: (h: number) => void;
+    };
+    const onVideoFrame = () => {
+      texture.needsUpdate = true;
+      if (rvfc.requestVideoFrameCallback)
+        rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
+    };
+    if (rvfc.requestVideoFrameCallback)
+      rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
 
     textureRef.current = texture;
     if (matRef.current) matRef.current.map = texture;
@@ -100,13 +173,15 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
       video.removeEventListener("seeked", onSeeked);
       video.removeEventListener("loadeddata", onLoaded);
       video.removeEventListener("error", onError);
+      if (rvfc.cancelVideoFrameCallback && rvfcHandle)
+        rvfc.cancelVideoFrameCallback(rvfcHandle);
       texture.dispose();
       textureRef.current = null;
       // Detach source to release network/decoder resources.
       video.src = "";
       video.load();
     };
-  }, []);
+  }, [issueSeekIfIdle]);
 
   useFrame(() => {
     const texture = textureRef.current;
@@ -122,15 +197,36 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
       return;
     }
 
-    const { t, opacity } = videoStateFor(scrollRef.current, phase);
+    const sp = scrollRef.current;
+    const gp = galleryRef.current;
+    const aspect = viewport.width / viewport.height;
+    // Scrub time spans the whole clip life (past sp = 1 into the gallery), so
+    // the frame never freezes while the card morphs / holds / flies.
+    const t = videoMasterTimeFor(sp, gp, phase);
+    const morph = videoCardMorphFor(gp, aspect);
+    // sp-based reveal fade-in (behind the typography). morph.opacity is always 1
+    // now — the card flies up OPAQUE (no dissolve), so it is hidden off `visible`
+    // (flown / gp ≥ VID_FLY_END), NOT off opacity.
+    const opacity = videoStateFor(sp, phase).opacity * morph.opacity;
     mat.opacity = opacity;
     // Never show the plane before the video has a decodable first frame —
     // sampling a not-yet-ready VideoTexture yields black. readyRef flips true
     // in the loadeddata listener (early on fast connections; slow-network fallback
     // keeps the GradientBackground visible until the first frame is decoded).
-    mesh.visible = readyRef.current && opacity > 0.001;
+    // morph.visible drops false once the card has flown off the top.
+    mesh.visible = readyRef.current && morph.visible && opacity > 0.001;
 
     if (!mesh.visible) return;
+
+    // Camera frustum size at PLANE_Z — the full-bleed reference rect.
+    const cam = camera as THREE.PerspectiveCamera;
+    const distance = cam.position.z - PLANE_Z;
+    const fullH = 2 * distance * Math.tan((cam.fov * Math.PI) / 360);
+    const fullW = fullH * aspect;
+
+    // morph.crop is the on-screen rect (screen fractions) the card occupies —
+    // full [0,1,0,1] at gp ≤ 0, collapsing to the image-card rect over the morph.
+    const { l, r, b, t: cropTop } = morph.crop;
 
     const video = texture.image as HTMLVideoElement;
     const dur = video.duration;
@@ -138,44 +234,55 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
       // Clamp short of the end so the held last frame never flickers black.
       const target = Math.min(t * dur, dur - 0.05);
 
-      // Update texture transform (cover-crop + pan).
-      const planeAspect = viewport.width / viewport.height;
+      // Full-bleed cover-crop: maps the 16:9 source onto the WHOLE screen,
+      // always CENTERED (no pan — the clip is framed center).
       const videoAspect = 16 / 9;
-      if (planeAspect < videoAspect) {
-        // Viewport narrower than video (portrait phones): crop sides.
-        // Pan keyframes were tuned for portrait orientation (390×844);
-        // non-portrait narrow aspects (16:10, 4:3 tablets) stay center-cropped.
-        const portrait = viewport.height > viewport.width;
-        const repeat = new THREE.Vector2(planeAspect / videoAspect, 1);
-        texture.repeat.copy(repeat);
-        texture.offset.set(
-          (1 - repeat.x) * (portrait ? panXFor(target) / 100 : 0.5),
-          0,
-        );
+      let repeatX: number, repeatY: number, offsetX: number, offsetY: number;
+      if (aspect < videoAspect) {
+        // Viewport narrower than video (portrait phones): crop sides, centered.
+        repeatX = aspect / videoAspect;
+        repeatY = 1;
+        offsetX = (1 - repeatX) * 0.5;
+        offsetY = 0;
       } else {
         // Viewport wider/flatter (landscape): crop top/bottom, centered.
-        texture.repeat.set(1, videoAspect / planeAspect);
-        texture.offset.set(0, (1 - texture.repeat.y) / 2);
+        repeatX = 1;
+        repeatY = videoAspect / aspect;
+        offsetX = 0;
+        offsetY = (1 - repeatY) / 2;
       }
 
-      // Re-seek only when the target moved by more than ~a frame (1/30 s).
-      if (Math.abs(target - lastTime.current) >= 1 / 30) {
-        lastTime.current = target;
-        try {
-          video.currentTime = target;
-        } catch {
-          // Seek failed (decoder hiccup / data-saver): last decoded frame stays.
-        }
-      }
+      // Morph crop: show only the SUB-window of the full-bleed cover image that
+      // lies under the crop rect (linear in screen fractions) — a true crop, no
+      // squash. At gp ≤ 0 (rect = full screen) this is the identity mapping.
+      texture.repeat.set(repeatX * (r - l), repeatY * (cropTop - b));
+      texture.offset.set(offsetX + repeatX * l, offsetY + repeatY * b);
+
+      // Robust converging scrub: record the desired time and issue a seek only
+      // when idle; the `seeked` / stall paths converge to the latest target, so a
+      // dropped coalesced seek can never leave the frame frozen.
+      desiredRef.current = target;
+      issueSeekIfIdle(video);
     }
 
-    // Scale the unit plane to fill the camera frustum at PLANE_Z
-    // (allocation-free: no geometry rebuild on resize).
-    const cam = camera as THREE.PerspectiveCamera;
-    const distance = cam.position.z - PLANE_Z;
-    const h = 2 * distance * Math.tan((cam.fov * Math.PI) / 360);
-    const w = h * (viewport.width / viewport.height);
-    mesh.scale.set(w, h, 1);
+    // Placement: the crop rect, translated up by `rise` during the fly-out (the
+    // texture window stays frozen at the card crop, so the card keeps its content
+    // and just rises off-screen). Allocation-free.
+    const placeB = b + morph.rise;
+    const placeT = cropTop + morph.rise;
+    const cx = (l + r) / 2;
+    const cy = (placeB + placeT) / 2;
+    const scaleX = (r - l) * fullW;
+    const scaleY = (cropTop - b) * fullH; // = (placeT - placeB): rise is a translation
+    mesh.scale.set(scaleX, scaleY, 1);
+    mesh.position.set((cx * 2 - 1) * (fullW / 2), (cy * 2 - 1) * (fullH / 2), PLANE_Z);
+
+    // Drive the rounded-corner mask: uSize = the card's world dimensions, uRadius
+    // grows with morph.radius to the SAME fraction of the card height the image
+    // cards use (CARD_RADIUS_VH / CARDS_VH applied to the card-format height
+    // CARDS_VH · fullH ⇒ CARD_RADIUS_VH · fullH). Square (0) at full-bleed.
+    maskUniforms.current.uSize.value.set(scaleX, scaleY);
+    maskUniforms.current.uRadius.value = morph.radius * CARD_RADIUS_VH * fullH;
   });
 
   return (
@@ -187,6 +294,7 @@ export default function VideoPlane({ scrollRef, phase }: VideoPlaneProps) {
         transparent={true}
         depthWrite={false}
         opacity={0}
+        onBeforeCompile={installMask}
       />
     </mesh>
   );

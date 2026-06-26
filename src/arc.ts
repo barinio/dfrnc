@@ -55,9 +55,9 @@ export interface FigureDef {
   // Desired on-screen height in world units (the world viewport is ~9.24 units
   // tall at z = 0 regardless of aspect). Normalizing the VERTICAL extent — not
   // the max bbox dimension — is what makes the mixed set read similar in size:
-  // the thin vertical text logos (tokyo/awwwards) get a little extra height to
-  // match the visual weight of the squarish icons (and/gba). ArcModel caps the
-  // resulting width at 85% of the viewport width on narrow screens.
+  // the thin vertical text logo (tokyo) gets a little extra height to match the
+  // visual weight of the squarish icons (and/gba). ArcModel caps the resulting
+  // width at 85% of the viewport width on narrow screens.
   targetHeight: number;
   arc: ArcConfig;
   // Optional per-figure deviations from the shared glass material, applied on
@@ -70,27 +70,29 @@ export interface FigureDef {
   };
 }
 
-// Launch order: and → awwwards → tokyo → gba, alternating entry sides, with
-// OVERLAPPING windows so the sequence reads as one continuous cascade:
+// Launch order: and → tokyo → gba, alternating entry sides, with OVERLAPPING
+// windows so the sequence reads as one continuous cascade:
 //   • and starts at the very top of the figures phase — already airborne while
 //     AUSGEZEICHNETES is still animating in (the phase begins inside the
 //     Lottie reveal, see FIGURES_START).
-//   • awwwards launches the MOMENT `and` reaches its apex (and's window
-//     midpoint), flying a NARROW, almost-vertical dome and standing nearly
-//     upright at the top (tiny spin/roll) — per supervisor direction and the
-//     reference clip.
-//   • tokyo then launches as awwwards exits, flying a LOWER dome right-to-left
-//     while…
-//   • gba launches at 25% of tokyo's flight, flying a HIGHER dome left-to-
-//     right — they cross mid-air at different heights and depths (z) so the
-//     paths never collide. gba is the LAST figure: it is ≈¾ through its arc
-//     when the Lottie scrub / video reveal begins (LOTTIE_SCRUB_START 0.5 maps
-//     to gba's phase ≈0.835), so the background continuation only resumes once
-//     the last icon is almost down.
-// Icons (and/gba) spin AGAINST their travel at distinct rates; text logos
-// (tokyo/awwwards) spin with it. NO opacity fades (FIGURE_FADE = 0): every
-// figure enters/exits below the frame (rootDepth ≈ 1.4 sinks the entry/exit
-// roots fully off-screen), so flights read as motion, never a dissolve.
+//   • tokyo launches the MOMENT `and` reaches its apex (and's window midpoint
+//     0.15) — it took over this launch slot when the awwwards figure was
+//     removed — flying a LOWER dome right-to-left while…
+//     gba launches at 0.30 — the EARLIEST possible without a third figure in the
+//     air: `and` lands at 0.30, so any earlier overlaps and+tokyo+gba (the design
+//     keeps ≤2 airborne). It launches while tokyo is still descending, flying a
+//     HIGHER dome left-to-right on the opposite side at a different depth (z) so
+//     the two paths never collide. (The removed `awwwards` figure used to fill
+//     this slot; when it went, gba was left launching only as tokyo LANDED, which
+//     read as a late, detached final flight.) gba is the LAST figure and lands at
+//     0.85 → sp ≈0.51, just AFTER the Lottie scrub / video reveal begins
+//     (LOTTIE_SCRUB_START 0.5): it is ≈95% down by then (was ¾ at the slower
+//     0.95 end), so the arc is ~13% snappier and the background continuation
+//     resumes right as the last icon finishes — no dead air, no lingering tail.
+// Icons (and/gba) spin AGAINST their travel at distinct rates; the text logo
+// (tokyo) spins with it. NO opacity fades (FIGURE_FADE = 0): every figure
+// enters/exits below the frame (rootDepth ≈ 1.4 sinks the entry/exit roots
+// fully off-screen), so flights read as motion, never a dissolve.
 // Sizes keep every figure INSIDE the Lottie frame at its apex. All values are
 // live-tunable via Leva.
 export const FIGURES: FigureDef[] = [
@@ -113,28 +115,6 @@ export const FIGURES: FigureDef[] = [
     },
   },
   {
-    name: "awwwards",
-    url: "figures/awwwards.glb",
-    targetHeight: 4.0,
-    arc: {
-      // Narrow legs → an almost-vertical dome (rises near straight-up from
-      // bottom-centre to top-centre). Minimal spin and roll so the tall text
-      // column stands nearly upright at the apex, as in the reference clip.
-      legSpreadLandscape: 0.25,
-      legSpreadPortrait: 0.28,
-      rootDepth: 1.4,
-      // Centred apex (was 0.4 — too high, overlapping DEFT) so the upright
-      // column reads near screen-centre like the reference clip.
-      peakHeight: 0.3,
-      side: -1,
-      spinTurns: -0.1,
-      rollPeak: 0.05,
-      swingAmount: 0.2,
-      // Launches exactly as `and` hits its apex (and's window midpoint 0.15).
-      window: [0.15, 0.46],
-    },
-  },
-  {
     name: "tokyo",
     url: "figures/tokyo.glb",
     // Flies at z=+0.9 (perspective ×1.13) — 3.4 reads as ≈3.8 on screen.
@@ -152,7 +132,10 @@ export const FIGURES: FigureDef[] = [
       // larger than both reaches combined.
       swingAmount: 0.4,
       z: 0.9,
-      window: [0.4, 0.74],
+      // Launches as `and` hits its apex (and's window midpoint = 0.15) — took
+      // over awwwards's old launch slot when that figure was removed; keeps its
+      // original 0.34-wide span so the flight duration is unchanged.
+      window: [0.15, 0.49],
     },
     // Tokyo's stacked thin DoubleSide letters compound the attenuation tint
     // surface after surface, so its blue saturates far faster than the
@@ -180,8 +163,14 @@ export const FIGURES: FigureDef[] = [
       rollPeak: -0.25,
       swingAmount: 0.45,
       z: -0.7,
-      // Last figure; ≈¾ through its arc at LOTTIE_SCRUB_START (sp 0.5).
-      window: [0.485, 0.95],
+      // Launches at 0.30 — the EARLIEST it can without three figures airborne at
+      // once (`and` lands at 0.30; any earlier overlaps and+tokyo+gba). Lands at
+      // 0.85 (was 0.95), the snappier end: 0.95 lingered to sp 0.557, while 0.85
+      // lands at sp ≈0.51 — still just AFTER the scrub starts (sp 0.5) so the
+      // lottie is scrubbing during the exit (no dead air), but the arc is ~13%
+      // narrower (faster) and the whole flight reads earlier. End must stay ≥0.824
+      // phase (→ sp >0.5) or the background would resume before the icon is down.
+      window: [0.3, 0.85],
     },
     // gba's chunky, thick body has the longest internal light paths of the set,
     // so the Beer-Lambert tint saturates blue hardest. Kept the WEAKEST of the

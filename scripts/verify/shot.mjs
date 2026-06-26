@@ -64,16 +64,28 @@ await page.waitForFunction(
   { timeout: 30000 },
 );
 // Scroll to a GALLERY progress position (gp ∈ [0,1]) — i.e. scroll BEYOND the
-// animation track. `track` is SCROLL_TRACK_VH (default 800).
+// animation track. `track` is SCROLL_TRACK_VH (default 800). The gallery uses a
+// PIECEWISE scrollY → gp mapping (galleryProgressFrom): gp ∈ [0, VID_FLY_END]
+// rides the short VIDEO_CARD_TRACK_VH, gp ∈ [VID_FLY_END, 1] rides
+// IMAGE_GALLERY_TRACK_VH. Mirror it here so --gp lands at the TRUE gp.
+// KEEP IN SYNC with constants.ts.
+const VID_FLY_END = 0.4;
+const VIDEO_CARD_TRACK_VH = 140;
+const IMAGE_GALLERY_TRACK_VH = 420;
 async function scrollToGp(page, gp, track) {
   await page.evaluate(
-    ({ gp, track }) => {
+    ({ gp, track, VID_FLY_END, VIDEO_CARD_TRACK_VH, IMAGE_GALLERY_TRACK_VH }) => {
       const ih = window.innerHeight;
       const animY = ((track - 100) / 100) * ih;
-      const maxY = document.documentElement.scrollHeight - ih;
-      window.scrollTo(0, animY + gp * (maxY - animY));
+      const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * ih;
+      const imagePx = (IMAGE_GALLERY_TRACK_VH / 100) * ih;
+      const s =
+        gp <= VID_FLY_END
+          ? (gp / VID_FLY_END) * videoCardPx
+          : videoCardPx + ((gp - VID_FLY_END) / (1 - VID_FLY_END)) * imagePx;
+      window.scrollTo(0, animY + s);
     },
-    { gp, track },
+    { gp, track, VID_FLY_END, VIDEO_CARD_TRACK_VH, IMAGE_GALLERY_TRACK_VH },
   );
 }
 

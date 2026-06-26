@@ -4,11 +4,13 @@ import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { galleryBackdropFor } from "../gallery";
 
-// Flat black plane that fades in over the held video last frame as the gallery
-// begins (gp ∈ [0, BACKDROP_FADE_END]). Sits in FRONT of the video (z = −3.5)
-// and the intro Lottie (z = −3) so it cleanly covers both; the gallery titles,
-// cards and CTA render in front of THIS. Fills the camera frustum at its depth.
-const PLANE_Z = -2.9;
+// Flat black gallery background. Sits BEHIND the video (z = −3.5), just in front
+// of the gradient (z = −4): the FPV video morphs/shrinks into slide #1 and the
+// vacated area reveals THIS black; the image cards (z = 0) later sit on it. The
+// Lottie final frame (z = −3) is transparent, so it doesn't occlude the video
+// card. Opaque for essentially the whole gallery (galleryBackdropFor). Fills the
+// camera frustum at its depth.
+const PLANE_Z = -3.6;
 
 interface Props {
   galleryRef: MutableRefObject<number>;
