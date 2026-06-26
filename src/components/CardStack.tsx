@@ -151,17 +151,26 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     // begins flipping out, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
 
-    // Hover amount (eased) — applied to the front/centre resting card only.
+    // Hover amount (eased) — applied to the FRONT/settled card only. The resting
+    // POSITIONS slot cycles centre / upper-left / right, so the hit-region must
+    // FOLLOW the front card to its actual on-screen spot; testing against
+    // screen-centre let only the centred cards (idx 0,3,6) react, so it looked
+    // like only the first card had parallax. Front card = POSITIONS[lead % 3];
+    // its resting NDC centre = the band centre plus the card's P.x/P.y offset.
+    const Pfront = POSITIONS[lead % 3];
+    const frontCenterX = (2 * Pfront.x * cardW) / viewport.width;
+    const frontCenterY = hoverCenterY + (2 * Pfront.y * cardH) / viewport.height;
     const px = ptr.current.x;
     const py = ptr.current.y;
+    const relX = px - frontCenterX;
+    const relY = py - frontCenterY;
     const over =
       !reducedMotion &&
-      Math.abs(px) < hoverHalfX &&
-      Math.abs(py - hoverCenterY) < hoverHalfY;
+      Math.abs(relX) < hoverHalfX &&
+      Math.abs(relY) < hoverHalfY;
     hover.current = approach(hover.current, over ? 1 : 0, delta, HOVER_RATE);
-    const relY = py - hoverCenterY;
     rotX.current = approach(rotX.current, -relY * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
-    rotY.current = approach(rotY.current, px * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
+    rotY.current = approach(rotY.current, relX * HOVER_TILT_MAX * hover.current, delta, HOVER_RATE);
     group.rotation.set(0, 0, 0);
     group.scale.setScalar(1);
 
@@ -180,31 +189,33 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
         continue;
       }
       const P = POSITIONS[idx % 3];
-      let x = P.x;
+      const x = P.x;
       let y = P.y;
       let z: number;
       let scale: number;
       const d = slot - local;
 
-      if (d < 0) {
-        // Leaving: fly straight UP off the top — opaque the whole way (no fade).
+      if (slot === 0) {
+        // The FRONT card (slot 0 is the only slot with d = −local ≤ 0). It is
+        // settled at local 0 and flies straight UP off the top as local → 1
+        // (opaque, no fade). Hover tilt + scale apply while it is settled and
+        // fade out as it starts to leave (settle over local 0 → 0.2). Applying
+        // them HERE — not only at the exact local 0 — is what makes EVERY front
+        // card react in turn: the old `d < 0` guard dropped the card into a
+        // no-hover "leaving" path the instant local rose above 0, so only the
+        // very first card (before any swap) ever tilted.
+        const settle = 1 - THREE.MathUtils.clamp(local / 0.2, 0, 1);
+        const amt = hover.current * settle;
         z = DEPTH[0].z;
-        scale = DEPTH[0].scale;
-        y = P.y + -d * RISE_OFF;
-        ref.rotation.set(0, 0, 0);
+        scale = DEPTH[0].scale * Math.min(1 + (HOVER_SCALE - 1) * amt, maxHoverScale);
+        y = P.y + local * RISE_OFF; // local = −d: 0 when settled, rises as it leaves
+        ref.rotation.set(rotX.current * settle, rotY.current * settle, 0);
       } else {
+        // Cards behind (d > 0 always for slot ≥ 1): age-ordered depth, no hover.
         const ds = depthAt(d);
         z = ds.z;
         scale = ds.scale;
-        if (slot === 0) {
-          // Hover tilt + scale on the front/centre card while it is settled.
-          const settle = 1 - THREE.MathUtils.clamp(local / 0.2, 0, 1);
-          const amt = hover.current * settle;
-          scale = ds.scale * Math.min(1 + (HOVER_SCALE - 1) * amt, maxHoverScale);
-          ref.rotation.set(rotX.current * settle, rotY.current * settle, 0);
-        } else {
-          ref.rotation.set(0, 0, 0);
-        }
+        ref.rotation.set(0, 0, 0);
       }
 
       ref.visible = true;
