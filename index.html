@@ -5,6 +5,14 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
         <link rel="icon" href="./public/favicon.ico" />
         <title>DFRNC</title>
+        <!-- Start streaming the scrubbed FPV clip during HTML parse (before the
+             Canvas mounts) so it has the maximum buffer runway before it reveals
+             at sp=0.63. Media-scoped: desktops get the crisp 1080p, phones the
+             lighter 720p — matching VideoPlane's src pick (keep the breakpoint in
+             sync) so the preload is reused, not double-fetched. fetchpriority=low
+             yields to the JS/loader assets. -->
+        <link rel="preload" as="video" href="./fpv.mp4" type="video/mp4" media="(min-width: 900px)" fetchpriority="low" />
+        <link rel="preload" as="video" href="./fpv-720.mp4" type="video/mp4" media="(max-width: 899.98px)" fetchpriority="low" />
     </head>
     <body>
         <div id="root"></div>

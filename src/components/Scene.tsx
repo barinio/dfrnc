@@ -61,6 +61,11 @@ function RendererConfig({ exposure }: { exposure: number }) {
 // Base film-grain strength, applied to the figures/typography phase.
 const NOISE_BASE = 0.05;
 
+// Hard cap on how long the intro loader waits for the video's first frame before
+// releasing scroll anyway (a stuck/very-slow video must never deadlock the loader;
+// the GradientBackground + readyRef still prevent a black flash past this).
+const VIDEO_READY_TIMEOUT_MS = 8000;
+
 // Drives the post-process grain opacity from scroll: full grain over the
 // figures/typography, fading to ZERO as the video reveals. The video's dark,
 // smooth regions (water/shadow) show grain badly, so it must be gone once the
@@ -109,9 +114,21 @@ export default function Scene() {
   type IntroStage = "loader" | "drop" | "free";
   const [introStage, setIntroStage] = useState<IntroStage>("loader");
 
+  // Hold the intro loader until the FPV video's first frame is decodable, so the
+  // user never scrolls past the Lottie intro into an empty screen where the video
+  // should be (it reveals at sp=0.63). VideoPlane fires onReady on first frame OR
+  // error; the timeout is a hard cap so a very slow / stuck video can never
+  // deadlock the loader (the GradientBackground still covers a late first frame).
+  const [videoReady, setVideoReady] = useState(false);
+  const handleVideoReady = useCallback(() => setVideoReady(true), []);
+  useEffect(() => {
+    const id = window.setTimeout(() => setVideoReady(true), VIDEO_READY_TIMEOUT_MS);
+    return () => window.clearTimeout(id);
+  }, []);
+
   const { active, progress } = useProgress();
   const assetsReady =
-    animationStarted && (reducedMotion || (!active && progress >= 100));
+    animationStarted && (reducedMotion || (!active && progress >= 100)) && videoReady;
 
   const handleSettled = useCallback(() => {
     // Reduced motion skips the drop (the Lottie sits on its final frame).
@@ -354,7 +371,7 @@ export default function Scene() {
                 ),
             )}
           </Suspense>
-          <VideoPlane scrollRef={scrollRef} galleryRef={galleryRef} phase={phase} />
+          <VideoPlane scrollRef={scrollRef} galleryRef={galleryRef} phase={phase} onReady={handleVideoReady} />
           <GalleryBackdrop galleryRef={galleryRef} />
           <NoiseDriver noiseRef={noiseRef} scrollRef={scrollRef} phase={phase} />
           <EffectComposer multisampling={0} stencilBuffer={false}>

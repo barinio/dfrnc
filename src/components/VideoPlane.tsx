@@ -4,6 +4,7 @@ import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { videoStateFor, videoMasterTimeFor } from "../playback";
 import { videoCardMorphFor, CARD_RADIUS_VH } from "../gallery";
+import { VID_FLY_END } from "../constants";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
@@ -29,13 +30,29 @@ const PLANE_Z = -3.5;
 const SEEK_EPS = 1 / 50; // ~a frame; below a visible step, above seek jitter
 const SEEK_STALL_MS = 400; // a seek whose `seeked` never fires is treated as dropped
 
+// Responsive source: phones get the lighter 720p (16.5 MB — plenty sharp on a
+// small screen, far easier on mobile data), wide screens the crisp full-bleed
+// 1080p (30.5 MB). MUST match the media-scoped <link rel=preload> in index.html
+// so the preloaded file is reused, not fetched twice.
+const SMALL_SCREEN_MQ = "(max-width: 899.98px)";
+function videoSrcForScreen(): string {
+  const small =
+    typeof window !== "undefined" && window.matchMedia(SMALL_SCREEN_MQ).matches;
+  return import.meta.env.BASE_URL + (small ? "fpv-720.mp4" : "fpv.mp4");
+}
+
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
   galleryRef: MutableRefObject<number>;
   phase: Phase;
+  // Fired once the first decodable frame is ready (or on error) — lets Scene hold
+  // the intro loader until the video can actually render at its sp=0.63 reveal,
+  // so the user never scrolls into an empty screen. Called on error too so a
+  // failed/slow video can never deadlock the loader (Scene also has a timeout).
+  onReady?: () => void;
 }
 
-export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneProps) {
+export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: VideoPlaneProps) {
   const { camera, viewport } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
@@ -52,6 +69,16 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
   const readyRef = useRef(false);
   // Degraded mode per the spec's error handling: latched on 404/decode/data-saver.
   const failedRef = useRef(false);
+  // Latest onReady, kept in a ref so the video-creating effect (below) never
+  // re-runs — and never recreates the element — when the callback identity changes.
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
+  const notifiedReadyRef = useRef(false);
+  const notifyReady = useCallback(() => {
+    if (notifiedReadyRef.current) return;
+    notifiedReadyRef.current = true;
+    onReadyRef.current?.();
+  }, []);
 
   // Rounded-corner mask uniforms, shared by reference with the patched material
   // (set inside onBeforeCompile) so useFrame can drive them allocation-free.
@@ -121,7 +148,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
   // A detached element loads and seeks fine in all modern browsers.
   useEffect(() => {
     const video = document.createElement("video");
-    video.src = import.meta.env.BASE_URL + "fpv.mp4";
+    video.src = videoSrcForScreen();
     video.muted = true;
     video.playsInline = true;
     video.preload = "auto";
@@ -141,8 +168,15 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
       texture.needsUpdate = true;
       issueSeekIfIdle(video); // chase the newest target if scroll moved meanwhile
     };
-    const onLoaded = () => { readyRef.current = true; texture.needsUpdate = true; };
-    const onError = () => { failedRef.current = true; };
+    const onLoaded = () => {
+      readyRef.current = true;
+      texture.needsUpdate = true;
+      notifyReady(); // first frame decodable → let the loader release
+    };
+    const onError = () => {
+      failedRef.current = true;
+      notifyReady(); // don't deadlock the loader on a failed video
+    };
     video.addEventListener("seeked", onSeeked);
     video.addEventListener("loadeddata", onLoaded);
     video.addEventListener("error", onError);
@@ -181,7 +215,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
       video.src = "";
       video.load();
     };
-  }, [issueSeekIfIdle]);
+  }, [issueSeekIfIdle, notifyReady]);
 
   useFrame(() => {
     const texture = textureRef.current;
@@ -204,6 +238,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
     // the frame never freezes while the card morphs / holds / flies.
     const t = videoMasterTimeFor(sp, gp, phase);
     const morph = videoCardMorphFor(gp, aspect);
+    mesh.renderOrder = gp > 1e-4 && gp < VID_FLY_END ? 1 : 0;
     // sp-based reveal fade-in (behind the typography). morph.opacity is always 1
     // now — the card flies up OPAQUE (no dissolve), so it is hidden off `visible`
     // (flown / gp ≥ VID_FLY_END), NOT off opacity.
@@ -232,7 +267,22 @@ export default function VideoPlane({ scrollRef, galleryRef, phase }: VideoPlaneP
     const dur = video.duration;
     if (Number.isFinite(dur) && dur > 0) {
       // Clamp short of the end so the held last frame never flickers black.
-      const target = Math.min(t * dur, dur - 0.05);
+      let target = Math.min(t * dur, dur - 0.05);
+
+      // Buffer-aware clamp: on a slow connection a fast scroll can outrun the
+      // download. Don't seek past what's actually buffered — hold on the latest
+      // available frame (the scrub then catches up as more arrives) instead of
+      // stalling on a doomed seek into an un-downloaded region. Progressive
+      // download means the range covering us starts at/near 0; leave a small
+      // margin so the seek lands on a frame that is definitely decoded.
+      const buffered = video.buffered;
+      if (buffered.length > 0) {
+        let end = 0;
+        for (let i = 0; i < buffered.length; i++) {
+          if (buffered.start(i) <= target) end = Math.max(end, buffered.end(i));
+        }
+        if (end > 0) target = Math.min(target, Math.max(end - 0.1, 0));
+      }
 
       // Full-bleed cover-crop: maps the 16:9 source onto the WHOLE screen,
       // always CENTERED (no pan — the clip is framed center).
