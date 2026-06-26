@@ -3,8 +3,9 @@ import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { videoStateFor, videoMasterTimeFor } from "../playback";
-import { videoCardMorphFor, CARD_RADIUS_VH } from "../gallery";
+import { videoCardMorphFor, videoCardExitProgressFor, CARD_RADIUS_VH } from "../gallery";
 import { VID_FLY_END } from "../constants";
+import { approach } from "../cursorTilt";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
@@ -22,6 +23,14 @@ import type { Phase } from "../playback";
 // (z = −3.6) so the vacated area reads black.
 
 const PLANE_Z = -3.5;
+
+// Hover parallax for the FPV once it has MORPHED into card form (slide #1), so it
+// reacts to the cursor just like the image cards. Tilt is a touch stronger than
+// the image cards (0.16) because the card sits deeper in the frustum (z = −3.5 vs
+// z = 0), which foreshortens the same rotation less.
+const HOVER_TILT_MAX = 0.18; // ~10° max parallax tilt on hover (radians)
+const HOVER_RATE = 9; // ease rate for the tilt
+const HOVER_PAD = 1.08; // hit-region padding (matches CardStack)
 
 // Scrub robustness: the paused video is seeked every frame. Issue at most ONE
 // seek at a time (browsers silently DROP coalesced seeks, and the last one can
@@ -88,6 +97,21 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     uRadius: { value: 0 },
     uSize: { value: new THREE.Vector2(1, 1) },
   });
+
+  // Pointer (NDC) for the card-form parallax hit-test + tilt direction, tracked
+  // on window (the canvas layer is pointer-events:none). Eased tilt in refs so
+  // the scrub stays React-render-free.
+  const ptr = useRef({ x: 0, y: 0 });
+  const rotX = useRef(0);
+  const rotY = useRef(0);
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      ptr.current.x = (e.clientX / window.innerWidth) * 2 - 1;
+      ptr.current.y = -((e.clientY / window.innerHeight) * 2 - 1);
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => window.removeEventListener("pointermove", onMove);
+  }, []);
 
   // meshBasicMaterial has no corner radius, so inject a rounded-rect signed-
   // distance alpha mask into the fragment. A dedicated vMaskUv = uv carries the
@@ -217,7 +241,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     };
   }, [issueSeekIfIdle, notifyReady]);
 
-  useFrame(() => {
+  useFrame((_s, delta) => {
     const texture = textureRef.current;
     const mat = matRef.current;
     const mesh = meshRef.current;
@@ -333,6 +357,26 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     // CARDS_VH · fullH ⇒ CARD_RADIUS_VH · fullH). Square (0) at full-bleed.
     maskUniforms.current.uSize.value.set(scaleX, scaleY);
     maskUniforms.current.uRadius.value = morph.radius * CARD_RADIUS_VH * fullH;
+
+    // Card-form parallax: tilt the card toward the cursor while it is in card
+    // shape, mirroring the image cards. `tiltEnv` ramps in with how card-shaped it
+    // is (morph.radius: 0 full-bleed → 1 once morphed) and fades out as it flies
+    // off (videoCardExitProgressFor) so it never leaves the frame still skewed.
+    // The hit-region is the card's CURRENT on-screen rect (it follows the rise),
+    // in NDC. Skipped under reduced motion (phase "done").
+    const tiltEnv = phase === "scroll" ? morph.radius * (1 - videoCardExitProgressFor(gp)) : 0;
+    const cxNdc = l + r - 1; // ((l + r) / 2) · 2 − 1
+    const cyNdc = placeB + placeT - 1; // ((placeB + placeT) / 2) · 2 − 1 (rise included)
+    const relX = ptr.current.x - cxNdc;
+    const relY = ptr.current.y - cyNdc;
+    const over =
+      tiltEnv > 0.001 &&
+      Math.abs(relX) < (r - l) * HOVER_PAD &&
+      Math.abs(relY) < (cropTop - b) * HOVER_PAD;
+    const amt = over ? tiltEnv : 0; // scale the tilt by how "card" it is right now
+    rotX.current = approach(rotX.current, -relY * HOVER_TILT_MAX * amt, delta, HOVER_RATE);
+    rotY.current = approach(rotY.current, relX * HOVER_TILT_MAX * amt, delta, HOVER_RATE);
+    mesh.rotation.set(rotX.current, rotY.current, 0);
   });
 
   return (
