@@ -7,6 +7,7 @@ import {
   FIGURES_START,
   FIGURES_END,
   LOTTIE_END,
+  LOTTIE_ZOOM_S,
   VIDEO_START,
   VIDEO_FADE,
   FIGURE_FADE,
@@ -46,8 +47,19 @@ export function lottieTimeFor(sp: number, phase: Phase): number {
   // Hold ends at LOTTIE_SCRUB_START (not FIGURES_END): the typography starts
   // appearing again while the tail of the figure sequence is still exiting.
   if (sp <= LOTTIE_SCRUB_START) return LOTTIE_INTRO_S;
-  const t = clamp01((sp - LOTTIE_SCRUB_START) / (LOTTIE_END - LOTTIE_SCRUB_START));
-  return LOTTIE_INTRO_S + t * (LOTTIE_TOTAL_S - LOTTIE_INTRO_S);
+  // Two-speed scrub, split at VIDEO_START:
+  //  1) [LOTTIE_SCRUB_START, VIDEO_START] → [LOTTIE_INTRO_S, LOTTIE_ZOOM_S]:
+  //     the words finish assembling/settling at their readable pace (unchanged
+  //     from the old single linear scrub).
+  //  2) [VIDEO_START, LOTTIE_END] → [LOTTIE_ZOOM_S, LOTTIE_TOTAL_S]: a SHORT,
+  //     fast zoom-through so the giant letters clear the frame before the
+  //     video's baked caption appears (~sp 0.682) — otherwise they block it.
+  if (sp <= VIDEO_START) {
+    const t = (sp - LOTTIE_SCRUB_START) / (VIDEO_START - LOTTIE_SCRUB_START);
+    return LOTTIE_INTRO_S + t * (LOTTIE_ZOOM_S - LOTTIE_INTRO_S);
+  }
+  const t = clamp01((sp - VIDEO_START) / (LOTTIE_END - VIDEO_START));
+  return LOTTIE_ZOOM_S + t * (LOTTIE_TOTAL_S - LOTTIE_ZOOM_S);
 }
 
 export interface FigureState {

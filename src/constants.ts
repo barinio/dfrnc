@@ -18,12 +18,17 @@ export const LOTTIE_TOTAL_S = 266 / 30; // 8.8667s — 30 fps, 266 frames
 //                                      finishes animating in
 //   [FIGURES_START, FIGURES_END]       figures fly overlapping domes; Lottie
 //                                      held after the reveal completes
-//   [LOTTIE_SCRUB_START, LOTTIE_END]   Lottie scrubs to the end; the LAST figures
-//                                      finish their exits inside this window —
-//                                      every flight ends at FIGURES_END, before
-//                                      the video fades in at VIDEO_START
-//   VIDEO_START (< LOTTIE_END)         video fades in BEHIND the typography; the
+//   [LOTTIE_SCRUB_START, VIDEO_START]  the words finish assembling/settling at
+//                                      their reading pace (→ LOTTIE_ZOOM_S, where
+//                                      KONZEPTE has just settled); the LAST
+//                                      figures finish their exits inside here
+//   VIDEO_START                        video fades in BEHIND the typography; the
 //                                      white letters occlude it; alphaTest gaps reveal it
+//   [VIDEO_START, LOTTIE_END]          the SHORT zoom-through: letters accelerate
+//                                      past the camera and clear by LOTTIE_END —
+//                                      kept tight so the typography is gone BEFORE
+//                                      the video's baked caption appears (else the
+//                                      giant letters block it, unreadable)
 //   [LOTTIE_END, 1]                    Lottie fully done — pure video owns the frame
 export const REVEAL_END = 0.17;
 // Start of the figures phase. Sits INSIDE the Lottie reveal: AUSGEZEICHNETES
@@ -37,13 +42,28 @@ export const LOTTIE_SCRUB_START = 0.5;
 // End of the figures phase. Must stay below VIDEO_START so the last figure's
 // exit completes before the video shows up behind the typography.
 export const FIGURES_END = 0.58;
-export const LOTTIE_END = 0.78;
+// The Lottie reaches its final (empty) frame here — the zoom-through has fully
+// passed the camera and the typography is gone. Pulled in from 0.78 so the
+// letters clear BEFORE the video's baked caption ("WIR SIND EIN KLEINES…",
+// on-screen at video-time ≈2.8–7.5s ⇒ sp ≈ 0.682–0.77): with the old 0.78 the
+// caption played its whole life behind the still-zooming giant letters and was
+// unreadable. Must stay ≤ ~0.682 (caption onset) so the frame is clean when it
+// appears. The zoom-through window is [VIDEO_START, LOTTIE_END] (see
+// lottieTimeFor) — keep it short for a snappy fly-past, not a lingering zoom.
+export const LOTTIE_END = 0.68;
+
+// Lottie time (s) reached at VIDEO_START — the seam between the readable-words
+// assembly and the zoom-through. KONZEPTE has just settled and the zoom is about
+// to begin (~6.1s). Kept at the value the old single linear scrub produced at
+// VIDEO_START so segment 1 ([LOTTIE_SCRUB_START, VIDEO_START]) preserves the
+// original reading pace exactly; only the zoom-through after it was tightened.
+export const LOTTIE_ZOOM_S = 5.72;
 
 // Scroll progress where the video starts fading in BEHIND the typography —
-// anchored to the moment KONZEPTE has settled (Lottie t ≈ 5.75s, sp ≈ 0.6312)
-// just before the zoom-in begins (~6.1s). The letters occlude the video; it
-// shows through the alphaTest gaps, and owns the frame once the zoom passes
-// through. Measured from real export (Animation - 1781083424055.json).
+// anchored to the moment KONZEPTE has settled (Lottie t ≈ LOTTIE_ZOOM_S, sp ≈
+// 0.6312) just before the zoom-in begins (~6.1s). The letters occlude the video;
+// it shows through the alphaTest gaps, then the (now short) zoom-through clears
+// them. Measured from real export (Animation - 1781083424055.json).
 export const VIDEO_START = 0.63;
 
 // Scroll-progress width of the video fade after VIDEO_START. Tuned so the video
