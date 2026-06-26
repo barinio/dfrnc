@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
 import { CARD_RADIUS_VH, CARDS_VH, CARD_ASPECT } from "../gallery";
@@ -40,6 +40,59 @@ export function placeholderTexture(index: number): THREE.CanvasTexture {
   return tex;
 }
 
+// Real-image texture cache, keyed by resolved URL. The card conveyor reuses only
+// 4 slots, so every slot's `src` shifts each time `lead` advances. Without a
+// cache that re-fired a fresh async TextureLoader on every step and held the
+// result in React state, so the card kept showing the PREVIOUS image until the
+// new one decoded, then snapped — the visible jerk "when a new picture arrives".
+// Cached textures are session-permanent (small, fixed set) and never disposed.
+const realCache = new Map<string, THREE.Texture>();
+const realPending = new Map<string, Promise<THREE.Texture>>();
+
+function configureRealTexture(tex: THREE.Texture, maxAniso: number) {
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.magFilter = THREE.LinearFilter;
+  tex.anisotropy = Math.min(8, maxAniso);
+}
+
+// Load (or join an in-flight load of) a real image into the cache. Deduped by
+// URL so concurrent slots + the preloader never decode the same file twice.
+function loadRealTexture(url: string, maxAniso: number): Promise<THREE.Texture> {
+  const ready = realCache.get(url);
+  if (ready) return Promise.resolve(ready);
+  const inflight = realPending.get(url);
+  if (inflight) return inflight;
+  const p = new Promise<THREE.Texture>((resolve, reject) => {
+    new THREE.TextureLoader().load(
+      url,
+      (tex) => {
+        configureRealTexture(tex, maxAniso);
+        realCache.set(url, tex);
+        realPending.delete(url);
+        resolve(tex);
+      },
+      undefined,
+      (err) => {
+        realPending.delete(url);
+        reject(err);
+      },
+    );
+  });
+  realPending.set(url, p);
+  return p;
+}
+
+// Eagerly decode every gallery image into the cache (call once on mount) so the
+// textures are GPU-ready long before the cards scroll into view — the first
+// appearance of each image then has no placeholder flash either.
+export function preloadGalleryTextures(srcs: (string | null)[], maxAniso: number) {
+  for (const src of srcs) {
+    if (!src) continue;
+    loadRealTexture(import.meta.env.BASE_URL + src, maxAniso).catch(() => {});
+  }
+}
+
 // Remap ShapeGeometry UVs to 0..1 over the shape's bounding box, then cover-fit
 // the texture's aspect into the card's 3:2 (center crop).
 function fitUVs(geom: THREE.ShapeGeometry, w: number, h: number, texAspect: number) {
@@ -72,30 +125,24 @@ interface Props {
 
 export default function GalleryCard({ src, index, width, height }: Props) {
   const { gl } = useThree();
-  const [texture, setTexture] = useState<THREE.Texture>(() => placeholderTexture(index));
+  const url = src ? import.meta.env.BASE_URL + src : null;
+  const [, bump] = useReducer((x: number) => x + 1, 0);
 
-  // Load the real image when src is provided; fall back to the placeholder.
+  // Resolve the texture at RENDER time straight from the cache — NOT from state
+  // holding the previously-loaded image. On a cache hit (the normal case once the
+  // preloader has run) the correct image is shown on the very frame `src` changes
+  // as the conveyor advances, so there is no stale-frame pop. On a miss we show
+  // the placeholder and re-render once the async load lands.
+  const texture = (url && realCache.get(url)) || placeholderTexture(index);
+
   useEffect(() => {
-    if (!src) {
-      setTexture(placeholderTexture(index));
-      return;
-    }
+    if (!url || realCache.has(url)) return; // null src, or already cached → nothing to load
     let cancelled = false;
-    new THREE.TextureLoader().load(
-      import.meta.env.BASE_URL + src,
-      (tex) => {
-        if (cancelled) return;
-        tex.colorSpace = THREE.SRGBColorSpace;
-        tex.minFilter = THREE.LinearMipmapLinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        tex.anisotropy = Math.min(8, gl.capabilities.getMaxAnisotropy());
-        setTexture(tex);
-      },
-      undefined,
-      () => { if (!cancelled) setTexture(placeholderTexture(index)); }, // error → placeholder
-    );
+    loadRealTexture(url, gl.capabilities.getMaxAnisotropy())
+      .then(() => { if (!cancelled) bump(); }) // swap placeholder → real once decoded
+      .catch(() => {}); // error → keep placeholder
     return () => { cancelled = true; };
-  }, [src, index, gl]);
+  }, [url, gl]);
 
   const geometry = useMemo(() => {
     // Corner radius is 2.5% vh; as a fraction of the card height that is

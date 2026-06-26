@@ -25,6 +25,7 @@ export default function GalleryBackdrop({ galleryRef }: Props) {
     const mat = matRef.current;
     const mesh = meshRef.current;
     if (!mat || !mesh) return;
+    mesh.renderOrder = -2;
     const op = galleryBackdropFor(galleryRef.current);
     mat.opacity = op;
     mesh.visible = op > 0.001;

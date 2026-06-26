@@ -75,9 +75,10 @@ export interface FigureDef {
 //   • and starts at the very top of the figures phase — already airborne while
 //     AUSGEZEICHNETES is still animating in (the phase begins inside the
 //     Lottie reveal, see FIGURES_START).
-//   • tokyo launches the MOMENT `and` reaches its apex (and's window midpoint
-//     0.15) — it took over this launch slot when the awwwards figure was
-//     removed — flying a LOWER dome right-to-left while…
+//   • tokyo launches after `and` has passed its apex. It still overlaps the
+//     tail of the first flight, but it is pushed forward in depth with
+//     perspective-compensated size/spread so the two meshes no longer enter
+//     each other while crossing the same screen area.
 //     gba launches at 0.30 — the EARLIEST possible without a third figure in the
 //     air: `and` lands at 0.30, so any earlier overlaps and+tokyo+gba (the design
 //     keeps ≤2 airborne). It launches while tokyo is still descending, flying a
@@ -117,25 +118,26 @@ export const FIGURES: FigureDef[] = [
   {
     name: "tokyo",
     url: "figures/tokyo.glb",
-    // Flies at z=+0.9 (perspective ×1.13) — 3.4 reads as ≈3.8 on screen.
-    targetHeight: 3.4,
+    // Flies well in front of `and` (z=+2.6) to keep the first two meshes from
+    // intersecting. Size/spread/height are perspective-compensated so the
+    // projected read stays close to the earlier z=+0.9 pass.
+    targetHeight: 2.58,
     arc: {
-      legSpreadLandscape: 0.38,
-      legSpreadPortrait: 0.72,
-      rootDepth: 1.4,
-      peakHeight: 0.33,
+      legSpreadLandscape: 0.29,
+      legSpreadPortrait: 0.55,
+      rootDepth: 1.06,
+      peakHeight: 0.25,
       side: -1,
       spinTurns: -0.5,
       rollPeak: 0.38,
       // Calmer pitch during the crossing — swing is what drives the figure's
       // z-reach (height × sin), and the crossing pair's depth gap must stay
       // larger than both reaches combined.
-      swingAmount: 0.4,
-      z: 0.9,
-      // Launches as `and` hits its apex (and's window midpoint = 0.15) — took
-      // over awwwards's old launch slot when that figure was removed; keeps its
-      // original 0.34-wide span so the flight duration is unchanged.
-      window: [0.15, 0.49],
+      swingAmount: 0.28,
+      z: 2.6,
+      // Starts after `and` is past its apex, while still overlapping the first
+      // flight's tail. The shorter 0.32 span keeps gba's handoff from drifting.
+      window: [0.22, 0.54],
     },
     // Tokyo's stacked thin DoubleSide letters compound the attenuation tint
     // surface after surface, so its blue saturates far faster than the
@@ -207,4 +209,3 @@ export function makeArc(
 
   return new THREE.QuadraticBezierCurve3(start, control, end);
 }
-

@@ -25,20 +25,26 @@ function lerp(a: number, b: number, f: number): number {
 }
 
 // ── Card images (drop-in) ────────────────────────────────────────────────────
-// `null` ⇒ render a procedural gray placeholder (see GalleryCard). To ship real
-// imagery: drop files in public/gallery/ and replace the nulls with their URLs
-// (relative to BASE_URL), e.g. "gallery/photo-1.jpg". Any length ≥ 3 works; more
-// images keep the 3-card stack full for longer before it empties into the CTA.
-// 8 image cards (slides 2..9) — slide #1 is the morphing video (VideoPlane), so
-// the gallery is 9 cards total. `null` ⇒ procedural gray placeholder.
+// Image card URLs, relative to BASE_URL. Slide #1 is the morphing video
+// (VideoPlane), so these 8 image cards fill slides 2..9.
 export const GALLERY_IMAGES: (string | null)[] = [
-  null, null, null, null, null, null, null, null,
+  "gallery/a2-large.jpeg",
+  "gallery/b2-large.jpeg",
+  "gallery/c1-large.jpeg",
+  "gallery/b3-large.jpeg",
+  "gallery/a2-large.jpeg",
+  "gallery/b2-large.jpeg",
+  "gallery/c1-large.jpeg",
+  "gallery/b3-large.jpeg",
 ];
 
 // ── Layout (fractions of viewport; vmin where noted) ─────────────────────────
 export const GUTTER = 0.03; // 3% vmin gutter around/between typo and cards
 export const TOP_TITLE_VH = 0.08; // top title line height
 export const CARDS_VH = 0.64; // card-stack height (landscape & portrait)
+// Cards render at this fraction of the 64vh card band so the front card and
+// peeked neighbours stay clear of the top/bottom title text.
+export const CARD_FILL = 0.72;
 export const BOTTOM_TITLE_VH = 0.16; // bottom title block (two lines)
 export const CARD_RADIUS_VH = 0.025; // 2.5% vh corner radius
 export const CARD_ASPECT = 3 / 2; // card width:height
@@ -116,6 +122,45 @@ export function imageGalleryProgress(gp: number): number {
   return clamp01((gp - IMAGE_GALLERY_START) / (1 - IMAGE_GALLERY_START));
 }
 
+const IMAGE_STACK_REVEAL_START = 0.1;
+
+// Image cards stay hidden during the vertical video crop, then slide out from
+// the centre while the video is nearly card-shaped.
+export function imageStackRevealFor(gp: number): number {
+  return smoothstep(clamp01((gp - IMAGE_STACK_REVEAL_START) / (VID_MORPH_END - IMAGE_STACK_REVEAL_START)));
+}
+
+// Binary visibility only: the reveal movement handles the entrance, not opacity.
+export function imageStackVisibleFor(gp: number): number {
+  return imageStackRevealFor(gp) > 0 ? 1 : 0;
+}
+
+// Resting X/Y positions, fixed per virtual card index (cycles every 3): video
+// card = centre, first image card = upper-left, second image card = right and
+// halfway up between the centre and upper-left cards. Fractions of card W/H.
+const CARD_POSITIONS = [
+  { x: 0.0, y: 0.0 },
+  { x: -0.15, y: 0.1 },
+  { x: 0.16, y: 0.05 },
+];
+
+// Unified virtual card positions. Card 0 is the morphing video card, so the
+// first image card is virtual card 1 and lands in the upper-left slot.
+export function galleryCardPositionSlot(virtualCardIndex: number): number {
+  const i = Math.floor(virtualCardIndex);
+  return ((i % 3) + 3) % 3;
+}
+
+export function galleryCardPositionFor(virtualCardIndex: number): { x: number; y: number } {
+  return CARD_POSITIONS[galleryCardPositionSlot(virtualCardIndex)];
+}
+
+// Exit progress for the video-as-card phase. Image cards are staged behind it
+// while this runs; their own conveyor starts after the video has cleared.
+export function videoCardExitProgressFor(gp: number): number {
+  return smoothstep(clamp01((gp - VID_HOLD_END) / (VID_FLY_END - VID_HOLD_END)));
+}
+
 export interface ScreenRect {
   // Screen fractions, x: 0 = left … 1 = right, y: 0 = bottom … 1 = top.
   l: number;
@@ -130,10 +175,14 @@ export interface ScreenRect {
 export function cardScreenRect(aspect: number): ScreenRect {
   const cyTop = 2 * GUTTER + TOP_TITLE_VH + CARDS_VH / 2; // 0.46 from top
   const cy = 1 - cyTop; // from bottom
-  const halfH = CARDS_VH / 2;
+  const cardHFrac = CARDS_VH * CARD_FILL;
+  const halfH = cardHFrac / 2;
   // Card screen-width fraction: landscape keeps 3:2 (world cardH·ASPECT ÷ vw),
   // portrait uses the fixed 86vw band.
-  const wFrac = aspect >= 1 ? (CARDS_VH * CARD_ASPECT) / aspect : CARDS_WIDTH_VW_PORTRAIT;
+  const wFrac =
+    aspect >= 1
+      ? (cardHFrac * CARD_ASPECT) / aspect
+      : CARDS_WIDTH_VW_PORTRAIT * CARD_FILL;
   const halfW = wFrac / 2;
   return { l: 0.5 - halfW, r: 0.5 + halfW, b: cy - halfH, t: cy + halfH };
 }
@@ -161,7 +210,7 @@ const H_START = 0.08; // sides begin pulling in
 // CardStack's RISE_OFF (≈1.9 card-heights): the card flies straight UP off the
 // top FULLY OPAQUE (no opacity fade — "слайди без опасіті улітають"), far enough
 // to clear the frame. card.b ≈ 0.22 + this ≫ 1, so the bottom edge exits the top.
-const RISE_VID = 1.9 * CARDS_VH;
+const RISE_VID = 1.9 * CARDS_VH * CARD_FILL;
 
 // Full-bleed FPV video → gallery slide #1: crop the top first, then the sides,
 // down to an image-card rect; hold; then fly straight UP off the top — OPAQUE,

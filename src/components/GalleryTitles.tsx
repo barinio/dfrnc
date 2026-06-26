@@ -140,8 +140,14 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     // every frame (the slide moves while the held last frame is static).
     const exit = THREE.MathUtils.clamp(cardExitRef.current, 0, 1);
     const off = exit * fullHeight; // a full frustum height → fully off-screen by exit 1
-    if (meshTopRef.current) meshTopRef.current.position.y = planeHeight / 4 + off;
-    if (meshBottomRef.current) meshBottomRef.current.position.y = -planeHeight / 4 - off;
+    if (meshTopRef.current) {
+      meshTopRef.current.renderOrder = 2;
+      meshTopRef.current.position.y = planeHeight / 4 + off;
+    }
+    if (meshBottomRef.current) {
+      meshBottomRef.current.renderOrder = 2;
+      meshBottomRef.current.position.y = -planeHeight / 4 - off;
+    }
 
     if (frame === lastFrameRef.current) return;
     lastFrameRef.current = frame;

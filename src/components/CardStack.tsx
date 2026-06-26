@@ -2,25 +2,25 @@ import { useEffect, useMemo, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import GalleryCard from "./GalleryCard";
+import GalleryCard, { preloadGalleryTextures } from "./GalleryCard";
 import {
-  cardConveyorFor,
   cardFlyProgressFor,
+  galleryCardPositionFor,
   imageGalleryProgress,
+  imageStackRevealFor,
+  imageStackVisibleFor,
   GALLERY_IMAGES,
   CARDS_VH,
+  CARD_FILL,
   CARD_ASPECT,
   CARDS_WIDTH_VW_PORTRAIT,
   GUTTER,
   TOP_TITLE_VH,
 } from "../gallery";
+import { VID_FLY_END } from "../constants";
 import { approach } from "../cursorTilt";
 
 const PLANE_Z = 0; // centre of the frustum → pronounced perspective for the tilt
-
-// Cards render at a FRACTION of the 64vh band so the front card (and the peeked
-// neighbours offset up/down) stay clear of the top/bottom title text with margin.
-const CARD_FILL = 0.72;
 
 // Hover (radiance.family): parallax + scale apply ONLY while the cursor is over
 // the card. No always-on tilt or idle drift.
@@ -28,14 +28,6 @@ const HOVER_SCALE = 1.03; // front card grows 1 → 1.03 on hover (small — ful
 const HOVER_TILT_MAX = 0.06; // ~3.4° max parallax tilt on hover (radians)
 const HOVER_RATE = 9; // ease rate for the hover scale/tilt
 const HOVER_PAD = 1.06; // hover hit-region padding (reduces edge flicker)
-
-// Resting X/Y positions (image #5), FIXED per card index (cycles every 3): centre
-// = cards 1·4·7, upper-left = 2·5·8, right = 3·6·9. (Fractions of card W/H.)
-const POSITIONS = [
-  { x: 0.0, y: 0.0 }, // 0 — centre
-  { x: -0.15, y: 0.1 }, // 1 — upper-left
-  { x: 0.16, y: -0.02 }, // 2 — right
-];
 
 // Depth stack by AGE (continuous depth d, 0 = front): the front card (next to
 // leave) has the HIGHEST z + largest scale; each card behind is deeper + a touch
@@ -70,13 +62,16 @@ interface Props {
 }
 
 export default function CardStack({ galleryRef, cardExitRef, reducedMotion = false }: Props) {
-  const { viewport } = useThree();
+  const { viewport, gl } = useThree();
   const groupRef = useRef<THREE.Group>(null);
-  const slotRef0 = useRef<THREE.Group>(null);
-  const slotRef1 = useRef<THREE.Group>(null);
-  const slotRef2 = useRef<THREE.Group>(null);
-  const slotRef3 = useRef<THREE.Group>(null);
-  const slotRefs = [slotRef0, slotRef1, slotRef2, slotRef3];
+  // One PERSISTENT mesh per image card. Each card keeps its own fixed texture for
+  // the whole session and is positioned imperatively below by its absolute index.
+  // (The old design recycled 4 slots and swapped their `src` via React state — but
+  // position is updated here in useFrame while the swapped content only landed on
+  // the NEXT React commit, 1–several frames later. That desync made the front card
+  // snap to its new spot still showing the previous image, then pop — the visible
+  // "jump when a new picture arrives". Fixed by never changing any card's content.)
+  const cardRefs = useRef<(THREE.Group | null)[]>([]);
   const rotX = useRef(0);
   const rotY = useRef(0);
   const hover = useRef(0); // eased 0..1 hover amount
@@ -93,6 +88,13 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     window.addEventListener("pointermove", onMove, { passive: true });
     return () => window.removeEventListener("pointermove", onMove);
   }, []);
+
+  // Decode every gallery image up front (on mount) so the textures are GPU-ready
+  // long before the cards scroll in — the conveyor then recycles slots without
+  // any async texture pop ("jerk when a new picture arrives").
+  useEffect(() => {
+    preloadGalleryTextures(GALLERY_IMAGES, gl.capabilities.getMaxAnisotropy());
+  }, [gl]);
 
   // Card world size (smaller via CARD_FILL) + content-band centring + hover
   // hit-region in NDC. Viewport is world units (height ≈ 9.24 at z = 0).
@@ -123,21 +125,21 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     const group = groupRef.current;
     if (!group) return;
 
-    // The image conveyor (slides 2..N) runs in the IMAGE-gallery sub-range, which
-    // opens only AFTER the video card (slide #1) has flown away (igp > 0 ⟺ gp >
-    // VID_FLY_END). All card timing below is in this remapped space.
-    const igp = imageGalleryProgress(galleryRef.current);
-    const { span } = cardConveyorFor(igp);
+    const gp = galleryRef.current;
+    // The image cards stay hidden during the vertical crop, then slide out from
+    // the video-card centre into their staged positions. Their own conveyor
+    // still runs in the remapped image-gallery sub-range, so card 2 does not fly
+    // until after the video card has cleared.
+    const igp = imageGalleryProgress(gp);
+    const stackReveal = imageStackRevealFor(gp);
+    const stackOpacity = imageStackVisibleFor(gp);
 
-    // Show the stack only once the image-card phase begins — i.e. after the
-    // video card has flown and the black backdrop is up (span > 0 ⟺ igp >
-    // BACKDROP_FADE_END). During the intro/figures/video/video-card phase
-    // (igp = 0) the whole stack is hidden, so it can't peek up from the bottom.
-    group.visible = span > 1e-4;
+    group.visible = stackOpacity > 0;
     if (!group.visible) {
       cardExitRef.current = 0; // titles stay fully opaque before the card phase
       return;
     }
+    group.renderOrder = 0;
 
     const n = GALLERY_IMAGES.length;
     // Continuous, scroll-scrubbed flip progress through the cards: card `lead` is
@@ -152,12 +154,12 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
 
     // Hover amount (eased) — applied to the FRONT/settled card only. The resting
-    // POSITIONS slot cycles centre / upper-left / right, so the hit-region must
+    // Position slot cycles centre / upper-left / right, so the hit-region must
     // FOLLOW the front card to its actual on-screen spot; testing against
     // screen-centre let only the centred cards (idx 0,3,6) react, so it looked
-    // like only the first card had parallax. Front card = POSITIONS[lead % 3];
+    // like only the first card had parallax.
     // its resting NDC centre = the band centre plus the card's P.x/P.y offset.
-    const Pfront = POSITIONS[lead % 3];
+    const Pfront = galleryCardPositionFor(lead + 1);
     const frontCenterX = (2 * Pfront.x * cardW) / viewport.width;
     const frontCenterY = hoverCenterY + (2 * Pfront.y * cardH) / viewport.height;
     const px = ptr.current.x;
@@ -166,6 +168,7 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     const relY = py - frontCenterY;
     const over =
       !reducedMotion &&
+      gp >= VID_FLY_END &&
       Math.abs(relX) < hoverHalfX &&
       Math.abs(relY) < hoverHalfY;
     hover.current = approach(hover.current, over ? 1 : 0, delta, HOVER_RATE);
@@ -174,26 +177,27 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     group.rotation.set(0, 0, 0);
     group.scale.setScalar(1);
 
-    // Four live slots: slot 0 = the front card flying UP and off the top (NO
-    // opacity fade), slots 1–2 = the cards behind it, slot 3 = the next card
-    // entering at the BACK directly behind slot 0 (same X/Y, since (lead+3) % 3 ===
-    // lead % 3 — revealed as slot 0 rises). X/Y are fixed per card
-    // (POSITIONS[idx % 3]); z + scale come from the age-ordered DEPTH stack via the
-    // continuous depth d = slot − local.
-    for (let slot = 0; slot < 4; slot++) {
-      const ref = slotRefs[slot].current;
+    // Walk all cards; each card's "slot" is its distance behind the front =
+    // i − lead. Four are live at a time: slot 0 = the front card flying UP and off
+    // the top (NO opacity fade), slots 1–2 = the cards behind it, slot 3 = the next
+    // card entering at the BACK directly behind slot 0. Cards already gone (slot < 0)
+    // or not yet entered (slot > 3) are hidden. X/Y are fixed per card, with a
+    // centre-out reveal while the video finishes becoming a card; z + scale come
+    // from the age-ordered DEPTH stack via the continuous depth d = i − displayed.
+    for (let i = 0; i < n; i++) {
+      const ref = cardRefs.current[i];
       if (!ref) continue;
-      const idx = lead + slot;
-      if (idx >= n) {
+      const slot = i - lead;
+      if (slot < 0 || slot > 3) {
         ref.visible = false;
         continue;
       }
-      const P = POSITIONS[idx % 3];
-      const x = P.x;
-      let y = P.y;
+      const P = galleryCardPositionFor(i + 1);
+      const x = P.x * stackReveal;
+      let y = P.y * stackReveal;
       let z: number;
       let scale: number;
-      const d = slot - local;
+      const d = i - displayed; // = slot − local: continuous depth as the stack advances
 
       if (slot === 0) {
         // The FRONT card (slot 0 is the only slot with d = −local ≤ 0). It is
@@ -208,7 +212,7 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
         const amt = hover.current * settle;
         z = DEPTH[0].z;
         scale = DEPTH[0].scale * Math.min(1 + (HOVER_SCALE - 1) * amt, maxHoverScale);
-        y = P.y + local * RISE_OFF; // local = −d: 0 when settled, rises as it leaves
+        y = P.y * stackReveal + local * RISE_OFF; // local = −d: 0 when settled, rises as it leaves
         ref.rotation.set(rotX.current * settle, rotY.current * settle, 0);
       } else {
         // Cards behind (d > 0 always for slot ≥ 1): age-ordered depth, no hover.
@@ -222,48 +226,29 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
       ref.position.set(x * cardW, y * cardH, z);
       ref.scale.setScalar(scale);
       const mesh = ref.children[0] as THREE.Mesh | undefined;
+      if (mesh) mesh.renderOrder = 0;
       const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
-      if (mat) mat.opacity = 1;
+      if (mat) mat.opacity = stackOpacity;
     }
 
-    // Entrance: the whole group rises from below to its band centre as the
-    // gallery opens.
-    // Entrance lift deep enough that at entrance=0 the whole stack starts fully
-    // below the screen (no sliver peeking) and rises into its band centre.
-    const entrance = THREE.MathUtils.clamp(span / 0.04, 0, 1);
-    group.position.y = bandOffsetY - (1 - entrance) * cardH * 2.3;
+    // No entrance lift: image cards are already parked behind the video card.
+    group.position.y = bandOffsetY;
   });
 
   return (
     <group ref={groupRef} position={[0, 0, PLANE_Z]}>
-      {[0, 1, 2, 3].map((slot) => (
-        <group key={slot} ref={slotRefs[slot]}>
-          <SlotCard slot={slot} galleryRef={galleryRef} cardW={cardW} cardH={cardH} />
+      {GALLERY_IMAGES.map((src, i) => (
+        <group
+          key={i}
+          ref={(el) => {
+            cardRefs.current[i] = el;
+          }}
+        >
+          {/* Fixed content per card — never re-keyed/swapped, so the texture is
+              loaded once and the image can never lag the imperative position. */}
+          <GalleryCard src={src} index={i} width={cardW} height={cardH} />
         </group>
       ))}
     </group>
   );
-}
-
-// Resolves the live image index for a slot at render time (placeholders are
-// identical, so the stale read is invisible; for real images, lift the conveyor
-// lead to state — see the plan's "real images" note). Opacity/position/scale are
-// driven imperatively by the parent each frame.
-function SlotCard({
-  slot,
-  galleryRef,
-  cardW,
-  cardH,
-}: {
-  slot: number;
-  galleryRef: MutableRefObject<number>;
-  cardW: number;
-  cardH: number;
-}) {
-  const { lead } = cardConveyorFor(imageGalleryProgress(galleryRef.current));
-  const idx = lead + slot;
-  const n = GALLERY_IMAGES.length;
-  if (idx >= n) return null;
-  const realIdx = idx % n;
-  return <GalleryCard src={GALLERY_IMAGES[realIdx]} index={realIdx} width={cardW} height={cardH} />;
 }

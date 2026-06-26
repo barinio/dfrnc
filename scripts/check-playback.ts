@@ -31,10 +31,19 @@ import {
   cardFlyProgressFor,
   galleryCtaFromExit,
   imageGalleryProgress,
+  imageStackRevealFor,
+  imageStackVisibleFor,
+  videoCardExitProgressFor,
+  galleryCardPositionFor,
+  galleryCardPositionSlot,
   cardScreenRect,
   videoCardMorphFor,
   CTA_REVEAL_FROM,
   GALLERY_IMAGES,
+  CARD_FILL,
+  CARDS_VH,
+  CARD_ASPECT,
+  CARDS_WIDTH_VW_PORTRAIT,
   BACKDROP_FADE_END,
   TITLES_END,
   CARDS_FLY_START,
@@ -206,20 +215,22 @@ for (let i = 1; i < FIGURES.length; i++) {
   ok(start > prevStart && end > prevEnd, `window ${i} ordered after ${i - 1}`);
 }
 const byName = (n: string) => FIGURES.find((f) => f.name === n)!;
-// tokyo launches the moment `and` reaches its apex (and's window midpoint) —
-// it took over this launch slot when the awwwards figure was removed.
+// tokyo launches after `and` has passed its apex, while still overlapping the
+// first flight's tail. It is also pushed forward in z so the two meshes cross as
+// separate depth layers instead of entering each other.
 const and = byName("and");
-eq(
-  byName("tokyo").arc.window[0],
-  (and.arc.window[0] + and.arc.window[1]) / 2,
-  "tokyo launches at and's apex",
-  1e-9,
+const andApex = (and.arc.window[0] + and.arc.window[1]) / 2;
+const tokyo = byName("tokyo");
+ok(tokyo.arc.window[0] >= andApex + 0.05, "tokyo launches after and's apex");
+ok(tokyo.arc.window[0] < and.arc.window[1], "and/tokyo windows still overlap");
+ok(
+  Math.abs((tokyo.arc.z ?? 0) - (and.arc.z ?? 0)) >= 2.2,
+  "and/tokyo have enough depth separation to avoid entering each other",
 );
 // The crossing pair: gba launches while tokyo is still airborne (their windows
 // OVERLAP at the handoff, so two figures fly at once), on the opposite side and
 // on a HIGHER dome at a different depth — they pass without colliding (per the
 // design direction).
-const tokyo = byName("tokyo");
 const gba = byName("gba");
 ok(
   gba.arc.window[0] > tokyo.arc.window[0] &&
@@ -409,9 +420,51 @@ for (const f of FIGURES) {
   eq(imageGalleryProgress(1), 1, "igp 1 at document bottom");
   ok(imageGalleryProgress(0.7) > imageGalleryProgress(0.5), "igp monotonic");
 
+  // The image-card stack stays hidden during the vertical video crop, then
+  // reveals by sliding out from the centre under the almost-card-shaped video.
+  eq(imageStackVisibleFor(0), 0, "image stack hidden at exact gallery start");
+  eq(imageStackVisibleFor(0.05), 0, "image stack hidden during vertical crop");
+  eq(imageStackRevealFor(0.1), 0, "image stack reveal starts after vertical crop");
+  ok(
+    imageStackRevealFor((0.1 + VID_MORPH_END) / 2) > 0 &&
+      imageStackRevealFor((0.1 + VID_MORPH_END) / 2) < 1,
+    "image stack slides out from centre during late morph",
+  );
+  eq(imageStackRevealFor(VID_MORPH_END), 1, "image stack fully placed by morph end");
+  eq(imageStackVisibleFor(VID_MORPH_END), 1, "image stack visible once reveal completes");
+
+  // Video-card handoff: the video is virtual card 0 at centre; image cards are
+  // already staged behind it with virtual indices 1..N, so the first image card
+  // takes the upper-left slot after the video flies away.
+  eq(videoCardExitProgressFor(0), 0, "video card exit 0 at gallery start");
+  eq(videoCardExitProgressFor(VID_HOLD_END), 0, "video card exit 0 through hold");
+  eq(videoCardExitProgressFor(VID_FLY_END), 1, "video card exit 1 at fly end");
+  ok(
+    videoCardExitProgressFor((VID_HOLD_END + VID_FLY_END) / 2) > 0,
+    "video card exit progresses during fly",
+  );
+  eq(galleryCardPositionSlot(0), 0, "video card occupies centre slot");
+  eq(galleryCardPositionSlot(1), 1, "first image card occupies upper-left slot");
+  eq(galleryCardPositionSlot(2), 2, "second image card occupies right slot");
+  eq(galleryCardPositionSlot(3), 0, "third image card returns to centre slot");
+  eq(galleryCardPositionFor(0).y, 0, "centre card y");
+  eq(galleryCardPositionFor(1).y, 0.1, "upper-left card y");
+  eq(galleryCardPositionFor(2).y, 0.05, "right card y halfway between centre and upper-left");
+  eq(galleryCardPositionFor(2).x, 0.16, "right card remains offset right");
+
   // videoCardMorphFor: endpoints + crop collapses full → card, top-first.
   const aspect = 0.5; // portrait phone
   const card = cardScreenRect(aspect);
+  eq(card.t - card.b, CARDS_VH * CARD_FILL, "video card rect height matches CardStack card fill");
+  eq(card.r - card.l, CARDS_WIDTH_VW_PORTRAIT * CARD_FILL, "portrait video card rect width matches CardStack card fill");
+  {
+    const landscape = cardScreenRect(16 / 9);
+    eq(
+      landscape.r - landscape.l,
+      (CARDS_VH * CARD_FILL * CARD_ASPECT) / (16 / 9),
+      "landscape video card rect width matches CardStack card fill",
+    );
+  }
   const m0 = videoCardMorphFor(0, aspect);
   eq(m0.crop.l, 0, "morph full-bleed left @gp0");
   eq(m0.crop.t, 1, "morph full-bleed top @gp0");
