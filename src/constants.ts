@@ -38,7 +38,13 @@ export const REVEAL_END = 0.17;
 export const FIGURES_START = 0.125;
 // Lottie hold ends and the typography starts appearing again. Decoupled from
 // FIGURES_END so the tail of the figure sequence exits WHILE the text animates.
-export const LOTTIE_SCRUB_START = 0.5;
+// Pulled in from 0.5 → 0.41 when gba's flight was sped up (its window narrowed
+// 0.55 → 0.36, so it lands ~0.09 sp earlier): the scrub now resumes right as gba
+// touches down (sp ≈0.425), keeping the background continuation tight with no
+// dead-air hold. The readable-words assembly [LOTTIE_SCRUB_START, VIDEO_START] is
+// correspondingly a touch slower; its endpoints (LOTTIE_INTRO_S → LOTTIE_ZOOM_S
+// at VIDEO_START) are unchanged, so the zoom-through / caption timing is intact.
+export const LOTTIE_SCRUB_START = 0.41;
 // End of the figures phase. Must stay below VIDEO_START so the last figure's
 // exit completes before the video shows up behind the typography.
 export const FIGURES_END = 0.58;

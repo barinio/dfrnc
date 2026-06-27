@@ -6,8 +6,7 @@ import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import titlesData from "../assets/titles.json";
 import {
-  galleryCardProgressFor,
-  galleryTitleFrameFracForCard,
+  galleryTitleFrameFor,
   GUTTER,
   MAX_ASPECT,
 } from "../gallery";
@@ -113,10 +112,11 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
   useFrame((_s, delta) => {
     const anim = animRef.current;
     if (!anim || !texRef.current) return;
-    // Drive the title FRAME by the unified card progress `cp` so the texts run
-    // across BOTH the video card (slide #1, cp 0→1) and the image cards (cp 1→9).
-    const cp = galleryCardProgressFor(galleryRef.current);
-    const target = galleryTitleFrameFracForCard(cp); // 0..1
+    // Drive the title FRAME directly from gallery progress: the opening titles
+    // settle step-by-step with the video card's top/bottom crops, and the image-
+    // card title groups change only inside card HOLD windows (galleryTitleFrameFor).
+    const gp = galleryRef.current;
+    const target = galleryTitleFrameFor(gp); // 0..1
     let frac: number;
     if (reducedMotion) {
       frac = target; // discrete, no smoothing
@@ -128,9 +128,9 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     }
     const frame = frac * Math.max(anim.totalFrames - 1, 0);
 
-    // Visible for the whole gallery (cp > 0) — including the video card phase.
+    // Visible for the whole gallery (gp > 0) — including the video card phase.
     // The titles no longer FADE out at the end; instead they SLIDE off (below).
-    const visible = cp > 1e-4 ? 1 : 0;
+    const visible = gp > 1e-4 ? 1 : 0;
     if (matTopRef.current) matTopRef.current.opacity = visible;
     if (matBottomRef.current) matBottomRef.current.opacity = visible;
 

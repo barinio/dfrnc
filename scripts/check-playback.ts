@@ -1,5 +1,6 @@
 // Pure-function sanity assertions for the scroll timeline. No test runner in
 // this project — run manually with:  npx tsx scripts/check-playback.ts
+import { readFileSync } from "node:fs";
 import {
   lottieTimeFor,
   figureStateFor,
@@ -27,6 +28,9 @@ import {
   galleryTitleFracFor,
   galleryCardProgressFor,
   galleryTitleFrameFracForCard,
+  galleryTitleFrameFor,
+  cardConveyorDisplayedFor,
+  galleryStackDisplayedFor,
   cardConveyorFor,
   cardFlyProgressFor,
   galleryCtaFromExit,
@@ -34,8 +38,8 @@ import {
   imageStackRevealFor,
   imageStackVisibleFor,
   videoCardExitProgressFor,
-  galleryCardPositionFor,
-  galleryCardPositionSlot,
+  cardStackPlacementFor,
+  STACK_VISIBLE,
   cardScreenRect,
   videoCardMorphFor,
   CTA_REVEAL_FROM,
@@ -44,6 +48,8 @@ import {
   CARDS_VH,
   CARD_ASPECT,
   CARDS_WIDTH_VW_PORTRAIT,
+  GUTTER,
+  TOP_TITLE_VH,
   BACKDROP_FADE_END,
   TITLES_END,
   CARDS_FLY_START,
@@ -443,27 +449,104 @@ for (const f of FIGURES) {
     videoCardExitProgressFor((VID_HOLD_END + VID_FLY_END) / 2) > 0,
     "video card exit progresses during fly",
   );
-  eq(galleryCardPositionSlot(0), 0, "video card occupies centre slot");
-  eq(galleryCardPositionSlot(1), 1, "first image card occupies upper-left slot");
-  eq(galleryCardPositionSlot(2), 2, "second image card occupies right slot");
-  eq(galleryCardPositionSlot(3), 0, "third image card returns to centre slot");
-  eq(galleryCardPositionFor(0).y, 0, "centre card y");
-  eq(galleryCardPositionFor(1).y, 0.1, "upper-left card y");
-  eq(galleryCardPositionFor(2).y, 0.05, "right card y halfway between centre and upper-left");
-  eq(galleryCardPositionFor(2).x, 0.16, "right card remains offset right");
+
+  // galleryStackDisplayedFor: the video is virtual card 0. While it forms/holds at
+  // d0 the front-card position is −1, so image card 0 (d = 0 − (−1) = 1) sits one
+  // slot back at d1 (upper-left "position #2") — NOT directly behind the video.
+  // As the video flies away it ramps −1→0, sliding image card 0 into the front d0.
+  eq(galleryStackDisplayedFor(VID_MORPH_END), -1, "image card 0 staged at d1 while the video holds (morph end)");
+  eq(galleryStackDisplayedFor(VID_HOLD_END), -1, "image card 0 still at d1 through the hold");
+  eq(galleryStackDisplayedFor(VID_FLY_END), 0, "image card 0 has reached the front d0 once the video has flown");
+  ok(
+    galleryStackDisplayedFor((VID_HOLD_END + VID_FLY_END) / 2) > -1 &&
+      galleryStackDisplayedFor((VID_HOLD_END + VID_FLY_END) / 2) < 0,
+    "image card 0 slides d1→d0 as the video flies",
+  );
+  ok(
+    Math.abs(galleryStackDisplayedFor(VID_FLY_END - 1e-6) - galleryStackDisplayedFor(VID_FLY_END)) < 1e-3,
+    "galleryStackDisplayedFor continuous across gp = VID_FLY_END",
+  );
+  {
+    let prev = -2;
+    for (let gp = 0; gp <= 1.0001; gp += 0.001) {
+      const d = galleryStackDisplayedFor(gp);
+      ok(d >= prev - 1e-9, `galleryStackDisplayedFor monotonic @gp=${gp.toFixed(3)}`);
+      prev = d;
+    }
+  }
+  // Gallery layout: the PDF's 96vh × 64vh block is the OUTER frame. The actual
+  // visible cards sit inside that frame with a >=6% reveal gap, so all three
+  // layered slots read as separate cards inside the red reference rectangle.
+  {
+    const expectedFill = 0.94;
+    const slotEdgeOffset = (1 - expectedFill) / (2 * expectedFill);
+    eq(CARD_FILL, expectedFill, "image/video cards leave a visible reveal gap inside the outer gallery frame");
+
+    const front = cardStackPlacementFor(0);
+    eq(front.x, 0, "front/green card is centered horizontally inside the outer frame");
+    eq(front.y, -slotEdgeOffset, "front/green card aligns to the bottom edge");
+    eq(front.z, 0, "front card at z 0");
+    eq(front.scale, 1, "front card full scale");
+    const back1 = cardStackPlacementFor(1);
+    eq(back1.x, -slotEdgeOffset, "2nd/blue card aligns to the left edge");
+    eq(back1.y, slotEdgeOffset, "2nd/blue card aligns to the top edge");
+    ok(back1.z < 0, "2nd card recedes in z");
+    eq(back1.scale, 1, "2nd/blue card keeps the same size inside the frame");
+    const back2 = cardStackPlacementFor(2);
+    eq(back2.x, slotEdgeOffset, "3rd/yellow card aligns to the right edge");
+    eq(back2.y, slotEdgeOffset / 2, "3rd/yellow card sits slightly above midpoint toward the 2nd card");
+    ok(back2.z < back1.z, "3rd card recedes further than the 2nd");
+    eq(back2.scale, 1, "3rd/yellow card keeps the same size inside the frame");
+    ok(back2.x > front.x, "3rd/yellow card extends past the front card on the right");
+    ok(back2.y > front.y, "3rd/yellow card sits above the front card");
+    eq(
+      back2.x + back2.scale / 2 - (front.x + front.scale / 2),
+      slotEdgeOffset,
+      "3rd/yellow right side remains visible beyond the front card",
+    );
+    eq(front.x - back1.x, slotEdgeOffset, "2nd/blue left side remains visible beyond the front card");
+    ok(STACK_VISIBLE >= 1 && STACK_VISIBLE <= 3, "only a few background cards visible");
+    const outerHalfInCardUnits = 1 / (2 * expectedFill);
+    for (const [label, p] of [
+      ["front", front],
+      ["back1", back1],
+      ["back2", back2],
+    ] as const) {
+      const half = 0.5 * p.scale;
+      ok(p.x - half >= -outerHalfInCardUnits - 1e-9, `${label} left edge stays inside outer frame`);
+      ok(p.x + half <= outerHalfInCardUnits + 1e-9, `${label} right edge stays inside outer frame`);
+      ok(p.y - half >= -outerHalfInCardUnits - 1e-9, `${label} bottom edge stays inside outer frame`);
+      ok(p.y + half <= outerHalfInCardUnits + 1e-9, `${label} top edge stays inside outer frame`);
+    }
+    // Leaving front card (negative depth) clamps to the front placement here;
+    // CardStack adds the upward rise on top.
+    eq(cardStackPlacementFor(-0.5).x, front.x, "leaving card keeps the front-slot x");
+    eq(cardStackPlacementFor(-0.5).y, front.y, "leaving card keeps the front-slot y");
+  }
 
   // videoCardMorphFor: endpoints + crop collapses full → card, top-first.
   const aspect = 0.5; // portrait phone
   const card = cardScreenRect(aspect);
-  eq(card.t - card.b, CARDS_VH * CARD_FILL, "video card rect height matches CardStack card fill");
-  eq(card.r - card.l, CARDS_WIDTH_VW_PORTRAIT * CARD_FILL, "portrait video card rect width matches CardStack card fill");
+  eq(card.t - card.b, CARDS_VH * CARD_FILL, "video card rect height matches inner card height");
+  eq(card.r - card.l, CARDS_WIDTH_VW_PORTRAIT * CARD_FILL, "portrait video card rect width matches inner card width");
   {
-    const landscape = cardScreenRect(16 / 9);
+    const landscapeAspect = 16 / 9;
+    const landscape = cardScreenRect(landscapeAspect);
     eq(
       landscape.r - landscape.l,
-      (CARDS_VH * CARD_FILL * CARD_ASPECT) / (16 / 9),
-      "landscape video card rect width matches CardStack card fill",
+      (CARDS_VH * CARD_FILL * CARD_ASPECT) / landscapeAspect,
+      "landscape video card rect width matches inner card width",
     );
+    const outerCy = 1 - (2 * GUTTER + TOP_TITLE_VH + CARDS_VH / 2);
+    const outerW = (CARDS_VH * CARD_ASPECT) / landscapeAspect;
+    const outerLeft = 0.5 - outerW / 2;
+    const outerRight = 0.5 + outerW / 2;
+    const outerBottom = outerCy - CARDS_VH / 2;
+    const outerTop = outerCy + CARDS_VH / 2;
+    ok(landscape.r < outerRight, "video/front card leaves room for the 3rd card on the right");
+    eq(landscape.b, outerBottom, "video/front card bottom edge aligns with the outer frame");
+    ok(landscape.l > outerLeft, "video/front card leaves visible inset on the left");
+    ok(landscape.t < outerTop, "video/front card leaves visible inset on top");
   }
   const m0 = videoCardMorphFor(0, aspect);
   eq(m0.crop.l, 0, "morph full-bleed left @gp0");
@@ -481,14 +564,24 @@ for (const f of FIGURES) {
   eq(mHold.rise, 0, "no rise during the hold");
   eq(mHold.opacity, 1, "opaque during the hold");
   eq(mHold.radius, 1, "fully rounded by the hold");
-  // Top edge leads the bottom early on (reads "cropped from the top first"),
-  // and the width is still full while the vertical crop runs.
+  // THREE discrete crop steps (top → bottom → sides), matching the reference:
   {
-    const mEarly = videoCardMorphFor(0.03, aspect);
-    const topDrop = 1 - mEarly.crop.t;
-    const botRise = mEarly.crop.b;
-    ok(topDrop > botRise, "top edge leads the bottom (crop from the top first)");
-    ok(mEarly.crop.l === 0 && mEarly.crop.r === 1, "width still full during the vertical crop");
+    // Step 1 (gp 0.03): only the TOP crops; bottom + sides still full.
+    const s1 = videoCardMorphFor(0.03, aspect);
+    ok(1 - s1.crop.t > 0, "step 1: top edge cropping");
+    eq(s1.crop.b, 0, "step 1: bottom still full");
+    ok(s1.crop.l === 0 && s1.crop.r === 1, "step 1: width still full");
+    // Step 2 (gp 0.10): top done, BOTTOM crops, sides STILL full (letterbox band).
+    const s2 = videoCardMorphFor(0.1, aspect);
+    eq(s2.crop.t, card.t, "step 2: top edge fully at card top", 1e-6);
+    ok(s2.crop.b > 0 && s2.crop.b < card.b, "step 2: bottom mid-crop");
+    ok(s2.crop.l === 0 && s2.crop.r === 1, "step 2: width STILL full during the bottom crop");
+    // Step 3 (gp 0.145): bottom done, SIDES crop in.
+    const s3 = videoCardMorphFor(0.145, aspect);
+    eq(s3.crop.b, card.b, "step 3: bottom edge fully at card bottom", 1e-6);
+    ok(s3.crop.l > 0, "step 3: left side cropping in");
+    ok(s3.crop.r < 1, "step 3: right side cropping in");
+    ok(s3.radius > 0, "step 3: corners rounding");
   }
   // Fly-out: the card flies straight UP off the top, staying FULLY OPAQUE (no
   // dissolve — matches the image cards); the clip reaches its last frame as it
@@ -506,8 +599,62 @@ for (const f of FIGURES) {
   console.log("✓ video-card morph");
 }
 
+// ── Stepped conveyor + hold-aligned titles ("never a text change AND a card
+//    fly-away at once") ───────────────────────────────────────────────────────
+{
+  // The opening titles settle with the morph steps, then HOLD through the fly.
+  eq(galleryTitleFrameFor(0), 0, "title 0 at gallery start");
+  ok(galleryTitleFrameFor(0.05) > 0, "WIR LIEFERN animating in during the top crop");
+  ok(
+    galleryTitleFrameFor(VID_MORPH_END) > galleryTitleFrameFor(0.05),
+    "STRATEGISCHE settles by the morph end",
+  );
+  // Held flat across the video card's hold + fly (no text change while it flies).
+  const tHold = galleryTitleFrameFor(VID_MORPH_END);
+  for (const gp of [VID_HOLD_END, (VID_HOLD_END + VID_FLY_END) / 2, VID_FLY_END - 1e-4]) {
+    eq(galleryTitleFrameFor(gp), tHold, `title held flat through hold+fly @gp=${gp}`, 1e-6);
+  }
+
+  // The conveyor holds at integers (settled) then ramps (flies).
+  const dispMono = (() => {
+    let prev = -1;
+    for (let i = 0; i <= 1000; i++) {
+      const d = cardConveyorDisplayedFor(i / 1000);
+      if (d < prev - 1e-9) return false;
+      prev = d;
+    }
+    return true;
+  })();
+  ok(dispMono, "stepped conveyor is monotonic non-decreasing");
+
+  // THE invariant: wherever a card is mid-fly (conveyor local in (0.1, 0.9)), the
+  // title frac must be FLAT — a text change and a fly-away never coincide.
+  {
+    let maxFlipDelta = 0;
+    const N = 4000;
+    for (let i = 0; i < N; i++) {
+      const gp = VID_FLY_END + (i / N) * (1 - VID_FLY_END);
+      const igp = imageGalleryProgress(gp);
+      const disp = cardConveyorDisplayedFor(igp);
+      const local = disp - Math.floor(disp);
+      if (local > 0.1 && local < 0.9) {
+        const d = Math.abs(galleryTitleFrameFor(gp + 5e-4) - galleryTitleFrameFor(gp));
+        if (d > maxFlipDelta) maxFlipDelta = d;
+      }
+    }
+    ok(
+      maxFlipDelta < 1e-4,
+      `title frac flat while any card flies (max Δ ${maxFlipDelta.toExponential(2)})`,
+    );
+  }
+  console.log("✓ stepped conveyor + hold-aligned titles");
+}
+
 // ── Cursor tilt ──────────────────────────────────────────────────────────────
 {
+  const cardStackSource = readFileSync(new URL("../src/components/CardStack.tsx", import.meta.url), "utf8");
+  ok(!/\bIDLE_TILT\b|\bIDLE_SPEED\b|\bclockRef\b|Math\.sin\(clockRef/.test(cardStackSource), "CardStack has no automatic idle card motion");
+
   // approach converges toward target and is a no-op at delta 0.
   let v = 0;
   for (let i = 0; i < 1000; i++) v = approach(v, 1, 1 / 60, 4);

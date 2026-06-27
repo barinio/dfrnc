@@ -166,13 +166,16 @@ export const FIGURES: FigureDef[] = [
       swingAmount: 0.45,
       z: -0.7,
       // Launches at 0.30 — the EARLIEST it can without three figures airborne at
-      // once (`and` lands at 0.30; any earlier overlaps and+tokyo+gba). Lands at
-      // 0.85 (was 0.95), the snappier end: 0.95 lingered to sp 0.557, while 0.85
-      // lands at sp ≈0.51 — still just AFTER the scrub starts (sp 0.5) so the
-      // lottie is scrubbing during the exit (no dead air), but the arc is ~13%
-      // narrower (faster) and the whole flight reads earlier. End must stay ≥0.824
-      // phase (→ sp >0.5) or the background would resume before the icon is down.
-      window: [0.3, 0.85],
+      // once (`and` lands at 0.30; any earlier overlaps and+tokyo+gba). The window
+      // is **0.36 wide** so gba TRAVELS at roughly the same angular speed as `and`
+      // (0.30) and tokyo (0.32): it used to span 0.55 (0.30→0.85), nearly double
+      // the others, which read as a slow, floaty final flight (supervisor: "третя
+      // іконка летить довго"). With the shorter window it lands at sp ≈0.425, so
+      // LOTTIE_SCRUB_START was pulled in from 0.5 → 0.41 to keep the background
+      // continuation resuming right as gba touches down (no dead air, no detached
+      // launch). gba is ≈90% down at the (new) scrub start — see check-playback's
+      // lastTatScrub assertion. Launch must stay < tokyo's window end (0.54).
+      window: [0.3, 0.66],
     },
     // gba's chunky, thick body has the longest internal light paths of the set,
     // so the Beer-Lambert tint saturates blue hardest. Kept the WEAKEST of the

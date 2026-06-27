@@ -12,12 +12,12 @@ import { Canvas, useThree, useFrame } from "@react-three/fiber";
 import { Environment, useProgress } from "@react-three/drei";
 import {
   EffectComposer,
-  ToneMapping,
   Noise,
   SMAA,
 } from "@react-three/postprocessing";
-import { ToneMappingMode, NoiseEffect } from "postprocessing";
+import { NoiseEffect } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
+import { ScrollToneMapping, ScrollToneMappingEffect } from "./ScrollToneMapping";
 import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel, { figureOpacityLive } from "./ArcModel";
 import LottiePlane from "./LottiePlane";
@@ -66,26 +66,42 @@ const NOISE_BASE = 0.05;
 // the GradientBackground + readyRef still prevent a black flash past this).
 const VIDEO_READY_TIMEOUT_MS = 8000;
 
-// Drives the post-process grain opacity from scroll: full grain over the
-// figures/typography, fading to ZERO as the video reveals. The video's dark,
-// smooth regions (water/shadow) show grain badly, so it must be gone once the
-// video owns the frame (supervisor). Held as a ref on the NoiseEffect so the
-// EffectComposer keeps Noise as a DIRECT child (its pass introspection breaks
-// if effects are wrapped in components).
-function NoiseDriver({
+// Drives the post-process grain AND tone-mapping strength from scroll. Both are
+// full over the figures/typography phase and fade to ZERO as the video reveals
+// (the two never share the screen — the last figure has landed by ~sp 0.51 and
+// the gallery is entirely past sp = 1):
+//  • Grain — the video's dark, smooth regions (water/shadow) show grain badly,
+//    so it must be gone once the video owns the frame (supervisor).
+//  • Tone mapping — ACES brightens/desaturates the already-graded FPV footage
+//    and gallery photos into a milky, lifted look (supervisor: "висвітляючий
+//    фільтр"). The glass figures, however, are TUNED under ACES, so it must stay
+//    full while they fly. Fading the ToneMapping effect's blendMode opacity to 0
+//    by the video reveal applies ACES to the figures ONLY and shows the
+//    video/photos at their true grade. (The video/photo/title materials are
+//    already toneMapped=false, which only bypasses the renderer-level pass; the
+//    post-process pass is global, hence this scroll-driven fade.)
+// Both are held by ref on their effect instances so the EffectComposer keeps
+// them as DIRECT children (its pass introspection breaks if effects are wrapped).
+function PostFxDriver({
   noiseRef,
+  toneMapRef,
   scrollRef,
   phase,
 }: {
   noiseRef: MutableRefObject<NoiseEffect | null>;
+  toneMapRef: MutableRefObject<ScrollToneMappingEffect | null>;
   scrollRef: MutableRefObject<number>;
   phase: Phase;
 }) {
   useFrame(() => {
-    const e = noiseRef.current;
-    if (!e) return;
     const videoIn = videoStateFor(scrollRef.current, phase).opacity; // 0..1
-    e.blendMode.opacity.value = NOISE_BASE * (1 - videoIn);
+    const n = noiseRef.current;
+    if (n) n.blendMode.opacity.value = NOISE_BASE * (1 - videoIn);
+    const tm = toneMapRef.current;
+    if (tm) {
+      const s = tm.uniforms.get("strength");
+      if (s) s.value = 1 - videoIn; // full ACES over figures → off as the video reveals
+    }
   });
   return null;
 }
@@ -106,6 +122,7 @@ export default function Scene() {
   // title in exact lockstep with the last card rising — the synchronized finale.
   const cardExitRef = useRef(0);
   const noiseRef = useRef<NoiseEffect | null>(null);
+  const toneMapRef = useRef<ScrollToneMappingEffect | null>(null);
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
     FIGURES.map(() => false),
   );
@@ -373,9 +390,13 @@ export default function Scene() {
           </Suspense>
           <VideoPlane scrollRef={scrollRef} galleryRef={galleryRef} phase={phase} onReady={handleVideoReady} />
           <GalleryBackdrop galleryRef={galleryRef} />
-          <NoiseDriver noiseRef={noiseRef} scrollRef={scrollRef} phase={phase} />
+          <PostFxDriver noiseRef={noiseRef} toneMapRef={toneMapRef} scrollRef={scrollRef} phase={phase} />
           <EffectComposer multisampling={0} stencilBuffer={false}>
-            <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+            {/* ACES tone mapping — strength driven by PostFxDriver from 1 (full,
+                over the glass figures, which are tuned under ACES) to 0 as the
+                video reveals, so the already-graded FPV footage + gallery photos
+                are NEVER over-brightened (supervisor: "висвітляючий фільтр"). */}
+            <ScrollToneMapping ref={toneMapRef} />
             <SMAA />
             {/* Film grain over the figures/typography only — NoiseDriver fades
                 it to 0 as the video reveals (grain reads badly on the video). */}

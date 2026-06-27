@@ -41,14 +41,16 @@ export const GALLERY_IMAGES: (string | null)[] = [
 // ── Layout (fractions of viewport; vmin where noted) ─────────────────────────
 export const GUTTER = 0.03; // 3% vmin gutter around/between typo and cards
 export const TOP_TITLE_VH = 0.08; // top title line height
-export const CARDS_VH = 0.64; // card-stack height (landscape & portrait)
-// Cards render at this fraction of the 64vh card band so the front card and
-// peeked neighbours stay clear of the top/bottom title text.
-export const CARD_FILL = 0.72;
+// Outer gallery frame from the PDF: 64vh tall, 96vh wide in landscape (3:2).
+// The visible cards sit INSIDE this frame; they no longer define the frame.
+export const CARDS_VH = 0.64;
+// Visible card size inside the outer frame. 0.94 keeps the card large while
+// leaving enough top/side reveal for all three visible slots to read clearly.
+export const CARD_FILL = 0.94;
 export const BOTTOM_TITLE_VH = 0.16; // bottom title block (two lines)
 export const CARD_RADIUS_VH = 0.025; // 2.5% vh corner radius
 export const CARD_ASPECT = 3 / 2; // card width:height
-export const CARDS_WIDTH_VW_PORTRAIT = 0.86; // portrait card width as vw
+export const CARDS_WIDTH_VW_PORTRAIT = 0.86; // portrait outer-frame width as vw
 export const MAX_ASPECT = 16 / 9; // cap; letterbox beyond
 
 // ── gp partition ─────────────────────────────────────────────────────────────
@@ -143,24 +145,54 @@ export function imageStackVisibleFor(gp: number): number {
   return imageStackRevealFor(gp) > 0 ? 1 : 0;
 }
 
-// Resting X/Y positions, fixed per virtual card index (cycles every 3): video
-// card = centre, first image card = upper-left, second image card = right and
-// halfway up between the centre and upper-left cards. Fractions of card W/H.
-const CARD_POSITIONS = [
-  { x: 0.0, y: 0.0 },
-  { x: -0.15, y: 0.1 },
-  { x: 0.16, y: 0.05 },
+// ── Card-stack distribution inside the PDF's 96vh × 64vh frame ───────────────
+// The frame is larger than one visible card by a clear inset step:
+//   frame 96×64, card 90.24×60.16 (CARD_FILL = 0.94).
+// That gives three fully-contained visible slots:
+//   d0 front/green  — lower/bottom, centered so d1/d2 reveal symmetrically
+//   d1 back/blue    — upper-left, flush with the frame's left/top edges
+//   d2 back/yellow  — right side, slightly above the d0/d1 midpoint
+// The video card uses d0 as its morph target, then image card 0 takes d0 as the
+// video flies away. The conveyor mechanic stays depth-based.
+//
+// Placement is a function of CONTINUOUS depth d = cardIndex − displayed (0 = the
+// front card, growing = further back), interpolated around the 3-spot cycle. As
+// the conveyor advances each card's d decreases, so cards slide between the slots
+// (centred → upper-left → lower-right) and the front flies straight up.
+// Offsets are fractions of card W/H; z is in world units.
+export const CARD_SLOT_EDGE_OFFSET = (1 - CARD_FILL) / (2 * CARD_FILL);
+const CARD_FRONT_X = 0;
+const STACK_POS = [
+  { x: CARD_FRONT_X, y: -CARD_SLOT_EDGE_OFFSET }, // d0 — lower, blue/yellow visible at both sides
+  { x: -CARD_SLOT_EDGE_OFFSET, y: CARD_SLOT_EDGE_OFFSET }, // d1 — back/upper-left
+  { x: CARD_SLOT_EDGE_OFFSET, y: CARD_SLOT_EDGE_OFFSET / 2 }, // d2 — right side, slightly above midpoint
 ];
+export const STACK_FAN_Z = 0.2; // world-z recede per depth
+export const STACK_FAN_SCALE = 0; // keep all three visible cards the same size
+export const STACK_VISIBLE = 2; // peeked neighbours behind the front (→ 3 visible)
 
-// Unified virtual card positions. Card 0 is the morphing video card, so the
-// first image card is virtual card 1 and lands in the upper-left slot.
-export function galleryCardPositionSlot(virtualCardIndex: number): number {
-  const i = Math.floor(virtualCardIndex);
-  return ((i % 3) + 3) % 3;
+export interface CardPlacement {
+  x: number; // fraction of card width (centre = 0)
+  y: number; // fraction of card height (centre = 0)
+  z: number; // world units (front = 0, behind < 0)
+  scale: number;
 }
 
-export function galleryCardPositionFor(virtualCardIndex: number): { x: number; y: number } {
-  return CARD_POSITIONS[galleryCardPositionSlot(virtualCardIndex)];
+// Resting placement for a card at continuous stack depth d (≥ 0 = at/behind the
+// front). Front (d = 0) sits in the lower slot at full scale; deeper cards cycle
+// through the 3 PDF spots and recede in z. Negative d (the leaving front card)
+// clamps to the front placement here; CardStack adds its upward rise on top.
+export function cardStackPlacementFor(d: number): CardPlacement {
+  const dd = Math.max(d, 0);
+  const i = Math.floor(dd) % 3;
+  const j = (i + 1) % 3;
+  const f = dd - Math.floor(dd);
+  return {
+    x: lerp(STACK_POS[i].x, STACK_POS[j].x, f),
+    y: lerp(STACK_POS[i].y, STACK_POS[j].y, f),
+    z: -STACK_FAN_Z * dd,
+    scale: 1 - STACK_FAN_SCALE * dd,
+  };
 }
 
 // Exit progress for the video-as-card phase. Image cards are staged behind it
@@ -177,22 +209,26 @@ export interface ScreenRect {
   t: number;
 }
 
-// The on-screen rectangle (screen fractions) of a gallery card at rest, derived
-// from the SAME layout constants CardStack uses, so the video morph lands exactly
-// on an image card. Card band is centred at `bandCenterFromTop` = 0.46 down.
+// The on-screen rectangle (screen fractions) of the FRONT gallery card at rest,
+// derived from the SAME outer-frame + slot constants CardStack uses. This makes
+// the video morph land exactly on slide slot d0 before it flies away.
 export function cardScreenRect(aspect: number): ScreenRect {
-  const cyTop = 2 * GUTTER + TOP_TITLE_VH + CARDS_VH / 2; // 0.46 from top
-  const cy = 1 - cyTop; // from bottom
+  const frameCenterFromTop = 2 * GUTTER + TOP_TITLE_VH + CARDS_VH / 2; // 0.46 from top
+  const frameCy = 1 - frameCenterFromTop; // from bottom
   const cardHFrac = CARDS_VH * CARD_FILL;
   const halfH = cardHFrac / 2;
-  // Card screen-width fraction: landscape keeps 3:2 (world cardH·ASPECT ÷ vw),
-  // portrait uses the fixed 86vw band.
-  const wFrac =
+  // Outer frame width: landscape keeps 3:2 (96vh); portrait uses the fixed 86vw
+  // frame. The visible card then fills 23/24 of whichever frame width is active.
+  const frameWFrac =
     aspect >= 1
-      ? (cardHFrac * CARD_ASPECT) / aspect
-      : CARDS_WIDTH_VW_PORTRAIT * CARD_FILL;
+      ? (CARDS_VH * CARD_ASPECT) / aspect
+      : CARDS_WIDTH_VW_PORTRAIT;
+  const wFrac = frameWFrac * CARD_FILL;
   const halfW = wFrac / 2;
-  return { l: 0.5 - halfW, r: 0.5 + halfW, b: cy - halfH, t: cy + halfH };
+  const slot = cardStackPlacementFor(0);
+  const cx = 0.5 + slot.x * wFrac;
+  const cy = frameCy + slot.y * cardHFrac;
+  return { l: cx - halfW, r: cx + halfW, b: cy - halfH, t: cy + halfH };
 }
 
 export interface VideoCardMorph {
@@ -209,11 +245,21 @@ export interface VideoCardMorph {
   visible: boolean;
 }
 
-// Sub-stage windows (gp) inside the morph. The TOP edge leads the bottom so the
-// crop reads "from the top first"; the horizontal squeeze starts mid-vertical.
-const V_TOP_END = 0.07; // top edge reaches card top
-const V_BOT_END = 0.1; // bottom edge reaches card bottom (trails the top)
-const H_START = 0.08; // sides begin pulling in
+// Stepped morph (supervisor brief + "timing new drone flight" reference): the
+// video card forms in THREE discrete steps, each paired with its own title reveal:
+//   • Step 1  gp ∈ [0, MORPH_TOP_END]            crop from the TOP only (bottom +
+//                                                 sides full) while "WIR LIEFERN"
+//                                                 animates in at the top.
+//   • Step 2  gp ∈ [MORPH_TOP_END, MORPH_BOT_END] crop the BOTTOM in (still FULL
+//                                                 WIDTH — a letterbox band) while
+//                                                 "STRATEGISCHE KOMMUNIKATION"
+//                                                 animates in at the bottom.
+//   • Step 3  gp ∈ [MORPH_BOT_END, VID_MORPH_END] crop the SIDES in + round the
+//                                                 corners → card format. No title
+//                                                 change here.
+// Then it holds, then flies — never a crop change AND a text change at once.
+const MORPH_TOP_END = 0.07; // step 1 ends: top edge at card top; bottom + sides still full
+const MORPH_BOT_END = 0.13; // step 2 ends: bottom at card bottom; sides STILL full (band)
 // How far the card rises during the fly-out (screen-height fraction). Matches
 // CardStack's RISE_OFF (≈1.9 card-heights): the card flies straight UP off the
 // top FULLY OPAQUE (no opacity fade — "слайди без опасіті улітають"), far enough
@@ -232,11 +278,11 @@ export function videoCardMorphFor(gp: number, aspect: number): VideoCardMorph {
   if (gp >= VID_FLY_END)
     return { crop: card, rise: RISE_VID, opacity: 1, radius: 1, visible: false };
 
-  // Vertical crop (top leads), then horizontal crop. The radius grows over the
-  // horizontal-crop stage so the card lands fully rounded at card format.
-  const aTop = smoothstep(clamp01(gp / V_TOP_END));
-  const aBot = smoothstep(clamp01(gp / V_BOT_END));
-  const h = smoothstep(clamp01((gp - H_START) / (VID_MORPH_END - H_START)));
+  // Step 1: TOP edge crops down. Step 2: BOTTOM edge crops up (width still full).
+  // Step 3: both SIDES crop in + radius grows so the card lands fully rounded.
+  const aTop = smoothstep(clamp01(gp / MORPH_TOP_END));
+  const aBot = smoothstep(clamp01((gp - MORPH_TOP_END) / (MORPH_BOT_END - MORPH_TOP_END)));
+  const h = smoothstep(clamp01((gp - MORPH_BOT_END) / (VID_MORPH_END - MORPH_BOT_END)));
   const crop: ScreenRect = {
     t: lerp(full.t, card.t, aTop),
     b: lerp(full.b, card.b, aBot),
@@ -296,14 +342,19 @@ export function galleryCtaFromExit(cardExit: number): number {
 
 // ── Unified card progress (titles sequence by which card is showing) ─────────
 // The gallery is 9 cards: card 1 = the morphing video (slide #1), cards 2..9 =
-// the GALLERY_IMAGES.length image cards. `cp ∈ [0,9]` is a single continuous
-// progress: card 1 spans [0,1] (its full-bleed → card morph + fly-out, keyed to
-// raw gp / VID_FLY_END), cards 2..9 span [1,9] (the image conveyor, keyed to the
-// remapped image-gallery progress). Continuous at gp = VID_FLY_END (cp = 1):
-// there the first branch hits 1 and `cardFlyProgressFor(imageGalleryProgress)`
-// is still 0 (the image cards have not begun flying), so both branches give 1.
+// the GALLERY_IMAGES.length image cards. `cp ∈ [0,9]`: card 1 spans [0,1], cards
+// 2..9 span [1,9] (the image conveyor).
+//
+// Card 1's cp is keyed to gp / **VID_MORPH_END** (NOT VID_FLY_END), so the two
+// opening titles finish settling exactly as the card finishes FORMING (gp =
+// VID_MORPH_END), then HOLD (cp clamped at 1) through the card's hold + fly-away.
+// This is what makes the opening read as discrete steps: WIR LIEFERN settles
+// during the top crop (cp 0→0.5), STRATEGISCHE during the bottom/side crop
+// (cp 0.5→1), and NO text changes while the card holds or flies. Continuous at
+// gp = VID_FLY_END (cp = 1): the video branch is clamped at 1 and
+// cardFlyProgressFor(imageGalleryProgress) is still 0 there, so both give 1.
 export function galleryCardProgressFor(gp: number): number {
-  if (gp < VID_FLY_END) return clamp01(gp / VID_FLY_END);
+  if (gp < VID_FLY_END) return clamp01(gp / VID_MORPH_END);
   return 1 + cardFlyProgressFor(imageGalleryProgress(gp)) * GALLERY_IMAGES.length;
 }
 
@@ -330,5 +381,71 @@ export function galleryTitleFrameFracForCard(cp: number): number {
   if (c <= 4) return lerp(TITLE_F_STRAT, TITLE_F_DESIGN, c - 3);
   if (c <= 6) return TITLE_F_DESIGN;
   if (c <= 7) return lerp(TITLE_F_DESIGN, TITLE_F_GROSS, c - 6);
+  return TITLE_F_GROSS;
+}
+
+// ── Stepped image-card conveyor + hold-aligned titles ────────────────────────
+// "following steps as described earlier — never a text change and card flip at
+// once." The image cards advance in DISCRETE steps: each card SETTLES (holds) for
+// STEP_HOLD_FRAC of its beat, then FLIES away over the rest. The bottom title is
+// changed ONLY inside a hold window (when the front card is settled — nothing
+// flying), so a text change and a fly-away can never coincide.
+export const STEP_HOLD_FRAC = 0.5; // fraction of each card's beat spent settled before it flies
+
+// Continuous conveyor position `displayed` ∈ [0, N]: held at integer k while card
+// k is settled, then ramped k→k+1 as it flies. `lin` is the underlying linear
+// card progress (cardFlyProgressFor over the image gallery). CardStack reads this
+// for the fan depth d = i − displayed.
+export function cardConveyorDisplayedFor(igp: number): number {
+  const n = GALLERY_IMAGES.length;
+  const lin = cardFlyProgressFor(igp) * n;
+  const k = Math.floor(lin);
+  if (k >= n) return n;
+  const f = lin - k;
+  const flip = smoothstep(clamp01((f - STEP_HOLD_FRAC) / (1 - STEP_HOLD_FRAC)));
+  return k + flip;
+}
+
+// Continuous front-card stack position across the WHOLE gallery, counting the
+// video card as virtual card 0. While the video holds at the front (d0) this is
+// −1 so image card 0 sits one slot back at d1 (the upper-left "position #2") —
+// NOT directly behind the video. As the video flies up (videoCardExitProgressFor
+// 0→1) it ramps −1→0, sliding image card 0 forward into the front slot exactly
+// like the normal card hand-off. Once the video has cleared (gp ≥ VID_FLY_END,
+// exit = 1) it equals the image conveyor's own displayed position. Continuous at
+// the seam (both give 0 at gp = VID_FLY_END). CardStack reads this for d = i − displayed.
+export function galleryStackDisplayedFor(gp: number): number {
+  const base = cardConveyorDisplayedFor(imageGalleryProgress(gp));
+  return base - (1 - videoCardExitProgressFor(gp));
+}
+
+// Title-frame fraction for the WHOLE gallery (0..1 → titles.json frame range).
+//   • Video card (gp < VID_FLY_END): WIR LIEFERN settles during step 1 (top crop)
+//     and STRATEGISCHE during step 2 (bottom/side crop) — keyed to gp/VID_MORPH_END
+//     so both are settled as the card finishes forming, then HELD through the hold
+//     and the fly (no text change while it flies).
+//   • Image cards: the three-card title groups change ONLY while the FIRST card of
+//     the new group is settled in its hold window — DESIGN as image card 2 holds,
+//     GANZ as image card 5 holds — never during a fly-away.
+// Frame frac where "WIR LIEFERN" (top, layer 01) has settled and "STRATEGISCHE"
+// (bottom, layer 02) is about to start animating in — layer 02's start time is
+// frame 22.5 of the 100-frame comp (≈22.5/99 of the scrub range).
+const TITLE_F_WIR = 0.227;
+export function galleryTitleFrameFor(gp: number): number {
+  if (gp < VID_FLY_END) {
+    // Step 1 (top crop) → WIR LIEFERN in; step 2 (bottom crop) → STRATEGISCHE in;
+    // held through step 3 (sides), the hold and the fly (no text change there).
+    if (gp < MORPH_TOP_END) return smoothstep(gp / MORPH_TOP_END) * TITLE_F_WIR;
+    if (gp < MORPH_BOT_END)
+      return lerp(TITLE_F_WIR, TITLE_F_STRAT, smoothstep((gp - MORPH_TOP_END) / (MORPH_BOT_END - MORPH_TOP_END)));
+    return TITLE_F_STRAT;
+  }
+  const lin = cardFlyProgressFor(imageGalleryProgress(gp)) * GALLERY_IMAGES.length;
+  if (lin < 2) return TITLE_F_STRAT;
+  if (lin < 2 + STEP_HOLD_FRAC)
+    return lerp(TITLE_F_STRAT, TITLE_F_DESIGN, smoothstep((lin - 2) / STEP_HOLD_FRAC));
+  if (lin < 5) return TITLE_F_DESIGN;
+  if (lin < 5 + STEP_HOLD_FRAC)
+    return lerp(TITLE_F_DESIGN, TITLE_F_GROSS, smoothstep((lin - 5) / STEP_HOLD_FRAC));
   return TITLE_F_GROSS;
 }
