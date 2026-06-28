@@ -2,7 +2,12 @@ import { useCallback, useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import { videoStateFor, videoMasterTimeFor } from "../playback";
+import {
+  videoStateFor,
+  videoMasterTimeFor,
+  VIDEO_SEEK_SETTLE_EPS,
+  videoSeekSettled,
+} from "../playback";
 import { videoCardMorphFor, videoCardExitProgressFor, CARD_RADIUS_VH } from "../gallery";
 import { VID_FLY_END } from "../constants";
 import { approach } from "../cursorTilt";
@@ -36,7 +41,7 @@ const HOVER_PAD = 1.08; // hit-region padding (matches CardStack)
 // seek at a time (browsers silently DROP coalesced seeks, and the last one can
 // be lost → the frame freezes) and always re-converge to the latest target once
 // the previous seek settles.
-const SEEK_EPS = 1 / 50; // ~a frame; below a visible step, above seek jitter
+const SEEK_EPS = VIDEO_SEEK_SETTLE_EPS; // ~half a 25 fps frame; above seek jitter
 const SEEK_STALL_MS = 400; // a seek whose `seeked` never fires is treated as dropped
 
 // Responsive source: phones get the lighter 720p (16.5 MB — plenty sharp on a
@@ -210,11 +215,20 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     // (same-decoded-frame seeks or low readyState don't always fire `seeked`).
     let rvfcHandle = 0;
     const rvfc = video as HTMLVideoElement & {
-      requestVideoFrameCallback?: (cb: () => void) => number;
+      requestVideoFrameCallback?: (
+        cb: (now: number, metadata: { mediaTime: number }) => void,
+      ) => number;
       cancelVideoFrameCallback?: (h: number) => void;
     };
-    const onVideoFrame = () => {
+    const onVideoFrame = (_now: number, metadata: { mediaTime: number }) => {
       texture.needsUpdate = true;
+      if (
+        seekingRef.current &&
+        videoSeekSettled(metadata.mediaTime, issuedRef.current)
+      ) {
+        seekingRef.current = false;
+        issueSeekIfIdle(video); // `seeked` can be late/missing; rVFC proves the frame arrived
+      }
       if (rvfc.requestVideoFrameCallback)
         rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
     };

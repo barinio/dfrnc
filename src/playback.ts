@@ -30,6 +30,24 @@ function clamp01(x: number): number {
   return Math.min(Math.max(x, 0), 1);
 }
 
+// Paused video scrubbing seeks to arbitrary scroll-derived times. A decoded
+// frame within half a 25 fps frame of the issued target is visually the target
+// frame and should release the pending seek immediately.
+export const VIDEO_SEEK_SETTLE_EPS = 1 / 50;
+
+export function videoSeekSettled(
+  mediaTime: number,
+  issuedTime: number,
+  eps = VIDEO_SEEK_SETTLE_EPS,
+): boolean {
+  return (
+    Number.isFinite(mediaTime) &&
+    Number.isFinite(issuedTime) &&
+    issuedTime >= 0 &&
+    Math.abs(mediaTime - issuedTime) <= eps
+  );
+}
+
 // Lottie timeline (seconds). The reveal starts at DEFT_DROP_S — the loader has
 // already auto-played [0, DEFT_DROP_S], and because the mapping never returns
 // less than DEFT_DROP_S, scrolling back to the top can never re-enter the drop.

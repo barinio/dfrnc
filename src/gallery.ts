@@ -358,22 +358,34 @@ export function galleryCardProgressFor(gp: number): number {
   return 1 + cardFlyProgressFor(imageGalleryProgress(gp)) * GALLERY_IMAGES.length;
 }
 
+const TITLE_LAST_FRAME = 99;
+function titleFrameFrac(frame: number): number {
+  return frame / TITLE_LAST_FRAME;
+}
+
 // Title-frame fraction (0..1 → titles.json frame range) as a function of the
 // unified card progress `cp`. Each title text squishes in while ITS card is the
 // one showing, then HOLDS on the comp's SETTLED frame (one text per band) while
 // the next cards pass (monotonic non-decreasing):
-//   cp [0,1]  card 1 / video morph → 0 .. 0.455 (WIR LIEFERN + STRATEGISCHE in)
-//   cp [1,3]  cards 2,3            → hold 0.455 (clean STRATEGISCHE — frame 45)
-//   cp [3,4]  card 4              → 0.455 .. 0.727 (DESIGN NACH MASS slides in)
-//   cp [4,6]  cards 5,6            → hold 0.727 (clean DESIGN NACH MASS — frame 72)
-//   cp [6,7]  card 7              → 0.727 .. 0.99 (UND DIE + GANZ GROSSEN BILDER)
-//   cp [7,9]  cards 8,9            → hold 0.99 (clean — frame 98)
-// The holds land on the comp's CLEAN frames (verified render: 45 / 72 / 98), so
+//   cp [0,1]  card 1 / video morph → 0 .. 50/99 (WIR LIEFERN + STRATEGISCHE in)
+//   cp [1,3]  cards 2,3            → hold frame 50 (clean STRATEGISCHE)
+//   cp [3,4]  card 4              → frame 50 .. 75 (DESIGN NACH MASS slides in)
+//   cp [4,6]  cards 5,6            → hold frame 75 (clean DESIGN NACH MASS)
+//   cp [6,7]  card 7              → frame 75 .. 99 (UND DIE + GANZ GROSSEN BILDER)
+//   cp [7,9]  cards 8,9            → hold frame 99 (clean final title)
+// The holds land on the comp's CLEAN integer frames (verified render: 50/75/99), so
 // the strategische↔design↔ganz-grossen overlaps only flash by DURING each
 // trigger card's slide-in (cp 3→4, 6→7) — never held static across 3 cards.
-const TITLE_F_STRAT = 0.455; // frame 45 — WIR LIEFERN / STRATEGISCHE KOMMUNIKATION
-const TITLE_F_DESIGN = 0.727; // frame 72 — WIR LIEFERN / DESIGN NACH MASS
-const TITLE_F_GROSS = 0.99; // frame 98 — UND DIE / GANZ GROSSEN BILDER
+const TITLE_F_STRAT = titleFrameFrac(50); // WIR LIEFERN / STRATEGISCHE KOMMUNIKATION
+const TITLE_F_DESIGN = titleFrameFrac(75); // WIR LIEFERN / DESIGN NACH MASS
+const TITLE_F_GROSS = titleFrameFrac(99); // UND DIE / GANZ GROSSEN BILDER
+export function isGalleryTitleHoldFrame(frac: number): boolean {
+  return (
+    Math.abs(frac - TITLE_F_STRAT) < 1e-9 ||
+    Math.abs(frac - TITLE_F_DESIGN) < 1e-9 ||
+    Math.abs(frac - TITLE_F_GROSS) < 1e-9
+  );
+}
 export function galleryTitleFrameFracForCard(cp: number): number {
   const c = Math.min(Math.max(cp, 0), 9);
   if (c <= 1) return lerp(0, TITLE_F_STRAT, c);

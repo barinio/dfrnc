@@ -7,6 +7,7 @@ import type { AnimationItem } from "lottie-web";
 import titlesData from "../assets/titles.json";
 import {
   galleryTitleFrameFor,
+  isGalleryTitleHoldFrame,
   GUTTER,
   MAX_ASPECT,
 } from "../gallery";
@@ -118,8 +119,9 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     const gp = galleryRef.current;
     const target = galleryTitleFrameFor(gp); // 0..1
     let frac: number;
-    if (reducedMotion) {
-      frac = target; // discrete, no smoothing
+    if (reducedMotion || isGalleryTitleHoldFrame(target)) {
+      frac = target; // discrete holds: never freeze on a fractional transition frame
+      smoothRef.current = target;
     } else {
       if (smoothRef.current < 0) smoothRef.current = target;
       smoothRef.current += (target - smoothRef.current) * (1 - Math.exp(-delta * 10));

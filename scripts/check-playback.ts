@@ -7,6 +7,8 @@ import {
   figureVisibleFor,
   videoStateFor,
   videoMasterTimeFor,
+  VIDEO_SEEK_SETTLE_EPS,
+  videoSeekSettled,
   lottieBleedFor,
 } from "../src/playback";
 import {
@@ -29,6 +31,7 @@ import {
   galleryCardProgressFor,
   galleryTitleFrameFracForCard,
   galleryTitleFrameFor,
+  isGalleryTitleHoldFrame,
   cardConveyorDisplayedFor,
   galleryStackDisplayedFor,
   cardConveyorFor,
@@ -82,6 +85,14 @@ function eq(actual: number, expected: number, label: string, eps = 1e-9) {
 }
 function ok(cond: boolean, label: string) {
   if (!cond) throw new Error(label);
+}
+
+const titleData = JSON.parse(
+  readFileSync(new URL("../src/assets/titles.json", import.meta.url), "utf8"),
+) as { ip: number; op: number };
+const titleLastFrame = titleData.op - titleData.ip - 1;
+function titleFrame(frac: number): number {
+  return frac * titleLastFrame;
 }
 
 // lottieTimeFor: anchors and monotonicity
@@ -369,15 +380,15 @@ for (const f of FIGURES) {
   }
 
   // galleryTitleFrameFracForCard: the per-card frac mapping. Holds land on the
-  // comp's CLEAN frames (45/72/98 → 0.455/0.727/0.99) so the texts never sit in a
+  // comp's CLEAN integer frames (50/75/99) so the texts never sit in a
   // half-overlapped state. Anchors + holds + monotonic non-decreasing.
   eq(galleryTitleFrameFracForCard(0), 0, "title frac 0 at cp 0");
-  eq(galleryTitleFrameFracForCard(1), 0.455, "title frac = clean STRATEGISCHE once card 1 is in");
-  eq(galleryTitleFrameFracForCard(3), 0.455, "title frac holds clean STRATEGISCHE over cards 2,3");
-  eq(galleryTitleFrameFracForCard(4), 0.727, "title frac = clean DESIGN NACH MASS once card 4 is in");
-  eq(galleryTitleFrameFracForCard(6), 0.727, "title frac holds clean DESIGN NACH MASS over cards 5,6");
-  eq(galleryTitleFrameFracForCard(7), 0.99, "title frac = clean GANZ GROSSEN BILDER once card 7 is in");
-  eq(galleryTitleFrameFracForCard(9), 0.99, "title frac holds clean over cards 8,9");
+  eq(titleFrame(galleryTitleFrameFracForCard(1)), 50, "title frame = clean STRATEGISCHE once card 1 is in");
+  eq(titleFrame(galleryTitleFrameFracForCard(3)), 50, "title frame holds clean STRATEGISCHE over cards 2,3");
+  eq(titleFrame(galleryTitleFrameFracForCard(4)), 75, "title frame = clean DESIGN NACH MASS once card 4 is in");
+  eq(titleFrame(galleryTitleFrameFracForCard(6)), 75, "title frame holds clean DESIGN NACH MASS over cards 5,6");
+  eq(titleFrame(galleryTitleFrameFracForCard(7)), 99, "title frame = clean GANZ GROSSEN BILDER once card 7 is in");
+  eq(titleFrame(galleryTitleFrameFracForCard(9)), 99, "title frame holds clean over cards 8,9");
   {
     let prev = -1;
     for (let cp = -0.5; cp <= 9.5; cp += 0.01) {
@@ -611,6 +622,7 @@ for (const f of FIGURES) {
   );
   // Held flat across the video card's hold + fly (no text change while it flies).
   const tHold = galleryTitleFrameFor(VID_MORPH_END);
+  eq(titleFrame(tHold), 50, "opening title freezes on clean frame 50");
   for (const gp of [VID_HOLD_END, (VID_HOLD_END + VID_FLY_END) / 2, VID_FLY_END - 1e-4]) {
     eq(galleryTitleFrameFor(gp), tHold, `title held flat through hold+fly @gp=${gp}`, 1e-6);
   }
@@ -647,7 +659,41 @@ for (const f of FIGURES) {
       `title frac flat while any card flies (max Δ ${maxFlipDelta.toExponential(2)})`,
     );
   }
+  {
+    const gpForLin = (lin: number) => {
+      const igp =
+        CARDS_FLY_START +
+        (lin / GALLERY_IMAGES.length) * (CARDS_FLY_END - CARDS_FLY_START);
+      return IMAGE_GALLERY_START + igp * (1 - IMAGE_GALLERY_START);
+    };
+    eq(titleFrame(galleryTitleFrameFor(gpForLin(3))), 75, "design title freezes on clean frame 75");
+    eq(titleFrame(galleryTitleFrameFor(gpForLin(6))), 99, "final title freezes on clean frame 99");
+    ok(isGalleryTitleHoldFrame(galleryTitleFrameFor(gpForLin(3))), "design clean frame is detected as a hold");
+    ok(
+      !isGalleryTitleHoldFrame(
+        (galleryTitleFrameFor(gpForLin(3)) + galleryTitleFrameFor(gpForLin(6))) / 2,
+      ),
+      "transition frames are not detected as holds",
+    );
+  }
   console.log("✓ stepped conveyor + hold-aligned titles");
+}
+
+// ── Video scrub convergence ─────────────────────────────────────────────────
+{
+  ok(videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS / 2), "video seek settles within tolerance");
+  ok(!videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS * 2), "video seek remains pending outside tolerance");
+
+  const videoPlaneSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
+  ok(
+    /requestVideoFrameCallback/.test(videoPlaneSource) &&
+      /metadata\.mediaTime/.test(videoPlaneSource) &&
+      /videoSeekSettled/.test(videoPlaneSource) &&
+      /seekingRef\.current\s*=\s*false/.test(videoPlaneSource),
+    "VideoPlane releases in-flight seeks from requestVideoFrameCallback metadata",
+  );
+
+  console.log("✓ video scrub convergence");
 }
 
 // ── Cursor tilt ──────────────────────────────────────────────────────────────
