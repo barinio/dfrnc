@@ -26,16 +26,15 @@ function lerp(a: number, b: number, f: number): number {
 
 // ── Card images (drop-in) ────────────────────────────────────────────────────
 // Image card URLs, relative to BASE_URL. Slide #1 is the morphing video
-// (VideoPlane), so these 8 image cards fill slides 2..9.
+// (VideoPlane), so these image cards fill the remaining gallery slides.
 export const GALLERY_IMAGES: (string | null)[] = [
-  "gallery/a2-large.jpeg",
-  "gallery/b2-large.jpeg",
-  "gallery/c1-large.jpeg",
-  "gallery/b3-large.jpeg",
-  "gallery/a2-large.jpeg",
-  "gallery/b2-large.jpeg",
-  "gallery/c1-large.jpeg",
-  "gallery/b3-large.jpeg",
+  "gallery/kommmunikation_1_rs.jpeg",
+  "gallery/kommunikation_2_rs.jpeg",
+  "gallery/design_1_rs.jpeg",
+  "gallery/design_2_rs.jpeg",
+  "gallery/bilder_1_rs.jpeg",
+  "gallery/bilder_2_rs.jpeg",
+  "gallery/bilder_3_rs.jpeg",
 ];
 
 // ── Layout (fractions of viewport; vmin where noted) ─────────────────────────
@@ -83,11 +82,10 @@ export const CTA_REVEAL_FROM = 0.6;
 // the frame at gp = VID_FLY_END (0.4) ⇒ igp ≈ 0.09; the first image card must
 // start leaving right after, not ~60vh later, so the linger was pulled in from
 // 0.22 → 0.11 (first card flies at gp ≈ 0.41, "almost immediately" after the
-// video card). CARDS_FLY_END moves by the SAME amount (was = CTA_START 0.82) so
-// the per-card span stays (END−START)/8 = 0.075 igp — i.e. cards 2..9 keep the
-// exact cadence they had; only the first card's dead linger shrank.
+// video card). CARDS_FLY_END keeps the same overall image-gallery window; the
+// per-card span is derived from the current GALLERY_IMAGES length.
 export const CARDS_FLY_START = 0.11; // first image card starts leaving as the video card clears
-export const CARDS_FLY_END = 0.71; // = START + 8 × 0.075 → identical per-card cadence to before
+export const CARDS_FLY_END = 0.71;
 
 // scrollY → gp, mapped PIECEWISE across two sub-tracks so each gallery phase gets
 // its own scroll budget. The video-card phase gp ∈ [0, VID_FLY_END] rides the
@@ -341,9 +339,8 @@ export function galleryCtaFromExit(cardExit: number): number {
 }
 
 // ── Unified card progress (titles sequence by which card is showing) ─────────
-// The gallery is 9 cards: card 1 = the morphing video (slide #1), cards 2..9 =
-// the GALLERY_IMAGES.length image cards. `cp ∈ [0,9]`: card 1 spans [0,1], cards
-// 2..9 span [1,9] (the image conveyor).
+// The gallery is one morphing video card followed by the GALLERY_IMAGES.length
+// image cards. Card 1 spans [0,1]; the image conveyor starts after that.
 //
 // Card 1's cp is keyed to gp / **VID_MORPH_END** (NOT VID_FLY_END), so the two
 // opening titles finish settling exactly as the card finishes FORMING (gp =

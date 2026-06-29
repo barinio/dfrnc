@@ -34,6 +34,7 @@ function clamp01(x: number): number {
 // frame within half a 25 fps frame of the issued target is visually the target
 // frame and should release the pending seek immediately.
 export const VIDEO_SEEK_SETTLE_EPS = 1 / 50;
+export const VIDEO_SEEK_STALL_MS = 400;
 
 export function videoSeekSettled(
   mediaTime: number,
@@ -46,6 +47,39 @@ export function videoSeekSettled(
     issuedTime >= 0 &&
     Math.abs(mediaTime - issuedTime) <= eps
   );
+}
+
+export interface VideoSeekCommandInput {
+  desiredTime: number;
+  issuedTime: number;
+  seeking: boolean;
+  elapsedMs: number;
+  eps?: number;
+  stallMs?: number;
+}
+
+export interface VideoSeekCommand {
+  issue: boolean;
+  stalled: boolean;
+}
+
+export function videoSeekCommandFor({
+  desiredTime,
+  issuedTime,
+  seeking,
+  elapsedMs,
+  eps = VIDEO_SEEK_SETTLE_EPS,
+  stallMs = VIDEO_SEEK_STALL_MS,
+}: VideoSeekCommandInput): VideoSeekCommand {
+  const stalled = seeking && elapsedMs > stallMs;
+  if (!Number.isFinite(desiredTime) || desiredTime < 0) {
+    return { issue: false, stalled };
+  }
+  if (seeking && !stalled) return { issue: false, stalled: false };
+  if (!stalled && Math.abs(desiredTime - issuedTime) < eps) {
+    return { issue: false, stalled: false };
+  }
+  return { issue: true, stalled };
 }
 
 // Lottie timeline (seconds). The reveal starts at DEFT_DROP_S — the loader has

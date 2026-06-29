@@ -6,6 +6,8 @@ import {
   videoStateFor,
   videoMasterTimeFor,
   VIDEO_SEEK_SETTLE_EPS,
+  VIDEO_SEEK_STALL_MS,
+  videoSeekCommandFor,
   videoSeekSettled,
 } from "../playback";
 import { videoCardMorphFor, videoCardExitProgressFor, CARD_RADIUS_VH } from "../gallery";
@@ -42,7 +44,7 @@ const HOVER_PAD = 1.08; // hit-region padding (matches CardStack)
 // be lost → the frame freezes) and always re-converge to the latest target once
 // the previous seek settles.
 const SEEK_EPS = VIDEO_SEEK_SETTLE_EPS; // ~half a 25 fps frame; above seek jitter
-const SEEK_STALL_MS = 400; // a seek whose `seeked` never fires is treated as dropped
+const SEEK_STALL_MS = VIDEO_SEEK_STALL_MS; // a seek whose `seeked` never fires is treated as dropped
 
 // Responsive source: phones get the lighter 720p (16.5 MB — plenty sharp on a
 // small screen, far easier on mobile data), wide screens the crisp full-bleed
@@ -157,18 +159,25 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
   // this so we always converge to the newest target. Allocation-free; safe to
   // call every frame.
   const issueSeekIfIdle = useCallback((video: HTMLVideoElement) => {
-    if (seekingRef.current) {
-      if (performance.now() - seekStartRef.current <= SEEK_STALL_MS) return;
-      seekingRef.current = false; // previous seek stalled / `seeked` never fired
-    }
+    const now = performance.now();
     const want = desiredRef.current;
-    if (want < 0 || Math.abs(want - issuedRef.current) < SEEK_EPS) return;
-    issuedRef.current = want;
-    seekingRef.current = true;
-    seekStartRef.current = performance.now();
+    const command = videoSeekCommandFor({
+      desiredTime: want,
+      issuedTime: issuedRef.current,
+      seeking: seekingRef.current,
+      elapsedMs: now - seekStartRef.current,
+      eps: SEEK_EPS,
+      stallMs: SEEK_STALL_MS,
+    });
+    if (command.stalled) seekingRef.current = false;
+    if (!command.issue) return;
     try {
       video.currentTime = want;
+      issuedRef.current = want;
+      seekingRef.current = true;
+      seekStartRef.current = now;
     } catch {
+      issuedRef.current = -1;
       seekingRef.current = false; // decoder hiccup: the next frame retries
     }
   }, []);

@@ -8,6 +8,7 @@ import {
   videoStateFor,
   videoMasterTimeFor,
   VIDEO_SEEK_SETTLE_EPS,
+  videoSeekCommandFor,
   videoSeekSettled,
   lottieBleedFor,
 } from "../src/playback";
@@ -683,6 +684,24 @@ for (const f of FIGURES) {
 {
   ok(videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS / 2), "video seek settles within tolerance");
   ok(!videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS * 2), "video seek remains pending outside tolerance");
+  ok(
+    videoSeekCommandFor({
+      desiredTime: 12,
+      issuedTime: 12,
+      seeking: true,
+      elapsedMs: 401,
+    }).issue,
+    "stalled video seek retries even when the latest desired time equals the previously issued time",
+  );
+  ok(
+    !videoSeekCommandFor({
+      desiredTime: 12,
+      issuedTime: 12,
+      seeking: true,
+      elapsedMs: 399,
+    }).issue,
+    "in-flight video seek is not reissued before the stall watchdog expires",
+  );
 
   const videoPlaneSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
   ok(
