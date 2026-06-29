@@ -82,6 +82,10 @@ import {
   IDLE_AMP_X,
   IDLE_AMP_Y,
 } from "../src/cursorTilt";
+import {
+  browserNeedsConservativeRenderProfile,
+  createRenderProfile,
+} from "../src/renderProfile";
 
 function eq(actual: number, expected: number, label: string, eps = 1e-9) {
   if (Math.abs(actual - expected) > eps)
@@ -794,14 +798,42 @@ for (const f of FIGURES) {
 
 // ── Browser-safe render profile ─────────────────────────────────────────────
 {
+  const safariIOS =
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1";
+  const chromeDesktop =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+  ok(
+    browserNeedsConservativeRenderProfile(safariIOS),
+    "iOS Safari gets the conservative render profile",
+  );
+  ok(
+    !browserNeedsConservativeRenderProfile(chromeDesktop),
+    "desktop Chrome keeps the full render profile",
+  );
+  const safariProfile = createRenderProfile({ userAgent: safariIOS, width: 390 });
+  eq(safariProfile.dpr[1], 1, "iOS Safari canvas DPR is capped to 1x");
+  eq(safariProfile.enablePostFx ? 1 : 0, 0, "Safari skips postprocessing");
+  eq(safariProfile.antialias ? 1 : 0, 0, "Safari skips MSAA");
+  eq(safariProfile.maxCanvasTextureDpr, 1, "Safari caps Lottie texture DPR");
+  eq(safariProfile.textureFrameRate, 30, "Safari caps texture upload rate");
+  ok(
+    safariProfile.figureMaterialMode === "full",
+    "Safari keeps color-preserving figure materials",
+  );
+  eq(safariProfile.enableEnvironment ? 1 : 0, 0, "Safari skips PMREM environment setup");
+
   const sceneSource = readFileSync(new URL("../src/components/Scene.tsx", import.meta.url), "utf8");
   ok(/dpr=\{renderProfile\.dpr\}/.test(sceneSource), "Scene uses an adaptive DPR profile");
   ok(!/dpr=\{\[1,\s*2\]\}/.test(sceneSource), "Scene no longer hard-caps DPR at 2 for every browser");
-  ok(/enablePostFx:\s*!conservative/.test(sceneSource), "Scene disables postprocessing for conservative browser profiles");
-  ok(/antialias:\s*!renderProfile\.enablePostFx/.test(sceneSource), "Scene does not combine WebGL antialiasing with the SMAA pass");
+  ok(/antialias:\s*renderProfile\.antialias/.test(sceneSource), "Scene uses profile-controlled WebGL antialiasing");
+  ok(/precision:\s*renderProfile\.precision/.test(sceneSource), "Scene uses profile-controlled shader precision");
   ok(/alpha:\s*false/.test(sceneSource), "Scene uses an opaque WebGL buffer to avoid fixed-layer compositor flicker");
   ok(/postToneMapping=\{renderProfile\.enablePostFx\}/.test(sceneSource), "GradientBackground matches the active tone-mapping path");
   ok(/renderProfile\.enablePostFx\s*&&\s*\(/.test(sceneSource), "Scene skips the EffectComposer on conservative browser profiles");
+  ok(/renderProfile\.enableEnvironment\s*&&\s*\(/.test(sceneSource), "Scene skips the PMREM environment on conservative browser profiles");
+  ok(/maxTextureDpr=\{renderProfile\.maxCanvasTextureDpr\}/.test(sceneSource), "Scene passes the texture DPR cap to Lottie canvases");
+  ok(/textureFrameRate=\{renderProfile\.textureFrameRate\}/.test(sceneSource), "Scene passes the texture upload rate cap to Lottie canvases");
+  ok(/materialMode=\{renderProfile\.figureMaterialMode\}/.test(sceneSource), "Scene passes the figure material profile to ArcModel");
   ok(
     /performance=\{\{\s*min:\s*renderProfile\.performanceMin/.test(sceneSource),
     "Scene lets R3F regress quality under sustained frame pressure",

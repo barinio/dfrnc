@@ -34,6 +34,7 @@ import { figureVisibleFor, videoStateFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../constants";
 import { FIGURES } from "../arc";
+import { createRenderProfile } from "../renderProfile";
 
 class FigureBoundary extends Component<
   { name: string; children: ReactNode },
@@ -57,49 +58,6 @@ function RendererConfig({ exposure }: { exposure: number }) {
     gl.toneMappingExposure = exposure;
   }, [gl, exposure]);
   return null;
-}
-
-interface RenderProfile {
-  dpr: [number, number];
-  performanceMin: number;
-  performanceDebounce: number;
-  slowFrameMs: number;
-  slowFrameLimit: number;
-  enablePostFx: boolean;
-}
-
-function browserNeedsConservativeRenderProfile(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent;
-  const isFirefox = /Firefox\//.test(ua);
-  const isSafari =
-    /Safari\//.test(ua) && !/Chrom(e|ium)\//.test(ua) && !/CriOS\//.test(ua);
-  const isIOS = /iP(ad|hone|od)/.test(ua);
-  return isFirefox || isSafari || isIOS;
-}
-
-function createRenderProfile(): RenderProfile {
-  if (typeof window === "undefined") {
-    return {
-      dpr: [1, 1.5],
-      performanceMin: 0.65,
-      performanceDebounce: 500,
-      slowFrameMs: 24,
-      slowFrameLimit: 8,
-      enablePostFx: true,
-    };
-  }
-
-  const narrow = window.matchMedia("(max-width: 899.98px)").matches;
-  const conservative = browserNeedsConservativeRenderProfile();
-  return {
-    dpr: [1, conservative ? (narrow ? 1.1 : 1.25) : narrow ? 1.25 : 1.5],
-    performanceMin: conservative ? 0.5 : 0.65,
-    performanceDebounce: conservative ? 650 : 500,
-    slowFrameMs: conservative ? 22 : 24,
-    slowFrameLimit: conservative ? 6 : 8,
-    enablePostFx: !conservative,
-  };
 }
 
 function PerformanceRegressor({
@@ -400,9 +358,10 @@ export default function Scene() {
             debounce: renderProfile.performanceDebounce,
           }}
           gl={{
-            antialias: !renderProfile.enablePostFx,
+            antialias: renderProfile.antialias,
             stencil: false,
             alpha: false,
+            precision: renderProfile.precision,
             powerPreference: "high-performance",
             toneMapping: ACESFilmicToneMapping,
             toneMappingExposure: 1.1,
@@ -443,10 +402,12 @@ export default function Scene() {
             distance={pt2Distance}
             position={[3, -1, 4]}
           />
-          <Environment
-            preset={envPreset as ComponentProps<typeof Environment>["preset"]}
-            environmentIntensity={envIntensity}
-          />
+          {renderProfile.enableEnvironment && (
+            <Environment
+              preset={envPreset as ComponentProps<typeof Environment>["preset"]}
+              environmentIntensity={envIntensity}
+            />
+          )}
           <Suspense fallback={null}>
             <LottiePlane
               reducedMotion={reducedMotion}
@@ -455,8 +416,16 @@ export default function Scene() {
               phase={phase}
               introStage={introStage}
               onDropDone={handleDropDone}
+              maxTextureDpr={renderProfile.maxCanvasTextureDpr}
+              textureFrameRate={renderProfile.textureFrameRate}
             />
-            <GalleryTitles galleryRef={galleryRef} cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
+            <GalleryTitles
+              galleryRef={galleryRef}
+              cardExitRef={cardExitRef}
+              reducedMotion={reducedMotion}
+              maxTextureDpr={renderProfile.maxCanvasTextureDpr}
+              textureFrameRate={renderProfile.textureFrameRate}
+            />
             <CardStack galleryRef={galleryRef} cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
             {FIGURES.map(
               (f, i) =>
@@ -464,7 +433,12 @@ export default function Scene() {
                 figuresVisible[i] && (
                   <FigureBoundary key={f.name} name={f.name}>
                     <Suspense fallback={null}>
-                      <ArcModel figure={f} scrollRef={scrollRef} phase={phase} />
+                      <ArcModel
+                        figure={f}
+                        scrollRef={scrollRef}
+                        phase={phase}
+                        materialMode={renderProfile.figureMaterialMode}
+                      />
                     </Suspense>
                   </FigureBoundary>
                 ),

@@ -42,9 +42,17 @@ interface Props {
   galleryRef: MutableRefObject<number>;
   cardExitRef: MutableRefObject<number>;
   reducedMotion?: boolean;
+  maxTextureDpr?: number;
+  textureFrameRate?: number;
 }
 
-export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion = false }: Props) {
+export default function GalleryTitles({
+  galleryRef,
+  cardExitRef,
+  reducedMotion = false,
+  maxTextureDpr = Infinity,
+  textureFrameRate = Infinity,
+}: Props) {
   const { viewport, camera, size, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
   const animRef = useRef<AnimationItem | null>(null);
@@ -71,6 +79,7 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
       1,
       Math.min(
         (window.devicePixelRatio || 1) * ssMax,
+        maxTextureDpr,
         4096 / Math.max(size.width, size.height),
       ),
     );
@@ -87,6 +96,7 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     anim.setSubframe(true);
     lastFrameRef.current = -1;
     smoothRef.current = -1;
+    lastUploadAtRef.current = -Infinity;
 
     let tex: THREE.CanvasTexture | null = null;
     const handleLoaded = () => {
@@ -110,9 +120,11 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
       if (tex) tex.dispose();
       texRef.current = null;
     };
-  }, [size.width, size.height, gl]);
+  }, [size.width, size.height, gl, maxTextureDpr]);
 
-  useFrame((_s, delta) => {
+  const lastUploadAtRef = useRef<number>(-Infinity);
+
+  useFrame((state, delta) => {
     const anim = animRef.current;
     if (!anim || !texRef.current) return;
     // Drive the title FRAME directly from gallery progress: the opening titles
@@ -154,6 +166,17 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     }
 
     if (frame === lastFrameRef.current) return;
+    const minUploadGap =
+      Number.isFinite(textureFrameRate) && textureFrameRate > 0
+        ? 1 / textureFrameRate
+        : 0;
+    if (
+      minUploadGap > 0 &&
+      state.clock.elapsedTime - lastUploadAtRef.current < minUploadGap
+    ) {
+      return;
+    }
+    lastUploadAtRef.current = state.clock.elapsedTime;
     lastFrameRef.current = frame;
     anim.goToAndStop(frame, true);
     if (texRef.current) texRef.current.needsUpdate = true;

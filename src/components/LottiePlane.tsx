@@ -31,6 +31,8 @@ interface LottiePlaneProps {
   scrollRef: MutableRefObject<number>;
   phase: Phase;
   introStage: IntroStage;
+  maxTextureDpr?: number;
+  textureFrameRate?: number;
 }
 
 export default function LottiePlane({
@@ -41,6 +43,8 @@ export default function LottiePlane({
   scrollRef,
   phase,
   introStage,
+  maxTextureDpr = Infinity,
+  textureFrameRate = Infinity,
 }: LottiePlaneProps) {
   const { viewport, camera, size, gl } = useThree();
   const [texture, setTexture] = useState<THREE.CanvasTexture | null>(null);
@@ -69,6 +73,7 @@ export default function LottiePlane({
       1,
       Math.min(
         (window.devicePixelRatio || 1) * ssMax,
+        maxTextureDpr,
         4096 / Math.max(size.width, size.height),
       ),
     );
@@ -98,6 +103,7 @@ export default function LottiePlane({
     // the next scroll change (a resize destroys and recreates the lottie).
     lastTimeRef.current = -1;
     smoothSecRef.current = -1;
+    lastUploadAtRef.current = -Infinity;
 
     let tex: THREE.CanvasTexture | null = null;
 
@@ -137,13 +143,22 @@ export default function LottiePlane({
       if (tex) tex.dispose();
       texRef.current = null;
     };
-  }, [size.width, size.height, onComplete, onAnimationStart, reducedMotion, gl]);
+  }, [
+    size.width,
+    size.height,
+    onComplete,
+    onAnimationStart,
+    reducedMotion,
+    gl,
+    maxTextureDpr,
+  ]);
 
   // Scrub the frame from scroll progress every frame, reading the scroll ref
   // (no React re-render involved). Only re-upload the texture when the target
   // frame actually changes, so an idle (non-scrolling) page does zero per-frame
   // GPU work.
   const lastTimeRef = useRef<number>(-1);
+  const lastUploadAtRef = useRef<number>(-Infinity);
   // Temporally smoothed scrub time: wheel scrolling moves the page in coarse
   // discrete jumps, which used to skip whole stretches of the animation in a
   // single frame. The displayed time chases the scroll-derived target with a
@@ -157,7 +172,7 @@ export default function LottiePlane({
     onDropDoneRef.current = onDropDone;
   }, [onDropDone]);
 
-  useFrame((_state, delta) => {
+  useFrame((state, delta) => {
     const anim = animRef.current;
     if (!anim || !texture) return;
 
@@ -204,6 +219,17 @@ export default function LottiePlane({
       tSec = smoothSecRef.current;
     }
     if (tSec === lastTimeRef.current) return;
+    const minUploadGap =
+      Number.isFinite(textureFrameRate) && textureFrameRate > 0
+        ? 1 / textureFrameRate
+        : 0;
+    if (
+      minUploadGap > 0 &&
+      state.clock.elapsedTime - lastUploadAtRef.current < minUploadGap
+    ) {
+      return;
+    }
+    lastUploadAtRef.current = state.clock.elapsedTime;
     lastTimeRef.current = tSec;
     const frac =
       LOTTIE_TOTAL_S > 0 ? Math.min(Math.max(tSec / LOTTIE_TOTAL_S, 0), 1) : 0;

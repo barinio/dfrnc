@@ -8,6 +8,7 @@ import { figureStateFor } from "../playback";
 import type { Phase } from "../playback";
 import { makeArc, FIGURES } from "../arc";
 import type { FigureDef } from "../arc";
+import type { FigureMaterialMode } from "../renderProfile";
 
 useGLTF.setDecoderPath(
   "https://www.gstatic.com/draco/versioned/decoders/1.5.6/",
@@ -40,6 +41,29 @@ const baseGlassMaterial = new THREE.MeshPhysicalMaterial({
   side: THREE.DoubleSide,
 });
 
+const LIGHT_GLASS_OPACITY = 0.78;
+const baseLightGlassMaterial = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color(0xe7edf8),
+  metalness: 0.0,
+  roughness: 0.22,
+  transmission: 0,
+  thickness: 0,
+  ior: 1.35,
+  dispersion: 0,
+  attenuationColor: new THREE.Color(0xe7edf8),
+  attenuationDistance: 100,
+  clearcoat: 0.35,
+  clearcoatRoughness: 0.25,
+  iridescence: 0.18,
+  iridescenceIOR: 1.35,
+  iridescenceThicknessRange: [180, 420],
+  envMapIntensity: 0.25,
+  side: THREE.DoubleSide,
+  transparent: true,
+  opacity: LIGHT_GLASS_OPACITY,
+  depthWrite: false,
+});
+
 // One clone per figure, created lazily and NEVER disposed: disposing on
 // unmount would release the (very expensive) transmission shader program and
 // force a recompile stall on every window-edge remount while scrolling. Four
@@ -52,11 +76,18 @@ const materialPool = new Map<string, THREE.MeshPhysicalMaterial>();
 // and can't cover fast flicks (the fade decays in time, not scroll distance).
 export const figureOpacityLive = new Map<string, number>();
 
-function materialFor(name: string): THREE.MeshPhysicalMaterial {
-  let m = materialPool.get(name);
+function materialFor(
+  name: string,
+  mode: FigureMaterialMode,
+): THREE.MeshPhysicalMaterial {
+  const key = `${mode}:${name}`;
+  let m = materialPool.get(key);
   if (!m) {
-    m = baseGlassMaterial.clone();
-    materialPool.set(name, m);
+    m =
+      mode === "light"
+        ? baseLightGlassMaterial.clone()
+        : baseGlassMaterial.clone();
+    materialPool.set(key, m);
   }
   return m;
 }
@@ -65,9 +96,15 @@ interface ArcModelProps {
   figure: FigureDef;
   scrollRef: MutableRefObject<number>;
   phase: Phase;
+  materialMode?: FigureMaterialMode;
 }
 
-export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
+export default function ArcModel({
+  figure,
+  scrollRef,
+  phase,
+  materialMode = "full",
+}: ArcModelProps) {
   const { scene: modelScene } = useGLTF(
     import.meta.env.BASE_URL + figure.url,
   );
@@ -83,7 +120,10 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
   // The Material controls below use identical keys in every instance, so leva's
   // global store keeps all clones in sync in dev; the prod stub returns the same
   // defaults per call.
-  const material = useMemo(() => materialFor(figure.name), [figure.name]);
+  const material = useMemo(
+    () => materialFor(figure.name, materialMode),
+    [figure.name, materialMode],
+  );
 
   const {
     color,
@@ -136,6 +176,33 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
   );
 
   useEffect(() => {
+    if (materialMode === "light") {
+      material.color.set(figure.material?.attenuationColor ?? "#e7edf8");
+      material.metalness = 0;
+      material.roughness = 0.22;
+      material.transmission = 0;
+      material.thickness = 0;
+      material.ior = 1.35;
+      material.envMapIntensity = 0.25;
+      material.dispersion = 0;
+      material.attenuationColor.set(
+        figure.material?.attenuationColor ?? "#e7edf8",
+      );
+      material.attenuationDistance =
+        figure.material?.attenuationDistance !== undefined
+          ? Math.max(figure.material.attenuationDistance, 20)
+          : 100;
+      material.clearcoat = 0.35;
+      material.clearcoatRoughness = 0.25;
+      material.iridescence = 0.18;
+      material.iridescenceIOR = 1.35;
+      material.iridescenceThicknessRange = [180, 420];
+      material.transparent = true;
+      material.depthWrite = false;
+      material.needsUpdate = true;
+      return;
+    }
+
     material.color.set(color);
     material.metalness = metalness;
     material.roughness = roughness;
@@ -178,6 +245,7 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
     thicknessMin,
     thicknessMax,
     figure.material,
+    materialMode,
   ]);
 
   // Per-figure flight tuning, one Leva folder per figure. Defaults come from
@@ -394,8 +462,9 @@ export default function ArcModel({ figure, scrollRef, phase }: ArcModelProps) {
     const visible = op > 0.001;
     if (modelRef.current.visible !== visible)
       modelRef.current.visible = visible;
-    material.transparent = op < 1;
-    material.opacity = op;
+    material.transparent = materialMode === "light" || op < 1;
+    material.depthWrite = materialMode !== "light" && op >= 1;
+    material.opacity = op * (materialMode === "light" ? LIGHT_GLASS_OPACITY : 1);
   });
 
   return (

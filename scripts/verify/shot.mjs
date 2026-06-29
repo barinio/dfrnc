@@ -32,9 +32,12 @@ if (gps.some(Number.isNaN)) {
 }
 const out = opt("out", "/tmp/shots");
 const [w, h] = opt("viewport", "1280x800").split("x").map(Number);
+const deviceScaleFactor = Number(opt("device-scale-factor", "1"));
 const track = Number(opt("track", "800")); // keep in sync with SCROLL_TRACK_VH
 const wait = Number(opt("wait", "9000"));
 const reducedMotion = argv.includes("--reduced-motion");
+const ua = opt("ua", null);
+const printCanvasInfo = argv.includes("--print-canvas-info");
 
 mkdirSync(out, { recursive: true });
 
@@ -48,7 +51,8 @@ const browser = await puppeteer.launch({
   ],
 });
 const page = await browser.newPage();
-await page.setViewport({ width: w, height: h });
+await page.setViewport({ width: w, height: h, deviceScaleFactor });
+if (ua) await page.setUserAgent(ua);
 if (reducedMotion) {
   await page.emulateMediaFeatures([
     { name: "prefers-reduced-motion", value: "reduce" },
@@ -63,6 +67,25 @@ await page.waitForFunction(
   () => !document.body.classList.contains("scroll-locked"),
   { timeout: 30000 },
 );
+if (printCanvasInfo) {
+  const info = await page.evaluate(() => {
+    const glCanvas = document.querySelector(".canvas-layer canvas");
+    const canvases = [...document.querySelectorAll("canvas")].map((el) => ({
+      className: String(el.className || ""),
+      width: el.width,
+      height: el.height,
+      clientWidth: el.clientWidth,
+      clientHeight: el.clientHeight,
+      left: Math.round(el.getBoundingClientRect().left),
+    }));
+    return {
+      dpr: window.devicePixelRatio,
+      webglRatio: glCanvas ? glCanvas.width / glCanvas.clientWidth : null,
+      canvases,
+    };
+  });
+  console.log("canvas-info", JSON.stringify(info));
+}
 // Scroll to a GALLERY progress position (gp ∈ [0,1]) — i.e. scroll BEYOND the
 // animation track. `track` is SCROLL_TRACK_VH (default 800). The gallery uses a
 // PIECEWISE scrollY → gp mapping (galleryProgressFrom): gp ∈ [0, VID_FLY_END]
