@@ -37,6 +37,54 @@ export const GALLERY_IMAGES: (string | null)[] = [
   "gallery/bilder_3_rs.jpeg",
 ];
 
+export interface GalleryImageFocus {
+  x: number;
+  y: number;
+}
+
+const DEFAULT_IMAGE_FOCUS: GalleryImageFocus = { x: 0.5, y: 0.5 };
+
+// Per-image focal points for narrow portrait crops. Desktop/landscape cards keep
+// the normal centered cover unless an axis is actually being cropped.
+const GALLERY_IMAGE_FOCUS: Record<string, GalleryImageFocus> = {
+  "gallery/bilder_1_rs.jpeg": { x: 0.74, y: 0.5 },
+  "gallery/bilder_2_rs.jpeg": { x: 0.58, y: 0.56 },
+  "gallery/bilder_3_rs.jpeg": { x: 0.52, y: 0.58 },
+};
+
+export function galleryImageFocusFor(src: string | null): GalleryImageFocus {
+  if (!src) return DEFAULT_IMAGE_FOCUS;
+  return GALLERY_IMAGE_FOCUS[src] ?? DEFAULT_IMAGE_FOCUS;
+}
+
+export interface CoverCropWindow {
+  u0: number;
+  u1: number;
+  v0: number;
+  v1: number;
+}
+
+export function coverCropWindowFor(
+  cardAspect: number,
+  texAspect: number,
+  focus: GalleryImageFocus = DEFAULT_IMAGE_FOCUS,
+): CoverCropWindow {
+  let su = 1;
+  let sv = 1;
+  if (texAspect > cardAspect) su = cardAspect / texAspect;
+  else sv = texAspect / cardAspect;
+
+  const cx = Math.min(Math.max(clamp01(focus.x), su / 2), 1 - su / 2);
+  const cy = Math.min(Math.max(clamp01(focus.y), sv / 2), 1 - sv / 2);
+
+  return {
+    u0: cx - su / 2,
+    u1: cx + su / 2,
+    v0: cy - sv / 2,
+    v1: cy + sv / 2,
+  };
+}
+
 // ── Layout (fractions of viewport; vmin where noted) ─────────────────────────
 export const GUTTER = 0.03; // 3% vmin gutter around/between typo and cards
 export const TOP_TITLE_VH = 0.08; // top title line height
@@ -263,6 +311,10 @@ const MORPH_BOT_END = 0.13; // step 2 ends: bottom at card bottom; sides STILL f
 // top FULLY OPAQUE (no opacity fade — "слайди без опасіті улітають"), far enough
 // to clear the frame. card.b ≈ 0.22 + this ≫ 1, so the bottom edge exits the top.
 const RISE_VID = 1.9 * CARDS_VH * CARD_FILL;
+
+export function videoUsesScreenClipFor(gp: number): boolean {
+  return gp > 0 && gp < VID_FLY_END;
+}
 
 // Full-bleed FPV video → gallery slide #1: crop the top first, then the sides,
 // down to an image-card rect; hold; then fly straight UP off the top — OPAQUE,

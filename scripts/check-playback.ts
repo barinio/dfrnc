@@ -43,8 +43,11 @@ import {
   imageStackVisibleFor,
   videoCardExitProgressFor,
   cardStackPlacementFor,
+  coverCropWindowFor,
+  videoUsesScreenClipFor,
   STACK_VISIBLE,
   cardScreenRect,
+  galleryImageFocusFor,
   videoCardMorphFor,
   CTA_REVEAL_FROM,
   GALLERY_IMAGES,
@@ -534,6 +537,14 @@ for (const f of FIGURES) {
     // CardStack adds the upward rise on top.
     eq(cardStackPlacementFor(-0.5).x, front.x, "leaving card keeps the front-slot x");
     eq(cardStackPlacementFor(-0.5).y, front.y, "leaving card keeps the front-slot y");
+
+    const phoneAspect = 390 / 844;
+    const portraitCardAspect = (CARDS_WIDTH_VW_PORTRAIT * phoneAspect) / CARDS_VH;
+    const climberFocus = galleryImageFocusFor("gallery/bilder_1_rs.jpeg");
+    const climberCrop = coverCropWindowFor(portraitCardAspect, CARD_ASPECT, climberFocus);
+    ok(climberFocus.x > 0.65, "climber photo has a right-biased mobile focal point");
+    ok(climberCrop.u0 > 0.45, "mobile climber crop shifts right instead of staying centered");
+    ok(climberCrop.u1 <= 1, "mobile climber crop remains inside the image");
   }
 
   // videoCardMorphFor: endpoints + crop collapses full → card, top-first.
@@ -608,6 +619,16 @@ for (const f of FIGURES) {
   ok(mFly.rise + card.b > 1, "risen card has fully cleared the top of the frame");
   ok(!mFly.visible, "morph invisible once flown (gp ≥ VID_FLY_END)");
 
+  // Morph/hold crop is a screen-space mask over the full-screen video, not a
+  // per-frame mesh/UV crop. The actual card mesh takes over only for the fly-up.
+  ok(!videoUsesScreenClipFor(0), "screen clip is off before the gallery morph starts");
+  ok(videoUsesScreenClipFor(0.03), "screen clip drives the top-crop morph");
+  ok(videoUsesScreenClipFor(VID_MORPH_END), "screen clip stays on once card-shaped");
+  ok(videoUsesScreenClipFor((VID_MORPH_END + VID_HOLD_END) / 2), "screen clip holds the formed video card");
+  ok(videoUsesScreenClipFor(VID_HOLD_END), "screen clip remains active at the fly-up trigger");
+  ok(videoUsesScreenClipFor((VID_HOLD_END + VID_FLY_END) / 2), "screen clip remains active while the video card flies");
+  ok(!videoUsesScreenClipFor(VID_FLY_END), "screen clip turns off only after the video card is gone");
+
   console.log("✓ video-card morph");
 }
 
@@ -677,6 +698,16 @@ for (const f of FIGURES) {
       "transition frames are not detected as holds",
     );
   }
+  {
+    const galleryTitlesSource = readFileSync(new URL("../src/components/GalleryTitles.tsx", import.meta.url), "utf8");
+    ok(/TITLE_SPLIT_GUARD/.test(galleryTitlesSource), "GalleryTitles guards the split UV seam");
+    ok(
+      !/remapV\(topGeometry,\s*0\.5,\s*1\)/.test(galleryTitlesSource) &&
+        !/remapV\(bottomGeometry,\s*0,\s*0\.5\)/.test(galleryTitlesSource),
+      "GalleryTitles does not sample exactly on the v=0.5 split seam",
+    );
+    ok(/TITLE_EXIT_OVERSCAN/.test(galleryTitlesSource), "GalleryTitles pushes exiting title planes past the viewport edge");
+  }
   console.log("✓ stepped conveyor + hold-aligned titles");
 }
 
@@ -710,6 +741,18 @@ for (const f of FIGURES) {
       /videoSeekSettled/.test(videoPlaneSource) &&
       /seekingRef\.current\s*=\s*false/.test(videoPlaneSource),
     "VideoPlane releases in-flight seeks from requestVideoFrameCallback metadata",
+  );
+  ok(
+    /shader\.uniforms\.uScreenClip\s*=/.test(videoPlaneSource) &&
+      /shader\.uniforms\.uClipRect\s*=/.test(videoPlaneSource) &&
+      /shader\.uniforms\.uClipRadius\s*=/.test(videoPlaneSource) &&
+      /shader\.uniforms\.uAspect\s*=/.test(videoPlaneSource),
+    "VideoPlane registers every screen-clip uniform with the compiled shader",
+  );
+  ok(
+    /gl_FragColor\.rgb\s*=\s*mix\(vec3\(0\.0\),\s*gl_FragColor\.rgb,\s*mask\)/.test(videoPlaneSource) &&
+      /gl_FragColor\.a\s*=\s*1\.0/.test(videoPlaneSource),
+    "VideoPlane draws black blocks outside the screen clip instead of leaving video visible",
   );
 
   console.log("✓ video scrub convergence");

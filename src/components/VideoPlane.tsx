@@ -10,7 +10,12 @@ import {
   videoSeekCommandFor,
   videoSeekSettled,
 } from "../playback";
-import { videoCardMorphFor, videoCardExitProgressFor, CARD_RADIUS_VH } from "../gallery";
+import {
+  videoCardMorphFor,
+  videoCardExitProgressFor,
+  videoUsesScreenClipFor,
+  CARD_RADIUS_VH,
+} from "../gallery";
 import { VID_FLY_END } from "../constants";
 import { approach } from "../cursorTilt";
 import type { Phase } from "../playback";
@@ -103,6 +108,10 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
   const maskUniforms = useRef({
     uRadius: { value: 0 },
     uSize: { value: new THREE.Vector2(1, 1) },
+    uScreenClip: { value: 0 },
+    uClipRect: { value: new THREE.Vector4(0, 0, 1, 1) },
+    uClipRadius: { value: 0 },
+    uAspect: { value: 1 },
   });
 
   // Pointer (NDC) for the card-form parallax hit-test + tilt direction, tracked
@@ -128,25 +137,43 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
   const installMask = useCallback((shader: THREE.WebGLProgramParametersWithUniforms) => {
     shader.uniforms.uRadius = maskUniforms.current.uRadius;
     shader.uniforms.uSize = maskUniforms.current.uSize;
+    shader.uniforms.uScreenClip = maskUniforms.current.uScreenClip;
+    shader.uniforms.uClipRect = maskUniforms.current.uClipRect;
+    shader.uniforms.uClipRadius = maskUniforms.current.uClipRadius;
+    shader.uniforms.uAspect = maskUniforms.current.uAspect;
     shader.vertexShader = shader.vertexShader
       .replace("#include <common>", "#include <common>\nvarying vec2 vMaskUv;")
       .replace("#include <uv_vertex>", "#include <uv_vertex>\n\tvMaskUv = uv;");
     shader.fragmentShader = shader.fragmentShader
       .replace(
         "#include <common>",
-        "#include <common>\nvarying vec2 vMaskUv;\nuniform float uRadius;\nuniform vec2 uSize;",
+        "#include <common>\nvarying vec2 vMaskUv;\nuniform float uRadius;\nuniform vec2 uSize;\nuniform float uScreenClip;\nuniform vec4 uClipRect;\nuniform float uClipRadius;\nuniform float uAspect;",
       )
       .replace(
         "#include <dithering_fragment>",
         `#include <dithering_fragment>
 	{
-		vec2 b = uSize * 0.5;
-		float rr = min(uRadius, min(b.x, b.y));
-		vec2 p = (vMaskUv - 0.5) * uSize;
-		vec2 q = abs(p) - b + rr;
-		float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr;
-		float aa = fwidth(d);
-		float mask = 1.0 - smoothstep(-aa, aa, d);
+		float mask = 1.0;
+		if (uScreenClip > 0.5) {
+			vec2 center = vec2((uClipRect.x + uClipRect.z) * 0.5, (uClipRect.y + uClipRect.w) * 0.5);
+			vec2 b = vec2(max((uClipRect.z - uClipRect.x) * 0.5 * uAspect, 0.0), max((uClipRect.w - uClipRect.y) * 0.5, 0.0));
+			float rr = min(max(uClipRadius, 0.0), min(b.x, b.y));
+			vec2 p = vec2((vMaskUv.x - center.x) * uAspect, vMaskUv.y - center.y);
+			vec2 q = abs(p) - b + rr;
+			float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr;
+			float aa = max(fwidth(d), 0.0001);
+			mask = 1.0 - smoothstep(-aa, aa, d);
+			gl_FragColor.rgb = mix(vec3(0.0), gl_FragColor.rgb, mask);
+			gl_FragColor.a = 1.0;
+		} else {
+			vec2 b = uSize * 0.5;
+			float rr = min(uRadius, min(b.x, b.y));
+			vec2 p = (vMaskUv - 0.5) * uSize;
+			vec2 q = abs(p) - b + rr;
+			float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - rr;
+			float aa = fwidth(d);
+			mask = 1.0 - smoothstep(-aa, aa, d);
+		}
 		if (mask < 0.001) discard;
 		gl_FragColor.a *= mask;
 	}`,
@@ -285,6 +312,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     // the frame never freezes while the card morphs / holds / flies.
     const t = videoMasterTimeFor(sp, gp, phase);
     const morph = videoCardMorphFor(gp, aspect);
+    const screenClip = videoUsesScreenClipFor(gp);
     mesh.renderOrder = gp > 1e-4 && gp < VID_FLY_END ? 1 : 0;
     // sp-based reveal fade-in (behind the typography). morph.opacity is always 1
     // now — the card flies up OPAQUE (no dissolve), so it is hidden off `visible`
@@ -309,6 +337,12 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     // morph.crop is the on-screen rect (screen fractions) the card occupies —
     // full [0,1,0,1] at gp ≤ 0, collapsing to the image-card rect over the morph.
     const { l, r, b, t: cropTop } = morph.crop;
+    const placeB = b + morph.rise;
+    const placeT = cropTop + morph.rise;
+    const cx = (l + r) / 2;
+    const cy = (placeB + placeT) / 2;
+    const cardScaleX = (r - l) * fullW;
+    const cardScaleY = (cropTop - b) * fullH; // = (placeT - placeB): rise is a translation
 
     const video = texture.image as HTMLVideoElement;
     const dur = video.duration;
@@ -349,11 +383,18 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
         offsetY = (1 - repeatY) / 2;
       }
 
-      // Morph crop: show only the SUB-window of the full-bleed cover image that
-      // lies under the crop rect (linear in screen fractions) — a true crop, no
-      // squash. At gp ≤ 0 (rect = full screen) this is the identity mapping.
-      texture.repeat.set(repeatX * (r - l), repeatY * (cropTop - b));
-      texture.offset.set(offsetX + repeatX * l, offsetY + repeatY * b);
+      if (screenClip) {
+        // During the morph/hold, leave the video full-screen and let the shader
+        // reveal only the current screen rect. This avoids per-frame mesh/UV
+        // crop churn right at the visual cut.
+        texture.repeat.set(repeatX, repeatY);
+        texture.offset.set(offsetX, offsetY);
+      } else {
+        // Fly-up uses a real card mesh with the SUB-window frozen to the card,
+        // so the video content moves with the card as it leaves the frame.
+        texture.repeat.set(repeatX * (r - l), repeatY * (cropTop - b));
+        texture.offset.set(offsetX + repeatX * l, offsetY + repeatY * b);
+      }
 
       // Robust converging scrub: record the desired time and issue a seek only
       // when idle; the `seeked` / stall paths converge to the latest target, so a
@@ -362,24 +403,25 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
       issueSeekIfIdle(video);
     }
 
-    // Placement: the crop rect, translated up by `rise` during the fly-out (the
-    // texture window stays frozen at the card crop, so the card keeps its content
-    // and just rises off-screen). Allocation-free.
-    const placeB = b + morph.rise;
-    const placeT = cropTop + morph.rise;
-    const cx = (l + r) / 2;
-    const cy = (placeB + placeT) / 2;
-    const scaleX = (r - l) * fullW;
-    const scaleY = (cropTop - b) * fullH; // = (placeT - placeB): rise is a translation
+    // Placement: morph/hold is full-screen video with a screen-space clip mask;
+    // fly-up switches to the card mesh so its sampled content travels with it.
+    const scaleX = screenClip ? fullW : cardScaleX;
+    const scaleY = screenClip ? fullH : cardScaleY;
     mesh.scale.set(scaleX, scaleY, 1);
-    mesh.position.set((cx * 2 - 1) * (fullW / 2), (cy * 2 - 1) * (fullH / 2), PLANE_Z);
+    mesh.position.set(
+      screenClip ? 0 : (cx * 2 - 1) * (fullW / 2),
+      screenClip ? 0 : (cy * 2 - 1) * (fullH / 2),
+      PLANE_Z,
+    );
 
-    // Drive the rounded-corner mask: uSize = the card's world dimensions, uRadius
-    // grows with morph.radius to the SAME fraction of the card height the image
-    // cards use (CARD_RADIUS_VH / CARDS_VH applied to the card-format height
-    // CARDS_VH · fullH ⇒ CARD_RADIUS_VH · fullH). Square (0) at full-bleed.
+    // Drive the masks. screenClip mode uses a full-screen mesh plus a
+    // screen-space rounded rect; card mode uses the local rounded-rect mask.
     maskUniforms.current.uSize.value.set(scaleX, scaleY);
-    maskUniforms.current.uRadius.value = morph.radius * CARD_RADIUS_VH * fullH;
+    maskUniforms.current.uRadius.value = screenClip ? 0 : morph.radius * CARD_RADIUS_VH * fullH;
+    maskUniforms.current.uScreenClip.value = screenClip ? 1 : 0;
+    maskUniforms.current.uClipRect.value.set(l, placeB, r, placeT);
+    maskUniforms.current.uClipRadius.value = morph.radius * CARD_RADIUS_VH;
+    maskUniforms.current.uAspect.value = aspect;
 
     // Card-form parallax: tilt the card toward the cursor while it is in card
     // shape, mirroring the image cards. `tiltEnv` ramps in with how card-shaped it
@@ -387,7 +429,10 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     // off (videoCardExitProgressFor) so it never leaves the frame still skewed.
     // The hit-region is the card's CURRENT on-screen rect (it follows the rise),
     // in NDC. Skipped under reduced motion (phase "done").
-    const tiltEnv = phase === "scroll" ? morph.radius * (1 - videoCardExitProgressFor(gp)) : 0;
+    const tiltEnv =
+      !screenClip && phase === "scroll"
+        ? morph.radius * (1 - videoCardExitProgressFor(gp))
+        : 0;
     const cxNdc = l + r - 1; // ((l + r) / 2) · 2 − 1
     const cyNdc = placeB + placeT - 1; // ((placeB + placeT) / 2) · 2 − 1 (rise included)
     const relX = ptr.current.x - cxNdc;

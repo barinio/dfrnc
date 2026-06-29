@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useReducer } from "react";
 import { useThree } from "@react-three/fiber";
 import * as THREE from "three";
-import { CARD_RADIUS_VH, CARDS_VH, CARD_ASPECT } from "../gallery";
+import {
+  CARD_RADIUS_VH,
+  CARDS_VH,
+  CARD_ASPECT,
+  coverCropWindowFor,
+  galleryImageFocusFor,
+} from "../gallery";
 
 // Build a centered rounded-rectangle path (width w, height h, corner radius r).
 export function roundedRectShape(w: number, h: number, r: number): THREE.Shape {
@@ -93,24 +99,31 @@ export function preloadGalleryTextures(srcs: (string | null)[], maxAniso: number
   }
 }
 
-// Remap ShapeGeometry UVs to 0..1 over the shape's bounding box, then cover-fit
-// the texture's aspect into the card's 3:2 (center crop).
-function fitUVs(geom: THREE.ShapeGeometry, w: number, h: number, texAspect: number) {
+// Remap ShapeGeometry UVs to the source crop window over the shape's bounding
+// box. The crop window is still cover-fit, but can use per-image focal points on
+// narrow mobile cards so subjects are not cut off by a centered side crop.
+function fitUVs(
+  geom: THREE.ShapeGeometry,
+  w: number,
+  h: number,
+  texAspect: number,
+  src: string | null,
+) {
   geom.computeBoundingBox();
   const bb = geom.boundingBox!;
   const uv = geom.attributes.uv as THREE.BufferAttribute;
   const cardAspect = w / h;
-  // cover-fit scale: shrink the longer texture axis' UV span.
-  let su = 1;
-  let sv = 1;
-  if (texAspect > cardAspect) su = cardAspect / texAspect; // wider texture → crop sides
-  else sv = texAspect / cardAspect; // taller texture → crop top/bottom
+  const crop = coverCropWindowFor(cardAspect, texAspect, galleryImageFocusFor(src));
   const bw = bb.max.x - bb.min.x;
   const bh = bb.max.y - bb.min.y;
   for (let i = 0; i < uv.count; i++) {
     const x = (geom.attributes.position.getX(i) - bb.min.x) / bw; // 0..1
     const y = (geom.attributes.position.getY(i) - bb.min.y) / bh; // 0..1
-    uv.setXY(i, 0.5 + (x - 0.5) * su, 0.5 + (y - 0.5) * sv);
+    uv.setXY(
+      i,
+      crop.u0 + x * (crop.u1 - crop.u0),
+      crop.v0 + y * (crop.v1 - crop.v0),
+    );
   }
   uv.needsUpdate = true;
 }
@@ -152,9 +165,9 @@ export default function GalleryCard({ src, index, width, height }: Props) {
     const geom = new THREE.ShapeGeometry(shape, 24);
     const img = texture.image as { width?: number; height?: number } | undefined;
     const texAspect = img && img.width && img.height ? img.width / img.height : CARD_ASPECT;
-    fitUVs(geom, width, height, texAspect);
+    fitUVs(geom, width, height, texAspect, src);
     return geom;
-  }, [width, height, texture]);
+  }, [width, height, texture, src]);
 
   useEffect(() => {
     return () => { geometry.dispose(); };

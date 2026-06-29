@@ -25,6 +25,8 @@ import {
 // card-9 exit the TOP slides UP and the BOTTOM slides DOWN out of frame. The
 // comp's middle (v≈0.5) is transparent, so the split never cuts a glyph.
 const PLANE_Z = -1;
+const TITLE_SPLIT_GUARD = 0.004;
+const TITLE_EXIT_OVERSCAN = 0.04;
 
 // Remap a PlaneGeometry's UV v-range (default 0..1, bottom→top) to [v0, v1] so
 // the plane samples only that horizontal band of the shared title texture.
@@ -141,7 +143,7 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     // title slides DOWN off the bottom, in lockstep with the leaving card. Driven
     // every frame (the slide moves while the held last frame is static).
     const exit = THREE.MathUtils.clamp(cardExitRef.current, 0, 1);
-    const off = exit * fullHeight; // a full frustum height → fully off-screen by exit 1
+    const off = exit * fullHeight * (1 + TITLE_EXIT_OVERSCAN);
     if (meshTopRef.current) {
       meshTopRef.current.renderOrder = 2;
       meshTopRef.current.position.y = planeHeight / 4 + off;
@@ -172,9 +174,9 @@ export default function GalleryTitles({ galleryRef, cardExitRef, reducedMotion =
     // Top plane: upper half of the comp (top title line); bottom plane: lower half
     // (bottom title block). Together they exactly reproduce the full title plane.
     const topGeometry = new THREE.PlaneGeometry(innerW, halfH);
-    remapV(topGeometry, 0.5, 1);
+    remapV(topGeometry, 0.5 + TITLE_SPLIT_GUARD, 1);
     const bottomGeometry = new THREE.PlaneGeometry(innerW, halfH);
-    remapV(bottomGeometry, 0, 0.5);
+    remapV(bottomGeometry, 0, 0.5 - TITLE_SPLIT_GUARD);
     return { planeHeight: innerH, fullHeight, topGeometry, bottomGeometry };
   }, [camera, viewport.width, viewport.height]);
 
