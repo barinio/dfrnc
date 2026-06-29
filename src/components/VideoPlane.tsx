@@ -50,6 +50,19 @@ const HOVER_PAD = 1.08; // hit-region padding (matches CardStack)
 // the previous seek settles.
 const SEEK_EPS = VIDEO_SEEK_SETTLE_EPS; // ~half a 25 fps frame; above seek jitter
 const SEEK_STALL_MS = VIDEO_SEEK_STALL_MS; // a seek whose `seeked` never fires is treated as dropped
+// The clip is 25 fps, so seeking faster than ~one decoded frame cannot reveal
+// extra detail. Safari/Firefox decoders are much more prone to dropped/coalesced
+// seeks, so give them a wider gap between paused-video seeks.
+function prefersConservativeVideoSeeking(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  const isFirefox = /Firefox\//.test(ua);
+  const isSafari =
+    /Safari\//.test(ua) && !/Chrom(e|ium)\//.test(ua) && !/CriOS\//.test(ua);
+  const isIOS = /iP(ad|hone|od)/.test(ua);
+  return isFirefox || isSafari || isIOS;
+}
+const SEEK_MIN_INTERVAL_MS = prefersConservativeVideoSeeking() ? 96 : 44;
 
 // Responsive source: phones get the lighter 720p (16.5 MB — plenty sharp on a
 // small screen, far easier on mobile data), wide screens the crisp full-bleed
@@ -195,6 +208,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
       elapsedMs: now - seekStartRef.current,
       eps: SEEK_EPS,
       stallMs: SEEK_STALL_MS,
+      minIntervalMs: SEEK_MIN_INTERVAL_MS,
     });
     if (command.stalled) seekingRef.current = false;
     if (!command.issue) return;

@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
   Suspense,
 } from "react";
 import type { ComponentProps, ReactNode, MutableRefObject, Ref } from "react";
@@ -58,6 +59,73 @@ function RendererConfig({ exposure }: { exposure: number }) {
   return null;
 }
 
+interface RenderProfile {
+  dpr: [number, number];
+  performanceMin: number;
+  performanceDebounce: number;
+  slowFrameMs: number;
+  slowFrameLimit: number;
+  enablePostFx: boolean;
+}
+
+function browserNeedsConservativeRenderProfile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const ua = navigator.userAgent;
+  const isFirefox = /Firefox\//.test(ua);
+  const isSafari =
+    /Safari\//.test(ua) && !/Chrom(e|ium)\//.test(ua) && !/CriOS\//.test(ua);
+  const isIOS = /iP(ad|hone|od)/.test(ua);
+  return isFirefox || isSafari || isIOS;
+}
+
+function createRenderProfile(): RenderProfile {
+  if (typeof window === "undefined") {
+    return {
+      dpr: [1, 1.5],
+      performanceMin: 0.65,
+      performanceDebounce: 500,
+      slowFrameMs: 24,
+      slowFrameLimit: 8,
+      enablePostFx: true,
+    };
+  }
+
+  const narrow = window.matchMedia("(max-width: 899.98px)").matches;
+  const conservative = browserNeedsConservativeRenderProfile();
+  return {
+    dpr: [1, conservative ? (narrow ? 1.1 : 1.25) : narrow ? 1.25 : 1.5],
+    performanceMin: conservative ? 0.5 : 0.65,
+    performanceDebounce: conservative ? 650 : 500,
+    slowFrameMs: conservative ? 22 : 24,
+    slowFrameLimit: conservative ? 6 : 8,
+    enablePostFx: !conservative,
+  };
+}
+
+function PerformanceRegressor({
+  slowFrameMs,
+  slowFrameLimit,
+}: {
+  slowFrameMs: number;
+  slowFrameLimit: number;
+}) {
+  const { performance } = useThree();
+  const slowFrames = useRef(0);
+
+  useFrame((_state, delta) => {
+    if (delta * 1000 > slowFrameMs) {
+      slowFrames.current += 1;
+    } else {
+      slowFrames.current = Math.max(0, slowFrames.current - 1);
+    }
+    if (slowFrames.current < slowFrameLimit) return;
+    slowFrames.current = 0;
+    performance.regress();
+  });
+
+  return null;
+}
+
 // Base film-grain strength, applied to the figures/typography phase.
 const NOISE_BASE = 0.05;
 
@@ -109,6 +177,7 @@ function PostFxDriver({
 
 export default function Scene() {
   const reducedMotion = usePrefersReducedMotion();
+  const renderProfile = useMemo(() => createRenderProfile(), []);
   const [levaVisible, setLevaVisible] = useState(false);
   const [animationStarted, setAnimationStarted] = useState(false);
   const [phase, setPhase] = useState<Phase>("scroll");
@@ -325,19 +394,32 @@ export default function Scene() {
       <div className="canvas-layer">
         <Canvas
           frameloop="always"
-          dpr={[1, 2]}
+          dpr={renderProfile.dpr}
+          performance={{
+            min: renderProfile.performanceMin,
+            debounce: renderProfile.performanceDebounce,
+          }}
           gl={{
-            antialias: true,
+            antialias: !renderProfile.enablePostFx,
             stencil: false,
-            alpha: true,
+            alpha: false,
+            powerPreference: "high-performance",
             toneMapping: ACESFilmicToneMapping,
             toneMappingExposure: 1.1,
           }}
           camera={{ fov: 60, near: 0.1, far: 100, position: [0, 0, 8] }}
-          style={{ width: "100%", height: "100%", background: "transparent" }}
+          style={{ width: "100%", height: "100%", background: "#0a0a0a" }}
         >
+          <PerformanceRegressor
+            slowFrameMs={renderProfile.slowFrameMs}
+            slowFrameLimit={renderProfile.slowFrameLimit}
+          />
           <RendererConfig exposure={toneMappingExposure} />
-          <GradientBackground scrollRef={scrollRef} phase={phase} />
+          <GradientBackground
+            scrollRef={scrollRef}
+            phase={phase}
+            postToneMapping={renderProfile.enablePostFx}
+          />
           <ambientLight color={0xffffff} intensity={ambientIntensity} />
           <directionalLight
             color={dir1Color}
@@ -391,22 +473,24 @@ export default function Scene() {
           <VideoPlane scrollRef={scrollRef} galleryRef={galleryRef} phase={phase} onReady={handleVideoReady} />
           <GalleryBackdrop galleryRef={galleryRef} />
           <PostFxDriver noiseRef={noiseRef} toneMapRef={toneMapRef} scrollRef={scrollRef} phase={phase} />
-          <EffectComposer multisampling={0} stencilBuffer={false}>
-            {/* ACES tone mapping — strength driven by PostFxDriver from 1 (full,
-                over the glass figures, which are tuned under ACES) to 0 as the
-                video reveals, so the already-graded FPV footage + gallery photos
-                are NEVER over-brightened (supervisor: "висвітляючий фільтр"). */}
-            <ScrollToneMapping ref={toneMapRef} />
-            <SMAA />
-            {/* Film grain over the figures/typography only — NoiseDriver fades
-                it to 0 as the video reveals (grain reads badly on the video). */}
-            {/* Library types the ref as the class, not the instance; the
-                runtime value is the NoiseEffect instance the driver mutates. */}
-            <Noise
-              ref={noiseRef as unknown as Ref<typeof NoiseEffect>}
-              opacity={NOISE_BASE}
-            />
-          </EffectComposer>
+          {renderProfile.enablePostFx && (
+            <EffectComposer multisampling={0} stencilBuffer={false}>
+              {/* ACES tone mapping — strength driven by PostFxDriver from 1 (full,
+                  over the glass figures, which are tuned under ACES) to 0 as the
+                  video reveals, so the already-graded FPV footage + gallery photos
+                  are NEVER over-brightened (supervisor: "висвітляючий фільтр"). */}
+              <ScrollToneMapping ref={toneMapRef} />
+              <SMAA />
+              {/* Film grain over the figures/typography only — NoiseDriver fades
+                  it to 0 as the video reveals (grain reads badly on the video). */}
+              {/* Library types the ref as the class, not the instance; the
+                  runtime value is the NoiseEffect instance the driver mutates. */}
+              <Noise
+                ref={noiseRef as unknown as Ref<typeof NoiseEffect>}
+                opacity={NOISE_BASE}
+              />
+            </EffectComposer>
+          )}
         </Canvas>
       </div>
       <GalleryCTA cardExitRef={cardExitRef} reducedMotion={reducedMotion} />

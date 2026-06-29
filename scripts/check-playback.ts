@@ -733,8 +733,42 @@ for (const f of FIGURES) {
     }).issue,
     "in-flight video seek is not reissued before the stall watchdog expires",
   );
+  ok(
+    !videoSeekCommandFor({
+      desiredTime: 12.5,
+      issuedTime: 12,
+      seeking: false,
+      elapsedMs: 33,
+      minIntervalMs: 90,
+    }).issue,
+    "video seek is rate-limited before the minimum interval has elapsed",
+  );
+  ok(
+    videoSeekCommandFor({
+      desiredTime: 12.5,
+      issuedTime: 12,
+      seeking: false,
+      elapsedMs: 91,
+      minIntervalMs: 90,
+    }).issue,
+    "video seek resumes after the minimum interval has elapsed",
+  );
+  ok(
+    videoSeekCommandFor({
+      desiredTime: 12.5,
+      issuedTime: 12,
+      seeking: true,
+      elapsedMs: 401,
+      minIntervalMs: 900,
+    }).issue,
+    "stalled video seek bypasses the rate limit",
+  );
 
   const videoPlaneSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
+  ok(
+    /minIntervalMs:\s*SEEK_MIN_INTERVAL_MS/.test(videoPlaneSource),
+    "VideoPlane passes a browser-safe minimum interval to videoSeekCommandFor",
+  );
   ok(
     /requestVideoFrameCallback/.test(videoPlaneSource) &&
       /metadata\.mediaTime/.test(videoPlaneSource) &&
@@ -756,6 +790,29 @@ for (const f of FIGURES) {
   );
 
   console.log("✓ video scrub convergence");
+}
+
+// ── Browser-safe render profile ─────────────────────────────────────────────
+{
+  const sceneSource = readFileSync(new URL("../src/components/Scene.tsx", import.meta.url), "utf8");
+  ok(/dpr=\{renderProfile\.dpr\}/.test(sceneSource), "Scene uses an adaptive DPR profile");
+  ok(!/dpr=\{\[1,\s*2\]\}/.test(sceneSource), "Scene no longer hard-caps DPR at 2 for every browser");
+  ok(/enablePostFx:\s*!conservative/.test(sceneSource), "Scene disables postprocessing for conservative browser profiles");
+  ok(/antialias:\s*!renderProfile\.enablePostFx/.test(sceneSource), "Scene does not combine WebGL antialiasing with the SMAA pass");
+  ok(/alpha:\s*false/.test(sceneSource), "Scene uses an opaque WebGL buffer to avoid fixed-layer compositor flicker");
+  ok(/postToneMapping=\{renderProfile\.enablePostFx\}/.test(sceneSource), "GradientBackground matches the active tone-mapping path");
+  ok(/renderProfile\.enablePostFx\s*&&\s*\(/.test(sceneSource), "Scene skips the EffectComposer on conservative browser profiles");
+  ok(
+    /performance=\{\{\s*min:\s*renderProfile\.performanceMin/.test(sceneSource),
+    "Scene lets R3F regress quality under sustained frame pressure",
+  );
+  const gradientSource = readFileSync(new URL("../src/components/GradientBackground.tsx", import.meta.url), "utf8");
+  ok(/uniform float uPostToneMapping/.test(gradientSource), "GradientBackground can render with or without post tone mapping");
+  ok(
+    /mesh\.visible\s*=\s*videoOpacity\s*<\s*0\.999/.test(gradientSource),
+    "GradientBackground stops drawing once opaque video owns the frame",
+  );
+  console.log("✓ browser-safe render profile");
 }
 
 // ── Cursor tilt ──────────────────────────────────────────────────────────────

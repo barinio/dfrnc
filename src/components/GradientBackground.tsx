@@ -27,6 +27,7 @@ const fragmentShader = /* glsl */ `
   uniform float uTime;
   // 1 = full grain/specks (figures + typography phase); 0 = clean (video phase).
   uniform float uGrainMix;
+  uniform float uPostToneMapping;
 
   float noise(vec2 p) {
     return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
@@ -88,22 +89,25 @@ const fragmentShader = /* glsl */ `
 
     vec3 contrasted = (color - 0.5) * 1.05 + 0.5;
     vec3 finalColor = contrasted / 2.0 + vec3(0.0107);
-    // The shader was authored for direct display. Pre-invert the post pipeline
-    // (ACES tonemap effect + sRGB output encode) so it round-trips to these
-    // exact values on screen instead of being washed out or crushed.
+    // The shader was authored for direct display. When the post pipeline is
+    // active, pre-invert ACES so it round-trips to these exact values on screen.
+    // Conservative browsers bypass postprocessing, so they use the direct target.
     vec3 target = srgbToLinear(clamp(finalColor, 0.0, 1.0));
-    gl_FragColor = vec4(clamp(inverseACES(target), 0.0, 1.0), 1.0);
+    vec3 postReady = clamp(inverseACES(target), 0.0, 1.0);
+    gl_FragColor = vec4(mix(target, postReady, uPostToneMapping), 1.0);
   }
 `;
 
 interface GradientBackgroundProps {
   scrollRef: MutableRefObject<number>;
   phase: Phase;
+  postToneMapping: boolean;
 }
 
 export default function GradientBackground({
   scrollRef,
   phase,
+  postToneMapping,
 }: GradientBackgroundProps) {
   const { camera, viewport, size } = useThree();
   const uniforms = useMemo(
@@ -111,8 +115,9 @@ export default function GradientBackground({
       uTime: { value: 0 },
       uResolution: { value: new THREE.Vector2(1, 1) },
       uGrainMix: { value: 1 },
+      uPostToneMapping: { value: postToneMapping ? 1 : 0 },
     }),
-    [],
+    [postToneMapping],
   );
 
   // Size the plane to exactly fill the camera frustum at PLANE_Z.
@@ -124,16 +129,23 @@ export default function GradientBackground({
   }, [camera, viewport.width, viewport.height]);
 
   const matRef = useRef<THREE.ShaderMaterial>(null);
+  const meshRef = useRef<THREE.Mesh>(null);
   useFrame((state) => {
+    const videoOpacity = videoStateFor(scrollRef.current, phase).opacity;
+    const mesh = meshRef.current;
+    if (mesh) mesh.visible = videoOpacity < 0.999;
+    if (videoOpacity >= 0.999) return;
+
     uniforms.uTime.value = state.clock.elapsedTime;
     uniforms.uResolution.value.set(size.width, size.height);
+    uniforms.uPostToneMapping.value = postToneMapping ? 1 : 0;
     // Fade grain + specks out as the video reveals (they otherwise show through
     // the briefly semi-transparent video on the zoom-in).
-    uniforms.uGrainMix.value = 1 - videoStateFor(scrollRef.current, phase).opacity;
+    uniforms.uGrainMix.value = 1 - videoOpacity;
   });
 
   return (
-    <mesh position={[0, 0, PLANE_Z]}>
+    <mesh ref={meshRef} position={[0, 0, PLANE_Z]}>
       <planeGeometry args={[width, height]} />
       <shaderMaterial
         ref={matRef}

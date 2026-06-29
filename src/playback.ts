@@ -56,6 +56,7 @@ export interface VideoSeekCommandInput {
   elapsedMs: number;
   eps?: number;
   stallMs?: number;
+  minIntervalMs?: number;
 }
 
 export interface VideoSeekCommand {
@@ -70,6 +71,7 @@ export function videoSeekCommandFor({
   elapsedMs,
   eps = VIDEO_SEEK_SETTLE_EPS,
   stallMs = VIDEO_SEEK_STALL_MS,
+  minIntervalMs = 0,
 }: VideoSeekCommandInput): VideoSeekCommand {
   const stalled = seeking && elapsedMs > stallMs;
   if (!Number.isFinite(desiredTime) || desiredTime < 0) {
@@ -77,6 +79,14 @@ export function videoSeekCommandFor({
   }
   if (seeking && !stalled) return { issue: false, stalled: false };
   if (!stalled && Math.abs(desiredTime - issuedTime) < eps) {
+    return { issue: false, stalled: false };
+  }
+  if (
+    !stalled &&
+    minIntervalMs > 0 &&
+    issuedTime >= 0 &&
+    elapsedMs < minIntervalMs
+  ) {
     return { issue: false, stalled: false };
   }
   return { issue: true, stalled };
