@@ -7,17 +7,18 @@ import {
   videoMasterTimeFor,
   VIDEO_SEEK_SETTLE_EPS,
   VIDEO_SEEK_STALL_MS,
+  videoSeekMinIntervalMsFor,
   videoSeekCommandFor,
   videoSeekSettled,
 } from "../playback";
 import {
   videoCardMorphFor,
-  videoCardExitProgressFor,
   videoUsesScreenClipFor,
+  videoHiddenForSafeHandoff,
   CARD_RADIUS_VH,
 } from "../gallery";
 import { VID_FLY_END } from "../constants";
-import { approach } from "../cursorTilt";
+import { debugVideoNoCropFromSearch } from "../debug/videoFlags";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
@@ -35,14 +36,6 @@ import type { Phase } from "../playback";
 // (z = −3.6) so the vacated area reads black.
 
 const PLANE_Z = -3.5;
-
-// Hover parallax for the FPV once it has MORPHED into card form (slide #1), so it
-// reacts to the cursor just like the image cards. Tilt is a touch stronger than
-// the image cards (0.16) because the card sits deeper in the frustum (z = −3.5 vs
-// z = 0), which foreshortens the same rotation less.
-const HOVER_TILT_MAX = 0.18; // ~10° max parallax tilt on hover (radians)
-const HOVER_RATE = 9; // ease rate for the tilt
-const HOVER_PAD = 1.08; // hit-region padding (matches CardStack)
 
 // Scrub robustness: the paused video is seeked every frame. Issue at most ONE
 // seek at a time (browsers silently DROP coalesced seeks, and the last one can
@@ -62,8 +55,6 @@ function prefersConservativeVideoSeeking(): boolean {
   const isIOS = /iP(ad|hone|od)/.test(ua);
   return isFirefox || isSafari || isIOS;
 }
-const SEEK_MIN_INTERVAL_MS = prefersConservativeVideoSeeking() ? 96 : 44;
-
 // Responsive source: phones get the lighter 720p (16.5 MB — plenty sharp on a
 // small screen, far easier on mobile data), wide screens the crisp full-bleed
 // 1080p (30.5 MB). MUST match the media-scoped <link rel=preload> in index.html
@@ -84,9 +75,16 @@ interface VideoPlaneProps {
   // so the user never scrolls into an empty screen. Called on error too so a
   // failed/slow video can never deadlock the loader (Scene also has a timeout).
   onReady?: () => void;
+  safeVideoHandoff?: boolean;
 }
 
-export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: VideoPlaneProps) {
+export default function VideoPlane({
+  scrollRef,
+  galleryRef,
+  phase,
+  onReady,
+  safeVideoHandoff = false,
+}: VideoPlaneProps) {
   const { camera, viewport } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
@@ -97,6 +95,12 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
   const issuedRef = useRef<number>(-1);
   const seekingRef = useRef(false);
   const seekStartRef = useRef(0);
+  const conservativeSeekingRef = useRef(prefersConservativeVideoSeeking());
+  const debugNoVideoCropRef = useRef(debugVideoNoCropFromSearch());
+  const safeHandoffActiveRef = useRef(false);
+  const seekMinIntervalRef = useRef(
+    videoSeekMinIntervalMsFor(conservativeSeekingRef.current, 0),
+  );
   // True once the video has a decodable first frame (loadeddata fired).
   // Buffering starts at page load (component always mounted, preload=auto);
   // this gate is the slow-network fallback so the plane never shows black.
@@ -126,21 +130,6 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     uClipRadius: { value: 0 },
     uAspect: { value: 1 },
   });
-
-  // Pointer (NDC) for the card-form parallax hit-test + tilt direction, tracked
-  // on window (the canvas layer is pointer-events:none). Eased tilt in refs so
-  // the scrub stays React-render-free.
-  const ptr = useRef({ x: 0, y: 0 });
-  const rotX = useRef(0);
-  const rotY = useRef(0);
-  useEffect(() => {
-    const onMove = (e: PointerEvent) => {
-      ptr.current.x = (e.clientX / window.innerWidth) * 2 - 1;
-      ptr.current.y = -((e.clientY / window.innerHeight) * 2 - 1);
-    };
-    window.addEventListener("pointermove", onMove, { passive: true });
-    return () => window.removeEventListener("pointermove", onMove);
-  }, []);
 
   // meshBasicMaterial has no corner radius, so inject a rounded-rect signed-
   // distance alpha mask into the fragment. A dedicated vMaskUv = uv carries the
@@ -208,7 +197,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
       elapsedMs: now - seekStartRef.current,
       eps: SEEK_EPS,
       stallMs: SEEK_STALL_MS,
-      minIntervalMs: SEEK_MIN_INTERVAL_MS,
+      minIntervalMs: seekMinIntervalRef.current,
     });
     if (command.stalled) seekingRef.current = false;
     if (!command.issue) return;
@@ -245,7 +234,9 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     const onSeeked = () => {
       seekingRef.current = false;
       texture.needsUpdate = true;
-      issueSeekIfIdle(video); // chase the newest target if scroll moved meanwhile
+      if (!safeHandoffActiveRef.current) {
+        issueSeekIfIdle(video); // chase the newest target if scroll moved meanwhile
+      }
     };
     const onLoaded = () => {
       readyRef.current = true;
@@ -277,7 +268,9 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
         videoSeekSettled(metadata.mediaTime, issuedRef.current)
       ) {
         seekingRef.current = false;
-        issueSeekIfIdle(video); // `seeked` can be late/missing; rVFC proves the frame arrived
+        if (!safeHandoffActiveRef.current) {
+          issueSeekIfIdle(video); // rVFC proves the frame arrived
+        }
       }
       if (rvfc.requestVideoFrameCallback)
         rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
@@ -305,7 +298,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     };
   }, [issueSeekIfIdle, notifyReady]);
 
-  useFrame((_s, delta) => {
+  useFrame(() => {
     const texture = textureRef.current;
     const mat = matRef.current;
     const mesh = meshRef.current;
@@ -322,11 +315,19 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     const sp = scrollRef.current;
     const gp = galleryRef.current;
     const aspect = viewport.width / viewport.height;
+    const debugNoVideoCropActive = debugNoVideoCropRef.current && gp > 0;
+    const safeHandoffActive =
+      safeVideoHandoff && !debugNoVideoCropActive && gp > 0;
+    safeHandoffActiveRef.current = safeHandoffActive;
+    const safeHandoffHidden = videoHiddenForSafeHandoff(gp, safeVideoHandoff);
     // Scrub time spans the whole clip life (past sp = 1 into the gallery), so
     // the frame never freezes while the card morphs / holds / flies.
     const t = videoMasterTimeFor(sp, gp, phase);
     const morph = videoCardMorphFor(gp, aspect);
-    const screenClip = videoUsesScreenClipFor(gp);
+    const screenClip =
+      !safeHandoffActive &&
+      !debugNoVideoCropActive &&
+      videoUsesScreenClipFor(gp, conservativeSeekingRef.current);
     mesh.renderOrder = gp > 1e-4 && gp < VID_FLY_END ? 1 : 0;
     // sp-based reveal fade-in (behind the typography). morph.opacity is always 1
     // now — the card flies up OPAQUE (no dissolve), so it is hidden off `visible`
@@ -338,7 +339,8 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
     // in the loadeddata listener (early on fast connections; slow-network fallback
     // keeps the GradientBackground visible until the first frame is decoded).
     // morph.visible drops false once the card has flown off the top.
-    mesh.visible = readyRef.current && morph.visible && opacity > 0.001;
+    mesh.visible =
+      readyRef.current && morph.visible && !safeHandoffHidden && opacity > 0.001;
 
     if (!mesh.visible) return;
 
@@ -397,7 +399,7 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
         offsetY = (1 - repeatY) / 2;
       }
 
-      if (screenClip) {
+      if (screenClip || safeHandoffActive || debugNoVideoCropActive) {
         // During the morph/hold, leave the video full-screen and let the shader
         // reveal only the current screen rect. This avoids per-frame mesh/UV
         // crop churn right at the visual cut.
@@ -413,52 +415,39 @@ export default function VideoPlane({ scrollRef, galleryRef, phase, onReady }: Vi
       // Robust converging scrub: record the desired time and issue a seek only
       // when idle; the `seeked` / stall paths converge to the latest target, so a
       // dropped coalesced seek can never leave the frame frozen.
-      desiredRef.current = target;
-      issueSeekIfIdle(video);
+      if (!safeHandoffActive) {
+        seekMinIntervalRef.current = videoSeekMinIntervalMsFor(
+          conservativeSeekingRef.current,
+          debugNoVideoCropActive ? 0 : gp,
+        );
+        desiredRef.current = target;
+        issueSeekIfIdle(video);
+      }
     }
 
     // Placement: morph/hold is full-screen video with a screen-space clip mask;
     // fly-up switches to the card mesh so its sampled content travels with it.
-    const scaleX = screenClip ? fullW : cardScaleX;
-    const scaleY = screenClip ? fullH : cardScaleY;
+    const keepFullBleed = screenClip || safeHandoffActive || debugNoVideoCropActive;
+    const scaleX = keepFullBleed ? fullW : cardScaleX;
+    const scaleY = keepFullBleed ? fullH : cardScaleY;
     mesh.scale.set(scaleX, scaleY, 1);
     mesh.position.set(
-      screenClip ? 0 : (cx * 2 - 1) * (fullW / 2),
-      screenClip ? 0 : (cy * 2 - 1) * (fullH / 2),
+      keepFullBleed ? 0 : (cx * 2 - 1) * (fullW / 2),
+      keepFullBleed ? 0 : (cy * 2 - 1) * (fullH / 2),
       PLANE_Z,
     );
+    mesh.rotation.set(0, 0, 0);
 
     // Drive the masks. screenClip mode uses a full-screen mesh plus a
     // screen-space rounded rect; card mode uses the local rounded-rect mask.
     maskUniforms.current.uSize.value.set(scaleX, scaleY);
-    maskUniforms.current.uRadius.value = screenClip ? 0 : morph.radius * CARD_RADIUS_VH * fullH;
+    maskUniforms.current.uRadius.value = keepFullBleed
+      ? 0
+      : morph.radius * CARD_RADIUS_VH * fullH;
     maskUniforms.current.uScreenClip.value = screenClip ? 1 : 0;
     maskUniforms.current.uClipRect.value.set(l, placeB, r, placeT);
     maskUniforms.current.uClipRadius.value = morph.radius * CARD_RADIUS_VH;
     maskUniforms.current.uAspect.value = aspect;
-
-    // Card-form parallax: tilt the card toward the cursor while it is in card
-    // shape, mirroring the image cards. `tiltEnv` ramps in with how card-shaped it
-    // is (morph.radius: 0 full-bleed → 1 once morphed) and fades out as it flies
-    // off (videoCardExitProgressFor) so it never leaves the frame still skewed.
-    // The hit-region is the card's CURRENT on-screen rect (it follows the rise),
-    // in NDC. Skipped under reduced motion (phase "done").
-    const tiltEnv =
-      !screenClip && phase === "scroll"
-        ? morph.radius * (1 - videoCardExitProgressFor(gp))
-        : 0;
-    const cxNdc = l + r - 1; // ((l + r) / 2) · 2 − 1
-    const cyNdc = placeB + placeT - 1; // ((placeB + placeT) / 2) · 2 − 1 (rise included)
-    const relX = ptr.current.x - cxNdc;
-    const relY = ptr.current.y - cyNdc;
-    const over =
-      tiltEnv > 0.001 &&
-      Math.abs(relX) < (r - l) * HOVER_PAD &&
-      Math.abs(relY) < (cropTop - b) * HOVER_PAD;
-    const amt = over ? tiltEnv : 0; // scale the tilt by how "card" it is right now
-    rotX.current = approach(rotX.current, -relY * HOVER_TILT_MAX * amt, delta, HOVER_RATE);
-    rotY.current = approach(rotY.current, relX * HOVER_TILT_MAX * amt, delta, HOVER_RATE);
-    mesh.rotation.set(rotX.current, rotY.current, 0);
   });
 
   return (

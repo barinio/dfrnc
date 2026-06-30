@@ -35,6 +35,7 @@ import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../constants";
 import { FIGURES } from "../arc";
 import { createRenderProfile } from "../renderProfile";
+import { debugVideoNoCropFromSearch } from "../debug/videoFlags";
 
 class FigureBoundary extends Component<
   { name: string; children: ReactNode },
@@ -136,6 +137,8 @@ function PostFxDriver({
 export default function Scene() {
   const reducedMotion = usePrefersReducedMotion();
   const renderProfile = useMemo(() => createRenderProfile(), []);
+  const debugVideoNoCrop = useMemo(() => debugVideoNoCropFromSearch(), []);
+  const safeVideoHandoff = renderProfile.safeVideoHandoff && !debugVideoNoCrop;
   const [levaVisible, setLevaVisible] = useState(false);
   const [animationStarted, setAnimationStarted] = useState(false);
   const [phase, setPhase] = useState<Phase>("scroll");
@@ -426,7 +429,12 @@ export default function Scene() {
               maxTextureDpr={renderProfile.maxCanvasTextureDpr}
               textureFrameRate={renderProfile.textureFrameRate}
             />
-            <CardStack galleryRef={galleryRef} cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
+            <CardStack
+              galleryRef={galleryRef}
+              cardExitRef={cardExitRef}
+              reducedMotion={reducedMotion}
+              safeVideoHandoff={safeVideoHandoff}
+            />
             {FIGURES.map(
               (f, i) =>
                 !reducedMotion &&
@@ -444,7 +452,13 @@ export default function Scene() {
                 ),
             )}
           </Suspense>
-          <VideoPlane scrollRef={scrollRef} galleryRef={galleryRef} phase={phase} onReady={handleVideoReady} />
+          <VideoPlane
+            scrollRef={scrollRef}
+            galleryRef={galleryRef}
+            phase={phase}
+            onReady={handleVideoReady}
+            safeVideoHandoff={safeVideoHandoff}
+          />
           <GalleryBackdrop galleryRef={galleryRef} />
           <PostFxDriver noiseRef={noiseRef} toneMapRef={toneMapRef} scrollRef={scrollRef} phase={phase} />
           {renderProfile.enablePostFx && (

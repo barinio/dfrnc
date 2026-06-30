@@ -224,6 +224,7 @@ export default function GalleryTitles({
           toneMapped={false}
           transparent
           alphaTest={0.1}
+          alphaToCoverage
         />
       </mesh>
       <mesh ref={meshBottomRef} geometry={bottomGeometry} position={[0, -planeHeight / 4, PLANE_Z]}>
@@ -233,6 +234,7 @@ export default function GalleryTitles({
           toneMapped={false}
           transparent
           alphaTest={0.1}
+          alphaToCoverage
         />
       </mesh>
     </group>

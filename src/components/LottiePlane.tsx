@@ -276,7 +276,12 @@ export default function LottiePlane({
           in-scene GradientBackground shows through, while keeping the material
           OPAQUE — transmissive materials only refract opaque objects, so the
           glass still refracts the text (on the dark gradient backdrop). */}
-      <meshBasicMaterial map={texture} toneMapped={false} alphaTest={0.1} />
+      <meshBasicMaterial
+        map={texture}
+        toneMapped={false}
+        alphaTest={0.1}
+        alphaToCoverage
+      />
     </mesh>
   );
 }

@@ -35,6 +35,16 @@ function clamp01(x: number): number {
 // frame and should release the pending seek immediately.
 export const VIDEO_SEEK_SETTLE_EPS = 1 / 50;
 export const VIDEO_SEEK_STALL_MS = 400;
+export const VIDEO_SEEK_BASE_INTERVAL_MS = 44;
+export const VIDEO_SEEK_CONSERVATIVE_INTERVAL_MS = 96;
+
+export function videoSeekMinIntervalMsFor(
+  conservativeBrowser: boolean,
+  _gp: number,
+): number {
+  if (!conservativeBrowser) return VIDEO_SEEK_BASE_INTERVAL_MS;
+  return VIDEO_SEEK_CONSERVATIVE_INTERVAL_MS;
+}
 
 export function videoSeekSettled(
   mediaTime: number,

@@ -8,6 +8,7 @@ import {
   videoStateFor,
   videoMasterTimeFor,
   VIDEO_SEEK_SETTLE_EPS,
+  videoSeekMinIntervalMsFor,
   videoSeekCommandFor,
   videoSeekSettled,
   lottieBleedFor,
@@ -35,6 +36,7 @@ import {
   isGalleryTitleHoldFrame,
   cardConveyorDisplayedFor,
   galleryStackDisplayedFor,
+  videoHiddenForSafeHandoff,
   cardConveyorFor,
   cardFlyProgressFor,
   galleryCtaFromExit,
@@ -86,6 +88,7 @@ import {
   browserNeedsConservativeRenderProfile,
   createRenderProfile,
 } from "../src/renderProfile";
+import { debugVideoNoCropFromSearch } from "../src/debug/videoFlags";
 
 function eq(actual: number, expected: number, label: string, eps = 1e-9) {
   if (Math.abs(actual - expected) > eps)
@@ -450,6 +453,8 @@ for (const f of FIGURES) {
   eq(imageStackVisibleFor(0), 0, "image stack hidden at exact gallery start");
   eq(imageStackVisibleFor(0.05), 0, "image stack hidden during vertical crop");
   eq(imageStackRevealFor(0.1), 0, "image stack reveal starts after vertical crop");
+  ok(imageStackRevealFor(0.03, true) > 0, "safe handoff starts image stack reveal right after black fade");
+  eq(imageStackVisibleFor(0.03, true), 1, "safe handoff shows the image stack during the early gallery");
   ok(
     imageStackRevealFor((0.1 + VID_MORPH_END) / 2) > 0 &&
       imageStackRevealFor((0.1 + VID_MORPH_END) / 2) < 1,
@@ -474,6 +479,7 @@ for (const f of FIGURES) {
   // slot back at d1 (upper-left "position #2") — NOT directly behind the video.
   // As the video flies away it ramps −1→0, sliding image card 0 into the front d0.
   eq(galleryStackDisplayedFor(VID_MORPH_END), -1, "image card 0 staged at d1 while the video holds (morph end)");
+  eq(galleryStackDisplayedFor(VID_MORPH_END, true), 0, "safe handoff puts image card 0 at the front immediately");
   eq(galleryStackDisplayedFor(VID_HOLD_END), -1, "image card 0 still at d1 through the hold");
   eq(galleryStackDisplayedFor(VID_FLY_END), 0, "image card 0 has reached the front d0 once the video has flown");
   ok(
@@ -627,7 +633,9 @@ for (const f of FIGURES) {
   // per-frame mesh/UV crop. The actual card mesh takes over only for the fly-up.
   ok(!videoUsesScreenClipFor(0), "screen clip is off before the gallery morph starts");
   ok(videoUsesScreenClipFor(0.03), "screen clip drives the top-crop morph");
+  ok(!videoUsesScreenClipFor(0.03, true), "conservative browsers avoid full-screen screen clip during top-crop");
   ok(videoUsesScreenClipFor(VID_MORPH_END), "screen clip stays on once card-shaped");
+  ok(!videoUsesScreenClipFor(VID_MORPH_END, true), "conservative browsers keep the video crop on the real mesh once card-shaped");
   ok(videoUsesScreenClipFor((VID_MORPH_END + VID_HOLD_END) / 2), "screen clip holds the formed video card");
   ok(videoUsesScreenClipFor(VID_HOLD_END), "screen clip remains active at the fly-up trigger");
   ok(videoUsesScreenClipFor((VID_HOLD_END + VID_FLY_END) / 2), "screen clip remains active while the video card flies");
@@ -717,6 +725,22 @@ for (const f of FIGURES) {
 
 // ── Video scrub convergence ─────────────────────────────────────────────────
 {
+  const videoPlaneParallaxSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
+  ok(!/addEventListener\("pointermove"/.test(videoPlaneParallaxSource), "VideoPlane has no pointer parallax listener");
+  ok(!/Card-form parallax/.test(videoPlaneParallaxSource), "video card does not run hover parallax");
+
+  ok(debugVideoNoCropFromSearch("?debugVideoNoCrop=1"), "debug video no-crop flag can be enabled by query param");
+  ok(debugVideoNoCropFromSearch("?videoCrop=off"), "debug video crop can be disabled by readable query param");
+  ok(!debugVideoNoCropFromSearch("?videoCrop=on"), "video crop stays enabled by default");
+
+  eq(videoSeekMinIntervalMsFor(false, 0), 44, "Chrome/base video seek interval");
+  eq(videoSeekMinIntervalMsFor(true, 0), 96, "Safari/Firefox animation seek interval");
+  eq(videoSeekMinIntervalMsFor(true, 0.03), 96, "Safari/Firefox keeps scrubbing the video through the gallery text handoff");
+  ok(!videoHiddenForSafeHandoff(0, true), "safe video handoff keeps the video for the gallery boundary frame");
+  ok(!videoHiddenForSafeHandoff(0.01, true), "safe video handoff keeps the frozen video during the black fade");
+  ok(videoHiddenForSafeHandoff(0.02, true), "safe video handoff hides the video once black owns the frame");
+  ok(!videoHiddenForSafeHandoff(0.02, false), "normal browsers keep the video morph visible");
+
   ok(videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS / 2), "video seek settles within tolerance");
   ok(!videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS * 2), "video seek remains pending outside tolerance");
   ok(
@@ -770,8 +794,22 @@ for (const f of FIGURES) {
 
   const videoPlaneSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
   ok(
-    /minIntervalMs:\s*SEEK_MIN_INTERVAL_MS/.test(videoPlaneSource),
-    "VideoPlane passes a browser-safe minimum interval to videoSeekCommandFor",
+    /debugVideoNoCropFromSearch/.test(videoPlaneSource) &&
+      /debugNoVideoCropRef/.test(videoPlaneSource),
+    "VideoPlane reads the diagnostic no-crop flag once",
+  );
+  ok(
+    /safeVideoHandoff\s*&&\s*!debugNoVideoCropActive\s*&&\s*gp\s*>\s*0/.test(videoPlaneSource),
+    "diagnostic no-crop mode overrides the Safari safe handoff for isolation",
+  );
+  ok(
+    /debugNoVideoCropActive\s*\?\s*0\s*:\s*gp/.test(videoPlaneSource),
+    "diagnostic no-crop mode keeps normal gallery video seeking cadence",
+  );
+  ok(
+    /minIntervalMs:\s*seekMinIntervalRef\.current/.test(videoPlaneSource) &&
+      /videoSeekMinIntervalMsFor\(\s*conservativeSeekingRef\.current,\s*debugNoVideoCropActive\s*\?\s*0\s*:\s*gp/.test(videoPlaneSource),
+    "VideoPlane passes a browser-safe dynamic minimum interval to videoSeekCommandFor",
   );
   ok(
     /requestVideoFrameCallback/.test(videoPlaneSource) &&
@@ -811,11 +849,13 @@ for (const f of FIGURES) {
     "desktop Chrome keeps the full render profile",
   );
   const safariProfile = createRenderProfile({ userAgent: safariIOS, width: 390 });
-  eq(safariProfile.dpr[1], 1, "iOS Safari canvas DPR is capped to 1x");
+  eq(safariProfile.dpr[1], 1, "iOS Safari uses the lightweight canvas DPR");
   eq(safariProfile.enablePostFx ? 1 : 0, 0, "Safari skips postprocessing");
   eq(safariProfile.antialias ? 1 : 0, 0, "Safari skips MSAA");
+  ok(safariProfile.precision === "mediump", "Safari uses the lightweight shader precision");
   eq(safariProfile.maxCanvasTextureDpr, 1, "Safari caps Lottie texture DPR");
   eq(safariProfile.textureFrameRate, 30, "Safari caps texture upload rate");
+  ok(!safariProfile.safeVideoHandoff, "Safari keeps the video visible through the gallery text handoff");
   ok(
     safariProfile.figureMaterialMode === "full",
     "Safari keeps color-preserving figure materials",
@@ -823,6 +863,8 @@ for (const f of FIGURES) {
   eq(safariProfile.enableEnvironment ? 1 : 0, 0, "Safari skips PMREM environment setup");
 
   const sceneSource = readFileSync(new URL("../src/components/Scene.tsx", import.meta.url), "utf8");
+  const lottiePlaneSource = readFileSync(new URL("../src/components/LottiePlane.tsx", import.meta.url), "utf8");
+  const galleryTitlesSource = readFileSync(new URL("../src/components/GalleryTitles.tsx", import.meta.url), "utf8");
   ok(/dpr=\{renderProfile\.dpr\}/.test(sceneSource), "Scene uses an adaptive DPR profile");
   ok(!/dpr=\{\[1,\s*2\]\}/.test(sceneSource), "Scene no longer hard-caps DPR at 2 for every browser");
   ok(/antialias:\s*renderProfile\.antialias/.test(sceneSource), "Scene uses profile-controlled WebGL antialiasing");
@@ -834,6 +876,13 @@ for (const f of FIGURES) {
   ok(/maxTextureDpr=\{renderProfile\.maxCanvasTextureDpr\}/.test(sceneSource), "Scene passes the texture DPR cap to Lottie canvases");
   ok(/textureFrameRate=\{renderProfile\.textureFrameRate\}/.test(sceneSource), "Scene passes the texture upload rate cap to Lottie canvases");
   ok(/materialMode=\{renderProfile\.figureMaterialMode\}/.test(sceneSource), "Scene passes the figure material profile to ArcModel");
+  ok(
+    /debugVideoNoCropFromSearch/.test(sceneSource) &&
+      /safeVideoHandoff\s*=\s*renderProfile\.safeVideoHandoff\s*&&\s*!debugVideoNoCrop/.test(sceneSource),
+    "Scene lets the diagnostic no-crop flag override Safari safe handoff globally",
+  );
+  ok(/alphaToCoverage/.test(lottiePlaneSource), "LottiePlane uses alpha-to-coverage for smoother alphaTest text edges");
+  ok(/alphaToCoverage/.test(galleryTitlesSource), "GalleryTitles uses alpha-to-coverage for smoother alphaTest title edges");
   ok(
     /performance=\{\{\s*min:\s*renderProfile\.performanceMin/.test(sceneSource),
     "Scene lets R3F regress quality under sustained frame pressure",

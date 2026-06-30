@@ -47,9 +47,15 @@ interface Props {
   galleryRef: MutableRefObject<number>;
   cardExitRef: MutableRefObject<number>;
   reducedMotion?: boolean;
+  safeVideoHandoff?: boolean;
 }
 
-export default function CardStack({ galleryRef, cardExitRef, reducedMotion = false }: Props) {
+export default function CardStack({
+  galleryRef,
+  cardExitRef,
+  reducedMotion = false,
+  safeVideoHandoff = false,
+}: Props) {
   const { viewport, gl } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   // One PERSISTENT mesh per image card. Each keeps its own fixed texture for the
@@ -115,8 +121,8 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     // from the video-card centre into their fanned positions. Their conveyor runs
     // in the remapped image-gallery sub-range (card 2 only flies after the video
     // card has cleared).
-    const stackReveal = imageStackRevealFor(gp);
-    const stackOpacity = imageStackVisibleFor(gp);
+    const stackReveal = imageStackRevealFor(gp, safeVideoHandoff);
+    const stackOpacity = imageStackVisibleFor(gp, safeVideoHandoff);
 
     group.visible = stackOpacity > 0;
     if (!group.visible) {
@@ -134,7 +140,11 @@ export default function CardStack({ galleryRef, cardExitRef, reducedMotion = fal
     // d1→d0 into the front, exactly like every other card hand-off. After the
     // video has cleared it holds at integer k while card k is settled, then ramps
     // k→k+1 as it flies; the stack behind slides forward.
-    const displayed = THREE.MathUtils.clamp(galleryStackDisplayedFor(gp), -1, n);
+    const displayed = THREE.MathUtils.clamp(
+      galleryStackDisplayedFor(gp, safeVideoHandoff),
+      -1,
+      n,
+    );
     const lead = Math.floor(displayed);
     const local = displayed - lead;
 
