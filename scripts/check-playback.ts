@@ -11,8 +11,11 @@ import {
   videoSeekMinIntervalMsFor,
   videoSeekCommandFor,
   videoSeekSettled,
+  videoBufferedSeekTargetFor,
   lottieBleedFor,
+  lottiePlaneVisibleFor,
 } from "../src/playback";
+import { frameIndexFor, frameTierFor, frameUrl, FRAME_COUNT } from "../src/frames";
 import {
   DEFT_DROP_S,
   LOTTIE_INTRO_S,
@@ -33,6 +36,7 @@ import {
   galleryCardProgressFor,
   galleryTitleFrameFracForCard,
   galleryTitleFrameFor,
+  galleryTitlesVisibleFor,
   isGalleryTitleHoldFrame,
   cardConveyorDisplayedFor,
   galleryStackDisplayedFor,
@@ -212,6 +216,8 @@ eq(videoStateFor(1, "done").opacity, 1, "video done: visible at tail");
 eq(lottieBleedFor(0.3), 0, "bleed: framed mid-page");
 eq(lottieBleedFor(VIDEO_START), 0, "bleed: framed before zoom");
 eq(lottieBleedFor(VIDEO_START + VIDEO_FADE), 1, "bleed: full-bleed after ramp");
+ok(lottiePlaneVisibleFor(LOTTIE_TOTAL_S - 1 / 60), "main Lottie remains visible before the transparent tail");
+ok(!lottiePlaneVisibleFor(LOTTIE_TOTAL_S), "main Lottie stops drawing on the transparent final frame");
 
 // arc.ts: apex at midpoint, mirroring flips travel direction only
 import { makeArc, FIGURES } from "../src/arc";
@@ -629,16 +635,17 @@ for (const f of FIGURES) {
   ok(mFly.rise + card.b > 1, "risen card has fully cleared the top of the frame");
   ok(!mFly.visible, "morph invisible once flown (gp ≥ VID_FLY_END)");
 
-  // Morph/hold crop is a screen-space mask over the full-screen video, not a
-  // per-frame mesh/UV crop. The actual card mesh takes over only for the fly-up.
+  // Morph crop is a screen-space mask over the full-screen video only while the
+  // rect is actively changing. Once the card is formed, the real card mesh takes
+  // over to avoid full-screen shader overdraw during the hold/fly.
   ok(!videoUsesScreenClipFor(0), "screen clip is off before the gallery morph starts");
   ok(videoUsesScreenClipFor(0.03), "screen clip drives the top-crop morph");
   ok(!videoUsesScreenClipFor(0.03, true), "conservative browsers avoid full-screen screen clip during top-crop");
-  ok(videoUsesScreenClipFor(VID_MORPH_END), "screen clip stays on once card-shaped");
+  ok(!videoUsesScreenClipFor(VID_MORPH_END), "screen clip turns off once card-shaped");
   ok(!videoUsesScreenClipFor(VID_MORPH_END, true), "conservative browsers keep the video crop on the real mesh once card-shaped");
-  ok(videoUsesScreenClipFor((VID_MORPH_END + VID_HOLD_END) / 2), "screen clip holds the formed video card");
-  ok(videoUsesScreenClipFor(VID_HOLD_END), "screen clip remains active at the fly-up trigger");
-  ok(videoUsesScreenClipFor((VID_HOLD_END + VID_FLY_END) / 2), "screen clip remains active while the video card flies");
+  ok(!videoUsesScreenClipFor((VID_MORPH_END + VID_HOLD_END) / 2), "screen clip stays off while the formed video card holds");
+  ok(!videoUsesScreenClipFor(VID_HOLD_END), "screen clip stays off at the fly-up trigger");
+  ok(!videoUsesScreenClipFor((VID_HOLD_END + VID_FLY_END) / 2), "screen clip stays off while the video card flies");
   ok(!videoUsesScreenClipFor(VID_FLY_END), "screen clip turns off only after the video card is gone");
 
   console.log("✓ video-card morph");
@@ -649,6 +656,10 @@ for (const f of FIGURES) {
 {
   // The opening titles settle with the morph steps, then HOLD through the fly.
   eq(galleryTitleFrameFor(0), 0, "title 0 at gallery start");
+  ok(!galleryTitlesVisibleFor(0, 0), "gallery titles do not draw before the gallery starts");
+  ok(galleryTitlesVisibleFor(0.001, 0), "gallery titles draw during the video-card title phase");
+  ok(galleryTitlesVisibleFor(0.9, 0.5), "gallery titles stay visible while exiting");
+  ok(!galleryTitlesVisibleFor(0.9, 1), "gallery titles stop drawing once they are fully off-screen");
   ok(galleryTitleFrameFor(0.05) > 0, "WIR LIEFERN animating in during the top crop");
   ok(
     galleryTitleFrameFor(VID_MORPH_END) > galleryTitleFrameFor(0.05),
@@ -734,8 +745,8 @@ for (const f of FIGURES) {
   ok(!debugVideoNoCropFromSearch("?videoCrop=on"), "video crop stays enabled by default");
 
   eq(videoSeekMinIntervalMsFor(false, 0), 44, "Chrome/base video seek interval");
-  eq(videoSeekMinIntervalMsFor(true, 0), 96, "Safari/Firefox animation seek interval");
-  eq(videoSeekMinIntervalMsFor(true, 0.03), 96, "Safari/Firefox keeps scrubbing the video through the gallery text handoff");
+  eq(videoSeekMinIntervalMsFor(true, 0), 64, "Safari/Firefox animation seek interval");
+  eq(videoSeekMinIntervalMsFor(true, 0.03), 64, "Safari/Firefox keeps scrubbing the video through the gallery text handoff");
   ok(!videoHiddenForSafeHandoff(0, true), "safe video handoff keeps the video for the gallery boundary frame");
   ok(!videoHiddenForSafeHandoff(0.01, true), "safe video handoff keeps the frozen video during the black fade");
   ok(videoHiddenForSafeHandoff(0.02, true), "safe video handoff hides the video once black owns the frame");
@@ -791,32 +802,43 @@ for (const f of FIGURES) {
     }).issue,
     "stalled video seek bypasses the rate limit",
   );
+  const partialBuffer = {
+    length: 1,
+    start: () => 0,
+    end: () => 8.4,
+  };
+  eq(
+    videoBufferedSeekTargetFor(16, partialBuffer, true),
+    8.3,
+    "buffer clamp holds Chrome on the latest definitely decoded frame",
+  );
+  eq(
+    videoBufferedSeekTargetFor(16, partialBuffer, false),
+    16,
+    "Safari/iOS bypasses the buffer clamp so it can range-seek past the church frame",
+  );
+
+  // ── Frame-sequence scrub (replaces the HTMLVideoElement; see src/frames.ts) ──
+  eq(frameIndexFor(0, 295), 0, "frame index: clip start → frame 0");
+  eq(frameIndexFor(1, 295), 294, "frame index: clip end → last frame");
+  eq(frameIndexFor(0.5, 295), 147, "frame index: midpoint rounds to the middle frame");
+  eq(frameIndexFor(-1, 295), 0, "frame index clamps below 0");
+  eq(frameIndexFor(2, 295), 294, "frame index clamps above the last frame");
+  eq(frameIndexFor(0.5, 1), 0, "degenerate single-frame sequence stays on frame 0");
+  eq(frameTierFor(390), 1280, "narrow phones get the lighter 1280px frame tier");
+  eq(frameTierFor(899.98), 1280, "the 899.98px breakpoint is inclusive of the mobile tier");
+  eq(frameTierFor(900), 1920, "wider screens get the crisp 1920px frame tier");
+  eq(frameUrl(1280, 0), "/frames/1280/0001.webp", "frame URL is 1-indexed + zero-padded");
+  eq(frameUrl(1920, 294), "/frames/1920/0295.webp", "frame URL maps the last index to the last file");
+  ok(FRAME_COUNT > 1, "frame manifest reports a real frame count");
 
   const videoPlaneSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
   ok(
-    /debugVideoNoCropFromSearch/.test(videoPlaneSource) &&
-      /debugNoVideoCropRef/.test(videoPlaneSource),
-    "VideoPlane reads the diagnostic no-crop flag once",
-  );
-  ok(
-    /safeVideoHandoff\s*&&\s*!debugNoVideoCropActive\s*&&\s*gp\s*>\s*0/.test(videoPlaneSource),
-    "diagnostic no-crop mode overrides the Safari safe handoff for isolation",
-  );
-  ok(
-    /debugNoVideoCropActive\s*\?\s*0\s*:\s*gp/.test(videoPlaneSource),
-    "diagnostic no-crop mode keeps normal gallery video seeking cadence",
-  );
-  ok(
-    /minIntervalMs:\s*seekMinIntervalRef\.current/.test(videoPlaneSource) &&
-      /videoSeekMinIntervalMsFor\(\s*conservativeSeekingRef\.current,\s*debugNoVideoCropActive\s*\?\s*0\s*:\s*gp/.test(videoPlaneSource),
-    "VideoPlane passes a browser-safe dynamic minimum interval to videoSeekCommandFor",
-  );
-  ok(
-    /requestVideoFrameCallback/.test(videoPlaneSource) &&
-      /metadata\.mediaTime/.test(videoPlaneSource) &&
-      /videoSeekSettled/.test(videoPlaneSource) &&
-      /seekingRef\.current\s*=\s*false/.test(videoPlaneSource),
-    "VideoPlane releases in-flight seeks from requestVideoFrameCallback metadata",
+    /FrameSequenceLoader/.test(videoPlaneSource) &&
+      /frameIndexFor\(/.test(videoPlaneSource) &&
+      !/document\.createElement\("video"\)/.test(videoPlaneSource) &&
+      !/\.currentTime\s*=/.test(videoPlaneSource),
+    "VideoPlane scrubs the frame sequence (no <video> element / currentTime seeking)",
   );
   ok(
     /shader\.uniforms\.uScreenClip\s*=/.test(videoPlaneSource) &&
@@ -831,7 +853,7 @@ for (const f of FIGURES) {
     "VideoPlane draws black blocks outside the screen clip instead of leaving video visible",
   );
 
-  console.log("✓ video scrub convergence");
+  console.log("✓ frame-sequence scrub + seek helpers");
 }
 
 // ── Browser-safe render profile ─────────────────────────────────────────────

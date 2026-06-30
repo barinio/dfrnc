@@ -318,7 +318,7 @@ export function videoUsesScreenClipFor(
   gp: number,
   conservativeBrowser = false,
 ): boolean {
-  return !conservativeBrowser && gp > 0 && gp < VID_FLY_END;
+  return !conservativeBrowser && gp > 0 && gp < VID_MORPH_END;
 }
 
 export function videoHiddenForSafeHandoff(
@@ -455,6 +455,10 @@ export function galleryTitleFrameFracForCard(cp: number): number {
   if (c <= 6) return TITLE_F_DESIGN;
   if (c <= 7) return lerp(TITLE_F_DESIGN, TITLE_F_GROSS, c - 6);
   return TITLE_F_GROSS;
+}
+
+export function galleryTitlesVisibleFor(gp: number, cardExit: number): boolean {
+  return gp > 1e-4 && cardExit < 0.999;
 }
 
 // ── Stepped image-card conveyor + hold-aligned titles ────────────────────────

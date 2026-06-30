@@ -7,6 +7,7 @@ import type { AnimationItem } from "lottie-web";
 import titlesData from "../assets/titles.json";
 import {
   galleryTitleFrameFor,
+  galleryTitlesVisibleFor,
   isGalleryTitleHoldFrame,
   GUTTER,
   MAX_ASPECT,
@@ -110,6 +111,8 @@ export default function GalleryTitles({
       texRef.current = tex;
       setTexture(tex);
       anim.goToAndStop(0, true);
+      tex.needsUpdate = true;
+      lastFrameRef.current = 0;
     };
     anim.addEventListener("DOMLoaded", handleLoaded);
 
@@ -146,15 +149,17 @@ export default function GalleryTitles({
 
     // Visible for the whole gallery (gp > 0) — including the video card phase.
     // The titles no longer FADE out at the end; instead they SLIDE off (below).
-    const visible = gp > 1e-4 ? 1 : 0;
-    if (matTopRef.current) matTopRef.current.opacity = visible;
-    if (matBottomRef.current) matBottomRef.current.opacity = visible;
-
     // Exit at card 9: as the last image card flies up (cardExitRef → 1, i.e. the
     // unified cp climbs 8→9), the TOP title slides UP off the top and the BOTTOM
     // title slides DOWN off the bottom, in lockstep with the leaving card. Driven
     // every frame (the slide moves while the held last frame is static).
     const exit = THREE.MathUtils.clamp(cardExitRef.current, 0, 1);
+    const titleVisible = galleryTitlesVisibleFor(gp, exit);
+    if (meshTopRef.current) meshTopRef.current.visible = titleVisible;
+    if (meshBottomRef.current) meshBottomRef.current.visible = titleVisible;
+    if (matTopRef.current) matTopRef.current.opacity = titleVisible ? 1 : 0;
+    if (matBottomRef.current) matBottomRef.current.opacity = titleVisible ? 1 : 0;
+
     const off = exit * fullHeight * (1 + TITLE_EXIT_OVERSCAN);
     if (meshTopRef.current) {
       meshTopRef.current.renderOrder = 2;
@@ -165,6 +170,7 @@ export default function GalleryTitles({
       meshBottomRef.current.position.y = -planeHeight / 4 - off;
     }
 
+    if (!titleVisible) return;
     if (frame === lastFrameRef.current) return;
     const minUploadGap =
       Number.isFinite(textureFrameRate) && textureFrameRate > 0

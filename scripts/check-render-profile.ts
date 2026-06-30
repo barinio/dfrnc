@@ -53,7 +53,7 @@ eq(safariPhone.safeVideoHandoff, false, "Safari keeps the live video visible thr
 
 const safariWide = createRenderProfile({ userAgent: safariDesktop, width: 1280 });
 eq(safariWide.dpr[1], 1.15, "desktop Safari canvas DPR is capped lower than Chrome");
-eq(safariWide.maxCanvasTextureDpr, 1.25, "desktop Safari Lottie upload DPR is capped");
+eq(safariWide.maxCanvasTextureDpr, 1.15, "desktop Safari Lottie upload DPR is capped");
 eq(safariWide.safeVideoHandoff, false, "desktop Safari keeps the live video visible through the gallery text handoff");
 
 const firefoxWide = createRenderProfile({ userAgent: firefoxDesktop, width: 1280 });
@@ -67,8 +67,8 @@ eq(chromeWide.enablePostFx, true, "desktop Chrome keeps postprocessing");
 eq(chromeWide.antialias, false, "desktop Chrome uses SMAA instead of MSAA");
 eq(chromeWide.figureMaterialMode, "full", "desktop Chrome keeps full figure materials");
 eq(chromeWide.enableEnvironment, true, "desktop Chrome keeps PMREM environment");
-eq(chromeWide.maxCanvasTextureDpr, Infinity, "desktop Chrome keeps uncapped Lottie DPR");
-eq(chromeWide.textureFrameRate, Infinity, "desktop Chrome keeps uncapped texture uploads");
+eq(chromeWide.maxCanvasTextureDpr, 1.5, "desktop Chrome caps Lottie upload DPR");
+eq(chromeWide.textureFrameRate, 30, "desktop Chrome caps canvas-texture upload rate");
 eq(chromeWide.safeVideoHandoff, false, "desktop Chrome keeps the live WebGL video-card handoff");
 
 console.log("render profile assertions passed");

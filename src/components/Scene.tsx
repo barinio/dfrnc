@@ -457,7 +457,6 @@ export default function Scene() {
             galleryRef={galleryRef}
             phase={phase}
             onReady={handleVideoReady}
-            safeVideoHandoff={safeVideoHandoff}
           />
           <GalleryBackdrop galleryRef={galleryRef} />
           <PostFxDriver noiseRef={noiseRef} toneMapRef={toneMapRef} scrollRef={scrollRef} phase={phase} />

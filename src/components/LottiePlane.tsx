@@ -6,7 +6,7 @@ import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import animationData from "../assets/animation.json";
 import { LOTTIE_TOTAL_S, DEFT_DROP_S } from "../constants";
-import { lottieTimeFor, lottieBleedFor } from "../playback";
+import { lottieTimeFor, lottieBleedFor, lottiePlaneVisibleFor } from "../playback";
 import type { Phase } from "../playback";
 
 export type IntroStage = "loader" | "drop" | "free";
@@ -217,6 +217,12 @@ export default function LottiePlane({
       if (Math.abs(target - smoothSecRef.current) < 1 / 120)
         smoothSecRef.current = target;
       tSec = smoothSecRef.current;
+    }
+    const visible = lottiePlaneVisibleFor(tSec);
+    if (meshRef.current) meshRef.current.visible = visible;
+    if (!visible) {
+      lastTimeRef.current = tSec;
+      return;
     }
     if (tSec === lastTimeRef.current) return;
     const minUploadGap =

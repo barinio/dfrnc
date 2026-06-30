@@ -2,80 +2,50 @@ import { useCallback, useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import { useThree, useFrame } from "@react-three/fiber";
 import * as THREE from "three";
-import {
-  videoStateFor,
-  videoMasterTimeFor,
-  VIDEO_SEEK_SETTLE_EPS,
-  VIDEO_SEEK_STALL_MS,
-  videoSeekMinIntervalMsFor,
-  videoSeekCommandFor,
-  videoSeekSettled,
-} from "../playback";
+import { videoStateFor, videoMasterTimeFor } from "../playback";
 import {
   videoCardMorphFor,
   videoUsesScreenClipFor,
-  videoHiddenForSafeHandoff,
   CARD_RADIUS_VH,
 } from "../gallery";
 import { VID_FLY_END } from "../constants";
-import { debugVideoNoCropFromSearch } from "../debug/videoFlags";
+import {
+  FrameSequenceLoader,
+  frameIndexFor,
+  frameTierForScreen,
+  FRAME_COUNT,
+} from "../frames";
 import type { Phase } from "../playback";
 
-// VideoPlane renders the FPV video as an in-scene mesh at z = −3.5, between
-// the Lottie plane (z = −3) and the gradient background (z = −4). Because it
-// is inside the scene the Noise/SMAA postprocessing covers it (consistent film
-// grain), and the white Lottie letters (opaque, alphaTest) occlude it while
-// the alphaTest gaps reveal the bright video behind the typography.
+// VideoPlane renders the FPV clip as an in-scene mesh at z = −3.5, between the
+// Lottie plane (z = −3) and the gradient background (z = −4). It is scrubbed by
+// scroll: the clip is a pre-extracted WebP FRAME SEQUENCE (public/frames/<tier>/,
+// see scripts/extract-frames.mjs) and each scroll position paints its frame as a
+// texture — NOT an HTMLVideoElement. Seeking/playing a <video> per scroll frame
+// is unreliable on iOS/WebKit (offscreen muted-video decode suspends, paused
+// seeks are throughput-limited → the "church frame" froze). An Image→texture
+// upload is frame-accurate and rock-solid on every browser.
 //
-// In the gallery (gp > 0) the same plane MORPHS into slide #1: it crops from
-// the top, then horizontally, down to an image-card rect (gaining rounded
-// corners via a fragment SDF mask), holds, then flies straight UP off the top
-// FULLY OPAQUE (no dissolve — matching the image cards) — scrubbing the whole
-// time (videoMasterTimeFor). The crop is a true texture sub-window of the
-// full-bleed cover image (no squash); the black GalleryBackdrop sits behind it
-// (z = −3.6) so the vacated area reads black.
+// In the gallery (gp > 0) the same plane MORPHS into slide #1: it crops from the
+// top, then horizontally, down to an image-card rect (gaining rounded corners via
+// a fragment SDF mask), holds, then flies straight UP off the top FULLY OPAQUE —
+// scrubbing the whole time (videoMasterTimeFor → frameIndexFor). The crop is a
+// true texture sub-window of the full-bleed cover image (no squash). While the
+// crop is actively forming a full-screen screen-space clip is used; once the card
+// is formed, the real card mesh takes over. The black GalleryBackdrop sits behind
+// it (z = −3.6) so the vacated area reads black.
 
 const PLANE_Z = -3.5;
-
-// Scrub robustness: the paused video is seeked every frame. Issue at most ONE
-// seek at a time (browsers silently DROP coalesced seeks, and the last one can
-// be lost → the frame freezes) and always re-converge to the latest target once
-// the previous seek settles.
-const SEEK_EPS = VIDEO_SEEK_SETTLE_EPS; // ~half a 25 fps frame; above seek jitter
-const SEEK_STALL_MS = VIDEO_SEEK_STALL_MS; // a seek whose `seeked` never fires is treated as dropped
-// The clip is 25 fps, so seeking faster than ~one decoded frame cannot reveal
-// extra detail. Safari/Firefox decoders are much more prone to dropped/coalesced
-// seeks, so give them a wider gap between paused-video seeks.
-function prefersConservativeVideoSeeking(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent;
-  const isFirefox = /Firefox\//.test(ua);
-  const isSafari =
-    /Safari\//.test(ua) && !/Chrom(e|ium)\//.test(ua) && !/CriOS\//.test(ua);
-  const isIOS = /iP(ad|hone|od)/.test(ua);
-  return isFirefox || isSafari || isIOS;
-}
-// Responsive source: phones get the lighter 720p (16.5 MB — plenty sharp on a
-// small screen, far easier on mobile data), wide screens the crisp full-bleed
-// 1080p (30.5 MB). MUST match the media-scoped <link rel=preload> in index.html
-// so the preloaded file is reused, not fetched twice.
-const SMALL_SCREEN_MQ = "(max-width: 899.98px)";
-function videoSrcForScreen(): string {
-  const small =
-    typeof window !== "undefined" && window.matchMedia(SMALL_SCREEN_MQ).matches;
-  return import.meta.env.BASE_URL + (small ? "fpv-720.mp4" : "fpv.mp4");
-}
 
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
   galleryRef: MutableRefObject<number>;
   phase: Phase;
-  // Fired once the first decodable frame is ready (or on error) — lets Scene hold
-  // the intro loader until the video can actually render at its sp=0.63 reveal,
-  // so the user never scrolls into an empty screen. Called on error too so a
-  // failed/slow video can never deadlock the loader (Scene also has a timeout).
+  // Fired once the first frame is decodable (or on error) — lets Scene hold the
+  // intro loader until the clip can render at its sp=0.63 reveal, so the user
+  // never scrolls into an empty screen. Called on error too so a failed/slow
+  // sequence can never deadlock the loader (Scene also has a timeout).
   onReady?: () => void;
-  safeVideoHandoff?: boolean;
 }
 
 export default function VideoPlane({
@@ -83,32 +53,17 @@ export default function VideoPlane({
   galleryRef,
   phase,
   onReady,
-  safeVideoHandoff = false,
 }: VideoPlaneProps) {
   const { camera, viewport } = useThree();
   const meshRef = useRef<THREE.Mesh>(null);
   const matRef = useRef<THREE.MeshBasicMaterial>(null);
-  const textureRef = useRef<THREE.VideoTexture | null>(null);
-  // Scrub state: latest desired time (from scroll), the time we last ISSUED a
-  // seek to, whether a seek is in flight, and when it started (stall watchdog).
-  const desiredRef = useRef<number>(-1);
-  const issuedRef = useRef<number>(-1);
-  const seekingRef = useRef(false);
-  const seekStartRef = useRef(0);
-  const conservativeSeekingRef = useRef(prefersConservativeVideoSeeking());
-  const debugNoVideoCropRef = useRef(debugVideoNoCropFromSearch());
-  const safeHandoffActiveRef = useRef(false);
-  const seekMinIntervalRef = useRef(
-    videoSeekMinIntervalMsFor(conservativeSeekingRef.current, 0),
-  );
-  // True once the video has a decodable first frame (loadeddata fired).
-  // Buffering starts at page load (component always mounted, preload=auto);
-  // this gate is the slow-network fallback so the plane never shows black.
+  const textureRef = useRef<THREE.Texture | null>(null);
+  const loaderRef = useRef<FrameSequenceLoader | null>(null);
+  const currentImgRef = useRef<HTMLImageElement | null>(null);
+  // True once the first frame is loaded (the sequence can render).
   const readyRef = useRef(false);
-  // Degraded mode per the spec's error handling: latched on 404/decode/data-saver.
-  const failedRef = useRef(false);
-  // Latest onReady, kept in a ref so the video-creating effect (below) never
-  // re-runs — and never recreates the element — when the callback identity changes.
+  // Latest onReady kept in a ref so the loader effect never re-runs on identity
+  // change (it would recreate the whole frame loader).
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
   const notifiedReadyRef = useRef(false);
@@ -120,8 +75,6 @@ export default function VideoPlane({
 
   // Rounded-corner mask uniforms, shared by reference with the patched material
   // (set inside onBeforeCompile) so useFrame can drive them allocation-free.
-  // uSize = the card's world W/H (the mesh scale); uRadius = corner radius in the
-  // same world units (0 = square full-bleed → card radius once morphed).
   const maskUniforms = useRef({
     uRadius: { value: 0 },
     uSize: { value: new THREE.Vector2(1, 1) },
@@ -182,166 +135,84 @@ export default function VideoPlane({
       );
   }, []);
 
-  // Issue a seek toward the latest desired time, but only when no seek is in
-  // flight — coalesced seeks get dropped by the browser and the final one can be
-  // lost, freezing the frame. The `seeked` handler and the stall watchdog re-call
-  // this so we always converge to the newest target. Allocation-free; safe to
-  // call every frame.
-  const issueSeekIfIdle = useCallback((video: HTMLVideoElement) => {
-    const now = performance.now();
-    const want = desiredRef.current;
-    const command = videoSeekCommandFor({
-      desiredTime: want,
-      issuedTime: issuedRef.current,
-      seeking: seekingRef.current,
-      elapsedMs: now - seekStartRef.current,
-      eps: SEEK_EPS,
-      stallMs: SEEK_STALL_MS,
-      minIntervalMs: seekMinIntervalRef.current,
-    });
-    if (command.stalled) seekingRef.current = false;
-    if (!command.issue) return;
-    try {
-      video.currentTime = want;
-      issuedRef.current = want;
-      seekingRef.current = true;
-      seekStartRef.current = now;
-    } catch {
-      issuedRef.current = -1;
-      seekingRef.current = false; // decoder hiccup: the next frame retries
-    }
-  }, []);
-
-  // Create a detached video element imperatively (NOT in the DOM render path).
-  // A detached element loads and seeks fine in all modern browsers.
+  // Create the frame texture + start preloading the sequence. The texture's
+  // .image is swapped to the current frame each scroll tick (texImage2D upload).
   useEffect(() => {
-    const video = document.createElement("video");
-    video.src = videoSrcForScreen();
-    video.muted = true;
-    video.playsInline = true;
-    video.preload = "auto";
-
-    const texture = new THREE.VideoTexture(video);
+    const texture = new THREE.Texture();
     texture.colorSpace = THREE.SRGBColorSpace;
     texture.minFilter = THREE.LinearFilter;
     texture.magFilter = THREE.LinearFilter;
     texture.wrapS = THREE.ClampToEdgeWrapping;
     texture.wrapT = THREE.ClampToEdgeWrapping;
-
-    // VideoTexture auto-updates only while playing. Since we scrub a paused
-    // video we push needsUpdate manually: on `seeked` (and re-converge to the
-    // latest target) and, more robustly, whenever the decoder presents a frame.
-    const onSeeked = () => {
-      seekingRef.current = false;
-      texture.needsUpdate = true;
-      if (!safeHandoffActiveRef.current) {
-        issueSeekIfIdle(video); // chase the newest target if scroll moved meanwhile
-      }
-    };
-    const onLoaded = () => {
-      readyRef.current = true;
-      texture.needsUpdate = true;
-      notifyReady(); // first frame decodable → let the loader release
-    };
-    const onError = () => {
-      failedRef.current = true;
-      notifyReady(); // don't deadlock the loader on a failed video
-    };
-    video.addEventListener("seeked", onSeeked);
-    video.addEventListener("loadeddata", onLoaded);
-    video.addEventListener("error", onError);
-
-    // requestVideoFrameCallback fires when a frame is actually composited — a
-    // reliable "the new frame is ready" signal even when `seeked` is flaky
-    // (same-decoded-frame seeks or low readyState don't always fire `seeked`).
-    let rvfcHandle = 0;
-    const rvfc = video as HTMLVideoElement & {
-      requestVideoFrameCallback?: (
-        cb: (now: number, metadata: { mediaTime: number }) => void,
-      ) => number;
-      cancelVideoFrameCallback?: (h: number) => void;
-    };
-    const onVideoFrame = (_now: number, metadata: { mediaTime: number }) => {
-      texture.needsUpdate = true;
-      if (
-        seekingRef.current &&
-        videoSeekSettled(metadata.mediaTime, issuedRef.current)
-      ) {
-        seekingRef.current = false;
-        if (!safeHandoffActiveRef.current) {
-          issueSeekIfIdle(video); // rVFC proves the frame arrived
-        }
-      }
-      if (rvfc.requestVideoFrameCallback)
-        rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
-    };
-    if (rvfc.requestVideoFrameCallback)
-      rvfcHandle = rvfc.requestVideoFrameCallback(onVideoFrame);
-
+    texture.generateMipmaps = false;
     textureRef.current = texture;
-    if (matRef.current) matRef.current.map = texture;
 
-    // Start loading (no append to document needed).
-    video.load();
+    const loader = new FrameSequenceLoader(frameTierForScreen(), FRAME_COUNT, {
+      onFirstReady: () => {
+        readyRef.current = true;
+        notifyReady(); // first frame decodable → let the loader release
+      },
+    });
+    loaderRef.current = loader;
+
+    // Safety net: if the very first frame fails to load, still release the loader
+    // so a stuck sequence can never deadlock the intro (Scene also has a timeout).
+    const failSafe = window.setTimeout(() => notifyReady(), 8000);
 
     return () => {
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("loadeddata", onLoaded);
-      video.removeEventListener("error", onError);
-      if (rvfc.cancelVideoFrameCallback && rvfcHandle)
-        rvfc.cancelVideoFrameCallback(rvfcHandle);
+      window.clearTimeout(failSafe);
+      loader.dispose();
+      loaderRef.current = null;
       texture.dispose();
       textureRef.current = null;
-      // Detach source to release network/decoder resources.
-      video.src = "";
-      video.load();
+      currentImgRef.current = null;
     };
-  }, [issueSeekIfIdle, notifyReady]);
+  }, [notifyReady]);
 
   useFrame(() => {
     const texture = textureRef.current;
     const mat = matRef.current;
     const mesh = meshRef.current;
-    if (!texture || !mat || !mesh) return;
-
-    // Degraded mode: video failed to load (404/decode/data-saver).
-    // Force the mesh invisible before any opacity write so the dark
-    // GradientBackground owns the frame; scroll timeline is unaffected.
-    if (failedRef.current) {
-      mesh.visible = false;
-      return;
-    }
+    const loader = loaderRef.current;
+    if (!texture || !mat || !mesh || !loader) return;
 
     const sp = scrollRef.current;
     const gp = galleryRef.current;
     const aspect = viewport.width / viewport.height;
-    const debugNoVideoCropActive = debugNoVideoCropRef.current && gp > 0;
-    const safeHandoffActive =
-      safeVideoHandoff && !debugNoVideoCropActive && gp > 0;
-    safeHandoffActiveRef.current = safeHandoffActive;
-    const safeHandoffHidden = videoHiddenForSafeHandoff(gp, safeVideoHandoff);
-    // Scrub time spans the whole clip life (past sp = 1 into the gallery), so
-    // the frame never freezes while the card morphs / holds / flies.
+    // Scrub time spans the whole clip life (past sp = 1 into the gallery), so the
+    // frame never freezes while the card morphs / holds / flies.
     const t = videoMasterTimeFor(sp, gp, phase);
     const morph = videoCardMorphFor(gp, aspect);
-    const screenClip =
-      !safeHandoffActive &&
-      !debugNoVideoCropActive &&
-      videoUsesScreenClipFor(gp, conservativeSeekingRef.current);
+    // Full-screen screen-space clip only while the crop is actively forming; once
+    // card-shaped the real card mesh takes over (avoids full-screen overdraw).
+    const screenClip = videoUsesScreenClipFor(gp);
     mesh.renderOrder = gp > 1e-4 && gp < VID_FLY_END ? 1 : 0;
     // sp-based reveal fade-in (behind the typography). morph.opacity is always 1
-    // now — the card flies up OPAQUE (no dissolve), so it is hidden off `visible`
-    // (flown / gp ≥ VID_FLY_END), NOT off opacity.
+    // (the card flies up OPAQUE), so the plane is hidden off `visible` once flown.
     const opacity = videoStateFor(sp, phase).opacity * morph.opacity;
     mat.opacity = opacity;
-    // Never show the plane before the video has a decodable first frame —
-    // sampling a not-yet-ready VideoTexture yields black. readyRef flips true
-    // in the loadeddata listener (early on fast connections; slow-network fallback
-    // keeps the GradientBackground visible until the first frame is decoded).
-    // morph.visible drops false once the card has flown off the top.
-    mesh.visible =
-      readyRef.current && morph.visible && !safeHandoffHidden && opacity > 0.001;
 
+    // Pick + upload the scroll-indexed frame. get() returns the nearest loaded
+    // frame, so a fast scroll that outruns the download holds a near frame
+    // instead of going blank; once decoded the exact frame lands next tick.
+    const idx = frameIndexFor(t);
+    const img = readyRef.current ? loader.get(idx) : null;
+    if (img && img !== currentImgRef.current) {
+      currentImgRef.current = img;
+      texture.image = img;
+      texture.needsUpdate = true;
+      if (mat.map !== texture) {
+        mat.map = texture;
+        mat.needsUpdate = true;
+      }
+    }
+
+    // Never show the plane before a frame is ready (an empty texture is black).
+    mesh.visible =
+      readyRef.current &&
+      currentImgRef.current !== null &&
+      morph.visible &&
+      opacity > 0.001;
     if (!mesh.visible) return;
 
     // Camera frustum size at PLANE_Z — the full-bleed reference rect.
@@ -360,74 +231,39 @@ export default function VideoPlane({
     const cardScaleX = (r - l) * fullW;
     const cardScaleY = (cropTop - b) * fullH; // = (placeT - placeB): rise is a translation
 
-    const video = texture.image as HTMLVideoElement;
-    const dur = video.duration;
-    if (Number.isFinite(dur) && dur > 0) {
-      // Clamp short of the end so the held last frame never flickers black.
-      let target = Math.min(t * dur, dur - 0.05);
-
-      // Buffer-aware clamp: on a slow connection a fast scroll can outrun the
-      // download. Don't seek past what's actually buffered — hold on the latest
-      // available frame (the scrub then catches up as more arrives) instead of
-      // stalling on a doomed seek into an un-downloaded region. Progressive
-      // download means the range covering us starts at/near 0; leave a small
-      // margin so the seek lands on a frame that is definitely decoded.
-      const buffered = video.buffered;
-      if (buffered.length > 0) {
-        let end = 0;
-        for (let i = 0; i < buffered.length; i++) {
-          if (buffered.start(i) <= target) end = Math.max(end, buffered.end(i));
-        }
-        if (end > 0) target = Math.min(target, Math.max(end - 0.1, 0));
-      }
-
-      // Full-bleed cover-crop: maps the 16:9 source onto the WHOLE screen,
-      // always CENTERED (no pan — the clip is framed center).
-      const videoAspect = 16 / 9;
-      let repeatX: number, repeatY: number, offsetX: number, offsetY: number;
-      if (aspect < videoAspect) {
-        // Viewport narrower than video (portrait phones): crop sides, centered.
-        repeatX = aspect / videoAspect;
-        repeatY = 1;
-        offsetX = (1 - repeatX) * 0.5;
-        offsetY = 0;
-      } else {
-        // Viewport wider/flatter (landscape): crop top/bottom, centered.
-        repeatX = 1;
-        repeatY = videoAspect / aspect;
-        offsetX = 0;
-        offsetY = (1 - repeatY) / 2;
-      }
-
-      if (screenClip || safeHandoffActive || debugNoVideoCropActive) {
-        // During the morph/hold, leave the video full-screen and let the shader
-        // reveal only the current screen rect. This avoids per-frame mesh/UV
-        // crop churn right at the visual cut.
-        texture.repeat.set(repeatX, repeatY);
-        texture.offset.set(offsetX, offsetY);
-      } else {
-        // Fly-up uses a real card mesh with the SUB-window frozen to the card,
-        // so the video content moves with the card as it leaves the frame.
-        texture.repeat.set(repeatX * (r - l), repeatY * (cropTop - b));
-        texture.offset.set(offsetX + repeatX * l, offsetY + repeatY * b);
-      }
-
-      // Robust converging scrub: record the desired time and issue a seek only
-      // when idle; the `seeked` / stall paths converge to the latest target, so a
-      // dropped coalesced seek can never leave the frame frozen.
-      if (!safeHandoffActive) {
-        seekMinIntervalRef.current = videoSeekMinIntervalMsFor(
-          conservativeSeekingRef.current,
-          debugNoVideoCropActive ? 0 : gp,
-        );
-        desiredRef.current = target;
-        issueSeekIfIdle(video);
-      }
+    // Full-bleed cover-crop: maps the 16:9 source frame onto the WHOLE screen,
+    // always CENTERED (no pan — the clip is framed center).
+    const frameAspect = 16 / 9;
+    let repeatX: number, repeatY: number, offsetX: number, offsetY: number;
+    if (aspect < frameAspect) {
+      // Viewport narrower than the frame (portrait phones): crop sides, centered.
+      repeatX = aspect / frameAspect;
+      repeatY = 1;
+      offsetX = (1 - repeatX) * 0.5;
+      offsetY = 0;
+    } else {
+      // Viewport wider/flatter (landscape): crop top/bottom, centered.
+      repeatX = 1;
+      repeatY = frameAspect / aspect;
+      offsetX = 0;
+      offsetY = (1 - repeatY) / 2;
     }
 
-    // Placement: morph/hold is full-screen video with a screen-space clip mask;
+    if (screenClip) {
+      // During the active morph, leave the frame full-screen and let the shader
+      // reveal only the current screen rect.
+      texture.repeat.set(repeatX, repeatY);
+      texture.offset.set(offsetX, offsetY);
+    } else {
+      // Fly-up uses a real card mesh with the SUB-window frozen to the card, so
+      // the frame content moves with the card as it leaves the frame.
+      texture.repeat.set(repeatX * (r - l), repeatY * (cropTop - b));
+      texture.offset.set(offsetX + repeatX * l, offsetY + repeatY * b);
+    }
+
+    // Placement: morph/hold is full-screen frame with a screen-space clip mask;
     // fly-up switches to the card mesh so its sampled content travels with it.
-    const keepFullBleed = screenClip || safeHandoffActive || debugNoVideoCropActive;
+    const keepFullBleed = screenClip;
     const scaleX = keepFullBleed ? fullW : cardScaleX;
     const scaleY = keepFullBleed ? fullH : cardScaleY;
     mesh.scale.set(scaleX, scaleY, 1);
@@ -438,8 +274,8 @@ export default function VideoPlane({
     );
     mesh.rotation.set(0, 0, 0);
 
-    // Drive the masks. screenClip mode uses a full-screen mesh plus a
-    // screen-space rounded rect; card mode uses the local rounded-rect mask.
+    // Drive the masks. screenClip mode uses a full-screen mesh plus a screen-space
+    // rounded rect; card mode uses the local rounded-rect mask.
     maskUniforms.current.uSize.value.set(scaleX, scaleY);
     maskUniforms.current.uRadius.value = keepFullBleed
       ? 0

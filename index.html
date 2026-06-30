@@ -5,14 +5,14 @@
         <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
         <link rel="icon" href="./public/favicon.ico" />
         <title>DFRNC</title>
-        <!-- Start streaming the scrubbed FPV clip during HTML parse (before the
-             Canvas mounts) so it has the maximum buffer runway before it reveals
-             at sp=0.63. Media-scoped: desktops get the crisp 1080p, phones the
-             lighter 720p — matching VideoPlane's src pick (keep the breakpoint in
-             sync) so the preload is reused, not double-fetched. fetchpriority=low
-             yields to the JS/loader assets. -->
-        <link rel="preload" as="video" href="./fpv.mp4" type="video/mp4" media="(min-width: 900px)" fetchpriority="low" />
-        <link rel="preload" as="video" href="./fpv-720.mp4" type="video/mp4" media="(max-width: 899.98px)" fetchpriority="low" />
+        <!-- Warm the FIRST frame of the scrubbed clip during HTML parse so the
+             intro loader can release as soon as it decodes (the rest of the
+             sequence streams in over the ~440vh runway before the reveal at
+             sp=0.63). Media-scoped to match frames.ts's tier breakpoint (≤899.98px
+             → 1280px tier, else 1920px) so the preload is reused, not double-
+             fetched. fetchpriority=low yields to the JS/loader assets. -->
+        <link rel="preload" as="image" href="./frames/1280/0001.webp" type="image/webp" media="(max-width: 899.98px)" fetchpriority="low" />
+        <link rel="preload" as="image" href="./frames/1920/0001.webp" type="image/webp" media="(min-width: 900px)" fetchpriority="low" />
     </head>
     <body>
         <div id="root"></div>

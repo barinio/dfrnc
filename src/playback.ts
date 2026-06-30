@@ -36,7 +36,7 @@ function clamp01(x: number): number {
 export const VIDEO_SEEK_SETTLE_EPS = 1 / 50;
 export const VIDEO_SEEK_STALL_MS = 400;
 export const VIDEO_SEEK_BASE_INTERVAL_MS = 44;
-export const VIDEO_SEEK_CONSERVATIVE_INTERVAL_MS = 96;
+export const VIDEO_SEEK_CONSERVATIVE_INTERVAL_MS = 64;
 
 export function videoSeekMinIntervalMsFor(
   conservativeBrowser: boolean,
@@ -100,6 +100,28 @@ export function videoSeekCommandFor({
     return { issue: false, stalled: false };
   }
   return { issue: true, stalled };
+}
+
+export interface VideoBufferedRangesLike {
+  length: number;
+  start(index: number): number;
+  end(index: number): number;
+}
+
+const VIDEO_BUFFER_MARGIN_S = 0.1;
+
+export function videoBufferedSeekTargetFor(
+  target: number,
+  buffered: VideoBufferedRangesLike,
+  clampToBuffered: boolean,
+  margin = VIDEO_BUFFER_MARGIN_S,
+): number {
+  if (!clampToBuffered || buffered.length <= 0) return target;
+  let end = 0;
+  for (let i = 0; i < buffered.length; i++) {
+    if (buffered.start(i) <= target) end = Math.max(end, buffered.end(i));
+  }
+  return end > 0 ? Math.min(target, Math.max(end - margin, 0)) : target;
 }
 
 // Lottie timeline (seconds). The reveal starts at DEFT_DROP_S — the loader has
@@ -231,4 +253,10 @@ export function videoMasterTimeFor(sp: number, gp: number, phase: Phase): number
 // motion the swap still follows scroll (no animation plays).
 export function lottieBleedFor(sp: number): number {
   return smoothstep((sp - VIDEO_START) / VIDEO_FADE);
+}
+
+const LOTTIE_TRANSPARENT_TAIL_EPS = 1 / 120;
+
+export function lottiePlaneVisibleFor(tSec: number): boolean {
+  return tSec < LOTTIE_TOTAL_S - LOTTIE_TRANSPARENT_TAIL_EPS;
 }
