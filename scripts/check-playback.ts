@@ -896,7 +896,7 @@ for (const f of FIGURES) {
   eq(safariProfile.dpr[1], 2, "iOS Safari renders up to 2x (crisp typography/figures); adaptive floor still 1x");
   eq(safariProfile.dpr[0], 1, "iOS Safari can drop to 1x under load");
   eq(safariProfile.enablePostFx ? 1 : 0, 0, "Safari skips postprocessing");
-  eq(safariProfile.antialias ? 1 : 0, 1, "Safari uses MSAA (no postFx) to smooth figure edges");
+  eq(safariProfile.antialias ? 1 : 0, 0, "Safari relies on 2x supersampling (not MSAA) for AA — lighter on weaker phones");
   ok(safariProfile.precision === "mediump", "Safari uses the lightweight shader precision");
   eq(safariProfile.maxCanvasTextureDpr, 2, "Safari renders the Lottie text canvas at 2x for crisp letters");
   eq(safariProfile.textureFrameRate, 30, "Safari caps texture upload rate");

@@ -57,12 +57,18 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
       dpr: [1, narrow ? 2 : 1.5],
       performanceMin: 0.45,
       performanceDebounce: 700,
-      slowFrameMs: 20,
-      slowFrameLimit: 5,
+      // Tolerant regressor: only scale the DPR down after SUSTAINED slowness, not
+      // on a brief dip — so a weaker phone HOLDS the crisp 2× pass (far nicer than
+      // a jagged 1×) instead of twitching down. R3F still drops it if a device
+      // genuinely can't keep up over time.
+      slowFrameMs: 28,
+      slowFrameLimit: 10,
       enablePostFx: false,
-      // No postprocessing on this path, so the default framebuffer's MSAA is live
-      // — cheap hardware antialiasing for the glass-figure geometry edges.
-      antialias: true,
+      // Antialiasing comes from the 2× supersampling (DPR above) — that already
+      // smooths both the typography and the glass-figure edges. MSAA is left OFF:
+      // it added the most GPU cost for the least extra gain, so dropping it keeps
+      // the higher DPR affordable on weaker phones without changing the look.
+      antialias: false,
       precision: "mediump",
       // Render the Lottie/title canvas at the same higher DPR so the text SOURCE
       // is crisp (otherwise a low-res texture just gets magnified on the 2× canvas).

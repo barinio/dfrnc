@@ -44,7 +44,7 @@ const safariPhone = createRenderProfile({ userAgent: safariIOS, width: 390 });
 eq(safariPhone.dpr[1], 2, "iOS Safari renders up to 2x so the typography/figures aren't staircased (adaptive floor stays 1x)");
 eq(safariPhone.dpr[0], 1, "iOS Safari can still drop to 1x under load (adaptive floor)");
 eq(safariPhone.enablePostFx, false, "Safari skips postprocessing");
-eq(safariPhone.antialias, true, "Safari uses MSAA (no postFx path) to smooth the glass-figure edges");
+eq(safariPhone.antialias, false, "Safari relies on 2x supersampling (not MSAA) for AA — keeps the higher DPR affordable on weaker phones");
 eq(safariPhone.precision, "mediump", "Safari uses the lightweight shader precision");
 eq(safariPhone.figureMaterialMode, "full", "Safari keeps color-preserving figure materials");
 eq(safariPhone.enableEnvironment, false, "Safari skips PMREM environment setup");
