@@ -9,16 +9,20 @@
 // Requires ffmpeg (decode/scale) + cwebp (this machine's ffmpeg is webp
 // DECODE-only, so we go video → PNG via ffmpeg, then PNG → WebP via cwebp).
 //
-//   node scripts/extract-frames.mjs [--in public/fpv.mp4] [--stride 2] [--q 80]
+//   node scripts/extract-frames.mjs [--in media/fpv.mp4] [--stride 2] [--q 80]
 //
-// --stride N keeps every Nth source frame (source is 25fps/589 frames; stride 2
-// ⇒ ~295 frames ≈ 12.5fps, the "~300 frames" choice). Writes:
+// The source master is NOT committed (the deployed site only needs the generated
+// public/frames/ tiers). Drop the original clip at media/fpv.mp4 — gitignored —
+// or pass --in <path> to it. --stride N keeps every Nth source frame (source is
+// 25fps/589 frames; stride 2 ⇒ ~295 frames ≈ 12.5fps, the "~300 frames" choice).
+// Writes:
 //   public/frames/<W>/0001.webp …            (one dir per tier width)
 //   public/frames/manifest.json              { count, digits, ext, tiers:[…] }
+//   src/frameManifest.ts                      (bundled count/tiers for the runtime)
 // Tiers match VideoPlane's responsive source breakpoint (≤899.98px → mobile).
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,6 +41,15 @@ const quality = Number(arg("q", "80"));
 const TIERS = [1280, 1920];
 const DIGITS = 4;
 const outRoot = join(ROOT, "public/frames");
+
+if (!existsSync(input)) {
+  console.error(
+    `extract-frames: source video not found at ${input}\n` +
+      `The master clip is not committed — drop the original at media/fpv.mp4 ` +
+      `(gitignored) or pass --in <path-to-master>.`,
+  );
+  process.exit(1);
+}
 
 console.log(`extract-frames: in=${input} stride=${stride} q=${quality} tiers=${TIERS.join(",")}`);
 
