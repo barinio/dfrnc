@@ -893,11 +893,12 @@ for (const f of FIGURES) {
     "desktop Chrome keeps the full render profile",
   );
   const safariProfile = createRenderProfile({ userAgent: safariIOS, width: 390 });
-  eq(safariProfile.dpr[1], 1, "iOS Safari uses the lightweight canvas DPR");
+  eq(safariProfile.dpr[1], 2, "iOS Safari renders up to 2x (crisp typography/figures); adaptive floor still 1x");
+  eq(safariProfile.dpr[0], 1, "iOS Safari can drop to 1x under load");
   eq(safariProfile.enablePostFx ? 1 : 0, 0, "Safari skips postprocessing");
-  eq(safariProfile.antialias ? 1 : 0, 0, "Safari skips MSAA");
+  eq(safariProfile.antialias ? 1 : 0, 1, "Safari uses MSAA (no postFx) to smooth figure edges");
   ok(safariProfile.precision === "mediump", "Safari uses the lightweight shader precision");
-  eq(safariProfile.maxCanvasTextureDpr, 1, "Safari caps Lottie texture DPR");
+  eq(safariProfile.maxCanvasTextureDpr, 2, "Safari renders the Lottie text canvas at 2x for crisp letters");
   eq(safariProfile.textureFrameRate, 30, "Safari caps texture upload rate");
   ok(!safariProfile.safeVideoHandoff, "Safari keeps the video visible through the gallery text handoff");
   ok(

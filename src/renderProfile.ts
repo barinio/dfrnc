@@ -48,15 +48,25 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
 
   if (conservative) {
     return {
-      dpr: [1, narrow ? 1 : 1.15],
+      // Render at up to 2× (phones) / 1.5× (desktop Safari/FF) — capped well below
+      // the phone's native 3× to stay light, but far above 1× so the Lottie
+      // typography + glass figures aren't staircased on a high-DPR screen. The
+      // range is ADAPTIVE: R3F + PerformanceRegressor scale it down toward 1×
+      // on a struggling device, so capable phones get the crisp pass for free
+      // while weaker ones self-optimize.
+      dpr: [1, narrow ? 2 : 1.5],
       performanceMin: 0.45,
       performanceDebounce: 700,
       slowFrameMs: 20,
       slowFrameLimit: 5,
       enablePostFx: false,
-      antialias: false,
+      // No postprocessing on this path, so the default framebuffer's MSAA is live
+      // — cheap hardware antialiasing for the glass-figure geometry edges.
+      antialias: true,
       precision: "mediump",
-      maxCanvasTextureDpr: narrow ? 1 : 1.15,
+      // Render the Lottie/title canvas at the same higher DPR so the text SOURCE
+      // is crisp (otherwise a low-res texture just gets magnified on the 2× canvas).
+      maxCanvasTextureDpr: narrow ? 2 : 1.5,
       textureFrameRate: 30,
       figureMaterialMode: "full",
       enableEnvironment: false,

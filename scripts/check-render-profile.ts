@@ -41,19 +41,20 @@ ok(
 );
 
 const safariPhone = createRenderProfile({ userAgent: safariIOS, width: 390 });
-eq(safariPhone.dpr[1], 1, "iOS Safari uses the lightweight canvas DPR");
+eq(safariPhone.dpr[1], 2, "iOS Safari renders up to 2x so the typography/figures aren't staircased (adaptive floor stays 1x)");
+eq(safariPhone.dpr[0], 1, "iOS Safari can still drop to 1x under load (adaptive floor)");
 eq(safariPhone.enablePostFx, false, "Safari skips postprocessing");
-eq(safariPhone.antialias, false, "Safari skips MSAA");
+eq(safariPhone.antialias, true, "Safari uses MSAA (no postFx path) to smooth the glass-figure edges");
 eq(safariPhone.precision, "mediump", "Safari uses the lightweight shader precision");
 eq(safariPhone.figureMaterialMode, "full", "Safari keeps color-preserving figure materials");
 eq(safariPhone.enableEnvironment, false, "Safari skips PMREM environment setup");
-eq(safariPhone.maxCanvasTextureDpr, 1, "iOS Safari Lottie upload DPR is capped to 1x");
+eq(safariPhone.maxCanvasTextureDpr, 2, "iOS Safari renders the Lottie text canvas at 2x so the letters are crisp");
 eq(safariPhone.textureFrameRate, 30, "Safari caps canvas-texture upload rate");
 eq(safariPhone.safeVideoHandoff, false, "Safari keeps the live video visible through the gallery text handoff");
 
 const safariWide = createRenderProfile({ userAgent: safariDesktop, width: 1280 });
-eq(safariWide.dpr[1], 1.15, "desktop Safari canvas DPR is capped lower than Chrome");
-eq(safariWide.maxCanvasTextureDpr, 1.15, "desktop Safari Lottie upload DPR is capped");
+eq(safariWide.dpr[1], 1.5, "desktop Safari canvas DPR raised for crisper typography/figures");
+eq(safariWide.maxCanvasTextureDpr, 1.5, "desktop Safari Lottie upload DPR raised");
 eq(safariWide.safeVideoHandoff, false, "desktop Safari keeps the live video visible through the gallery text handoff");
 
 const firefoxWide = createRenderProfile({ userAgent: firefoxDesktop, width: 1280 });
