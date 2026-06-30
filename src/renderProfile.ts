@@ -13,7 +13,6 @@ export interface RenderProfile {
   textureFrameRate: number;
   figureMaterialMode: FigureMaterialMode;
   enableEnvironment: boolean;
-  safeVideoHandoff: boolean;
 }
 
 export interface RenderProfileInput {
@@ -76,7 +75,6 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
       textureFrameRate: 30,
       figureMaterialMode: "full",
       enableEnvironment: false,
-      safeVideoHandoff: false,
     };
   }
 
@@ -93,6 +91,5 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
     textureFrameRate: 30,
     figureMaterialMode: "full",
     enableEnvironment: true,
-    safeVideoHandoff: false,
   };
 }

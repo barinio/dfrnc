@@ -8,18 +8,6 @@
       ]
     },
     {
-      "source": "/fpv.mp4",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=86400, stale-while-revalidate=2592000" }
-      ]
-    },
-    {
-      "source": "/fpv-720.mp4",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=86400, stale-while-revalidate=2592000" }
-      ]
-    },
-    {
       "source": "/gallery/(.*)",
       "headers": [
         { "key": "Cache-Control", "value": "public, max-age=86400, stale-while-revalidate=2592000" }

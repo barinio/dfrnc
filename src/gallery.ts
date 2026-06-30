@@ -182,15 +182,15 @@ const IMAGE_STACK_REVEAL_START = 0.1;
 
 // Image cards stay hidden during the vertical video crop, then slide out from
 // the centre while the video is nearly card-shaped.
-export function imageStackRevealFor(gp: number, safeVideoHandoff = false): number {
-  const start = safeVideoHandoff ? GALLERY_BLACK_FADE : IMAGE_STACK_REVEAL_START;
-  const end = safeVideoHandoff ? 0.08 : VID_MORPH_END;
-  return smoothstep(clamp01((gp - start) / (end - start)));
+export function imageStackRevealFor(gp: number): number {
+  return smoothstep(
+    clamp01((gp - IMAGE_STACK_REVEAL_START) / (VID_MORPH_END - IMAGE_STACK_REVEAL_START)),
+  );
 }
 
 // Binary visibility only: the reveal movement handles the entrance, not opacity.
-export function imageStackVisibleFor(gp: number, safeVideoHandoff = false): number {
-  return imageStackRevealFor(gp, safeVideoHandoff) > 0 ? 1 : 0;
+export function imageStackVisibleFor(gp: number): number {
+  return imageStackRevealFor(gp) > 0 ? 1 : 0;
 }
 
 // ── Card-stack distribution inside the PDF's 96vh × 64vh frame ───────────────
@@ -319,13 +319,6 @@ export function videoUsesScreenClipFor(
   conservativeBrowser = false,
 ): boolean {
   return !conservativeBrowser && gp > 0 && gp < VID_MORPH_END;
-}
-
-export function videoHiddenForSafeHandoff(
-  gp: number,
-  safeVideoHandoff = false,
-): boolean {
-  return safeVideoHandoff && gp >= GALLERY_BLACK_FADE;
 }
 
 // Full-bleed FPV video → gallery slide #1: crop the top first, then the sides,
@@ -491,9 +484,8 @@ export function cardConveyorDisplayedFor(igp: number): number {
 // like the normal card hand-off. Once the video has cleared (gp ≥ VID_FLY_END,
 // exit = 1) it equals the image conveyor's own displayed position. Continuous at
 // the seam (both give 0 at gp = VID_FLY_END). CardStack reads this for d = i − displayed.
-export function galleryStackDisplayedFor(gp: number, safeVideoHandoff = false): number {
+export function galleryStackDisplayedFor(gp: number): number {
   const base = cardConveyorDisplayedFor(imageGalleryProgress(gp));
-  if (safeVideoHandoff) return base;
   return base - (1 - videoCardExitProgressFor(gp));
 }
 

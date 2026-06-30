@@ -29,7 +29,7 @@ function arg(name, def) {
 }
 
 const ROOT = fileURLToPath(new URL("..", import.meta.url));
-const input = join(ROOT, arg("in", "public/fpv.mp4"));
+const input = join(ROOT, arg("in", "media/fpv.mp4"));
 const stride = Number(arg("stride", "2"));
 const quality = Number(arg("q", "80"));
 // width tiers (16:9 source → height = width*9/16). 1280 matches the current

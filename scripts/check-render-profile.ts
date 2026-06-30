@@ -50,17 +50,14 @@ eq(safariPhone.figureMaterialMode, "full", "Safari keeps color-preserving figure
 eq(safariPhone.enableEnvironment, false, "Safari skips PMREM environment setup");
 eq(safariPhone.maxCanvasTextureDpr, 2, "iOS Safari renders the Lottie text canvas at 2x so the letters are crisp");
 eq(safariPhone.textureFrameRate, 30, "Safari caps canvas-texture upload rate");
-eq(safariPhone.safeVideoHandoff, false, "Safari keeps the live video visible through the gallery text handoff");
 
 const safariWide = createRenderProfile({ userAgent: safariDesktop, width: 1280 });
 eq(safariWide.dpr[1], 1.5, "desktop Safari canvas DPR raised for crisper typography/figures");
 eq(safariWide.maxCanvasTextureDpr, 1.5, "desktop Safari Lottie upload DPR raised");
-eq(safariWide.safeVideoHandoff, false, "desktop Safari keeps the live video visible through the gallery text handoff");
 
 const firefoxWide = createRenderProfile({ userAgent: firefoxDesktop, width: 1280 });
 eq(firefoxWide.enablePostFx, false, "desktop Firefox skips postprocessing");
 eq(firefoxWide.figureMaterialMode, "full", "desktop Firefox keeps color-preserving figure materials");
-eq(firefoxWide.safeVideoHandoff, false, "desktop Firefox keeps the live video visible through the gallery text handoff");
 
 const chromeWide = createRenderProfile({ userAgent: chromeDesktop, width: 1280 });
 eq(chromeWide.dpr[1], 1.5, "desktop Chrome keeps the existing DPR cap");
@@ -70,6 +67,5 @@ eq(chromeWide.figureMaterialMode, "full", "desktop Chrome keeps full figure mate
 eq(chromeWide.enableEnvironment, true, "desktop Chrome keeps PMREM environment");
 eq(chromeWide.maxCanvasTextureDpr, 1.5, "desktop Chrome caps Lottie upload DPR");
 eq(chromeWide.textureFrameRate, 30, "desktop Chrome caps canvas-texture upload rate");
-eq(chromeWide.safeVideoHandoff, false, "desktop Chrome keeps the live WebGL video-card handoff");
 
 console.log("render profile assertions passed");

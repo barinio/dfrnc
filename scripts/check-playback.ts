@@ -7,11 +7,6 @@ import {
   figureVisibleFor,
   videoStateFor,
   videoMasterTimeFor,
-  VIDEO_SEEK_SETTLE_EPS,
-  videoSeekMinIntervalMsFor,
-  videoSeekCommandFor,
-  videoSeekSettled,
-  videoBufferedSeekTargetFor,
   lottieBleedFor,
   lottiePlaneVisibleFor,
 } from "../src/playback";
@@ -40,7 +35,6 @@ import {
   isGalleryTitleHoldFrame,
   cardConveyorDisplayedFor,
   galleryStackDisplayedFor,
-  videoHiddenForSafeHandoff,
   cardConveyorFor,
   cardFlyProgressFor,
   galleryCtaFromExit,
@@ -92,7 +86,6 @@ import {
   browserNeedsConservativeRenderProfile,
   createRenderProfile,
 } from "../src/renderProfile";
-import { debugVideoNoCropFromSearch } from "../src/debug/videoFlags";
 
 function eq(actual: number, expected: number, label: string, eps = 1e-9) {
   if (Math.abs(actual - expected) > eps)
@@ -459,8 +452,6 @@ for (const f of FIGURES) {
   eq(imageStackVisibleFor(0), 0, "image stack hidden at exact gallery start");
   eq(imageStackVisibleFor(0.05), 0, "image stack hidden during vertical crop");
   eq(imageStackRevealFor(0.1), 0, "image stack reveal starts after vertical crop");
-  ok(imageStackRevealFor(0.03, true) > 0, "safe handoff starts image stack reveal right after black fade");
-  eq(imageStackVisibleFor(0.03, true), 1, "safe handoff shows the image stack during the early gallery");
   ok(
     imageStackRevealFor((0.1 + VID_MORPH_END) / 2) > 0 &&
       imageStackRevealFor((0.1 + VID_MORPH_END) / 2) < 1,
@@ -485,7 +476,6 @@ for (const f of FIGURES) {
   // slot back at d1 (upper-left "position #2") — NOT directly behind the video.
   // As the video flies away it ramps −1→0, sliding image card 0 into the front d0.
   eq(galleryStackDisplayedFor(VID_MORPH_END), -1, "image card 0 staged at d1 while the video holds (morph end)");
-  eq(galleryStackDisplayedFor(VID_MORPH_END, true), 0, "safe handoff puts image card 0 at the front immediately");
   eq(galleryStackDisplayedFor(VID_HOLD_END), -1, "image card 0 still at d1 through the hold");
   eq(galleryStackDisplayedFor(VID_FLY_END), 0, "image card 0 has reached the front d0 once the video has flown");
   ok(
@@ -734,89 +724,11 @@ for (const f of FIGURES) {
   console.log("✓ stepped conveyor + hold-aligned titles");
 }
 
-// ── Video scrub convergence ─────────────────────────────────────────────────
+// ── Frame-sequence scrub ─────────────────────────────────────────────────
 {
   const videoPlaneParallaxSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
   ok(!/addEventListener\("pointermove"/.test(videoPlaneParallaxSource), "VideoPlane has no pointer parallax listener");
   ok(!/Card-form parallax/.test(videoPlaneParallaxSource), "video card does not run hover parallax");
-
-  ok(debugVideoNoCropFromSearch("?debugVideoNoCrop=1"), "debug video no-crop flag can be enabled by query param");
-  ok(debugVideoNoCropFromSearch("?videoCrop=off"), "debug video crop can be disabled by readable query param");
-  ok(!debugVideoNoCropFromSearch("?videoCrop=on"), "video crop stays enabled by default");
-
-  eq(videoSeekMinIntervalMsFor(false, 0), 44, "Chrome/base video seek interval");
-  eq(videoSeekMinIntervalMsFor(true, 0), 64, "Safari/Firefox animation seek interval");
-  eq(videoSeekMinIntervalMsFor(true, 0.03), 64, "Safari/Firefox keeps scrubbing the video through the gallery text handoff");
-  ok(!videoHiddenForSafeHandoff(0, true), "safe video handoff keeps the video for the gallery boundary frame");
-  ok(!videoHiddenForSafeHandoff(0.01, true), "safe video handoff keeps the frozen video during the black fade");
-  ok(videoHiddenForSafeHandoff(0.02, true), "safe video handoff hides the video once black owns the frame");
-  ok(!videoHiddenForSafeHandoff(0.02, false), "normal browsers keep the video morph visible");
-
-  ok(videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS / 2), "video seek settles within tolerance");
-  ok(!videoSeekSettled(10, 10 + VIDEO_SEEK_SETTLE_EPS * 2), "video seek remains pending outside tolerance");
-  ok(
-    videoSeekCommandFor({
-      desiredTime: 12,
-      issuedTime: 12,
-      seeking: true,
-      elapsedMs: 401,
-    }).issue,
-    "stalled video seek retries even when the latest desired time equals the previously issued time",
-  );
-  ok(
-    !videoSeekCommandFor({
-      desiredTime: 12,
-      issuedTime: 12,
-      seeking: true,
-      elapsedMs: 399,
-    }).issue,
-    "in-flight video seek is not reissued before the stall watchdog expires",
-  );
-  ok(
-    !videoSeekCommandFor({
-      desiredTime: 12.5,
-      issuedTime: 12,
-      seeking: false,
-      elapsedMs: 33,
-      minIntervalMs: 90,
-    }).issue,
-    "video seek is rate-limited before the minimum interval has elapsed",
-  );
-  ok(
-    videoSeekCommandFor({
-      desiredTime: 12.5,
-      issuedTime: 12,
-      seeking: false,
-      elapsedMs: 91,
-      minIntervalMs: 90,
-    }).issue,
-    "video seek resumes after the minimum interval has elapsed",
-  );
-  ok(
-    videoSeekCommandFor({
-      desiredTime: 12.5,
-      issuedTime: 12,
-      seeking: true,
-      elapsedMs: 401,
-      minIntervalMs: 900,
-    }).issue,
-    "stalled video seek bypasses the rate limit",
-  );
-  const partialBuffer = {
-    length: 1,
-    start: () => 0,
-    end: () => 8.4,
-  };
-  eq(
-    videoBufferedSeekTargetFor(16, partialBuffer, true),
-    8.3,
-    "buffer clamp holds Chrome on the latest definitely decoded frame",
-  );
-  eq(
-    videoBufferedSeekTargetFor(16, partialBuffer, false),
-    16,
-    "Safari/iOS bypasses the buffer clamp so it can range-seek past the church frame",
-  );
 
   // ── Frame-sequence scrub (replaces the HTMLVideoElement; see src/frames.ts) ──
   eq(frameIndexFor(0, 295), 0, "frame index: clip start → frame 0");
@@ -875,7 +787,7 @@ for (const f of FIGURES) {
     "VideoPlane draws black blocks outside the screen clip instead of leaving video visible",
   );
 
-  console.log("✓ frame-sequence scrub + seek helpers");
+  console.log("✓ frame-sequence scrub");
 }
 
 // ── Browser-safe render profile ─────────────────────────────────────────────
@@ -900,7 +812,6 @@ for (const f of FIGURES) {
   ok(safariProfile.precision === "mediump", "Safari uses the lightweight shader precision");
   eq(safariProfile.maxCanvasTextureDpr, 2, "Safari renders the Lottie text canvas at 2x for crisp letters");
   eq(safariProfile.textureFrameRate, 30, "Safari caps texture upload rate");
-  ok(!safariProfile.safeVideoHandoff, "Safari keeps the video visible through the gallery text handoff");
   ok(
     safariProfile.figureMaterialMode === "full",
     "Safari keeps color-preserving figure materials",
@@ -921,11 +832,6 @@ for (const f of FIGURES) {
   ok(/maxTextureDpr=\{renderProfile\.maxCanvasTextureDpr\}/.test(sceneSource), "Scene passes the texture DPR cap to Lottie canvases");
   ok(/textureFrameRate=\{renderProfile\.textureFrameRate\}/.test(sceneSource), "Scene passes the texture upload rate cap to Lottie canvases");
   ok(/materialMode=\{renderProfile\.figureMaterialMode\}/.test(sceneSource), "Scene passes the figure material profile to ArcModel");
-  ok(
-    /debugVideoNoCropFromSearch/.test(sceneSource) &&
-      /safeVideoHandoff\s*=\s*renderProfile\.safeVideoHandoff\s*&&\s*!debugVideoNoCrop/.test(sceneSource),
-    "Scene lets the diagnostic no-crop flag override Safari safe handoff globally",
-  );
   ok(/alphaToCoverage/.test(lottiePlaneSource), "LottiePlane uses alpha-to-coverage for smoother alphaTest text edges");
   ok(/alphaToCoverage/.test(galleryTitlesSource), "GalleryTitles uses alpha-to-coverage for smoother alphaTest title edges");
   ok(
