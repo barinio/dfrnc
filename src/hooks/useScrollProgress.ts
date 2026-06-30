@@ -56,15 +56,35 @@ export function useGalleryProgressRef(): MutableRefObject<number> {
   const progress = useRef<number>(0);
 
   useEffect(() => {
+    // Cache innerHeight the SAME way useScrollProgressRef caches trackMax
+    // (recompute only on WIDTH change). This is LOAD-BEARING: galleryProgressFrom
+    // derives the anim-track boundary (animY) from this height, and sp saturates to
+    // 1 at scrollY = ((SCROLL_TRACK_VH-100)/100)·trackMax-height. If gp used LIVE
+    // innerHeight while sp uses the cached one, the two boundaries diverge whenever
+    // the mobile URL bar collapses (innerHeight grows): sp caps at 1 while gp is
+    // still 0 → a DEAD ZONE at the sp→gp seam where the scrub freezes on the
+    // boundary frame (~247) until the user scrolls past it, and scrolling back
+    // jumps. One shared, stable height keeps the seam continuous.
+    let ih = window.innerHeight;
+    let lastWidth = window.innerWidth;
+
     const read = () => {
-      progress.current = galleryProgressFrom(window.scrollY, window.innerHeight);
+      progress.current = galleryProgressFrom(window.scrollY, ih);
     };
+    const onResize = () => {
+      if (window.innerWidth !== lastWidth) {
+        lastWidth = window.innerWidth;
+        ih = window.innerHeight;
+      }
+      read();
+    };
+
     window.addEventListener("scroll", read, { passive: true });
-    window.addEventListener("resize", read);
+    window.addEventListener("resize", onResize);
     read();
     return () => {
       window.removeEventListener("scroll", read);
-      window.removeEventListener("resize", read);
+      window.removeEventListener("resize", onResize);
     };
   }, []);
 

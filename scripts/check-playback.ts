@@ -856,6 +856,12 @@ for (const f of FIGURES) {
       !/\.currentTime\s*=/.test(videoPlaneSource),
     "VideoPlane scrubs the frame sequence (no <video> element / currentTime seeking)",
   );
+  const scrollHookSrc = readFileSync(new URL("../src/hooks/useScrollProgress.ts", import.meta.url), "utf8");
+  ok(
+    /galleryProgressFrom\(window\.scrollY,\s*ih\)/.test(scrollHookSrc) &&
+      !/galleryProgressFrom\([^)]*window\.innerHeight/.test(scrollHookSrc),
+    "gallery progress uses a CACHED height (not live innerHeight) so the sp→gp seam stays aligned when the mobile URL bar collapses — no dead-zone freeze on the boundary frame",
+  );
   ok(
     /shader\.uniforms\.uScreenClip\s*=/.test(videoPlaneSource) &&
       /shader\.uniforms\.uClipRect\s*=/.test(videoPlaneSource) &&
