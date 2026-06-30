@@ -15,7 +15,7 @@ import {
   lottieBleedFor,
   lottiePlaneVisibleFor,
 } from "../src/playback";
-import { frameIndexFor, frameTierFor, frameUrl, FRAME_COUNT } from "../src/frames";
+import { frameIndexFor, frameTierFor, frameUrl, FRAME_COUNT, buildCoarseToFineOrder } from "../src/frames";
 import {
   DEFT_DROP_S,
   LOTTIE_INTRO_S,
@@ -831,6 +831,22 @@ for (const f of FIGURES) {
   eq(frameUrl(1280, 0), "/frames/1280/0001.webp", "frame URL is 1-indexed + zero-padded");
   eq(frameUrl(1920, 294), "/frames/1920/0295.webp", "frame URL maps the last index to the last file");
   ok(FRAME_COUNT > 1, "frame manifest reports a real frame count");
+
+  // Coarse-to-fine load order (spreads coverage across the whole clip first, so a
+  // scroll that outruns the download never sticks on a single load frontier).
+  {
+    const order = buildCoarseToFineOrder(295);
+    eq(order.length, 295, "coarse-to-fine order is a full permutation (length = count)");
+    eq(new Set(order).size, 295, "coarse-to-fine order has no duplicates");
+    eq(Math.min(...order), 0, "coarse-to-fine covers frame 0");
+    eq(Math.max(...order), 294, "coarse-to-fine covers the last frame");
+    eq(order[0], 0, "coarse-to-fine starts at frame 0 (the reveal start / loader gate)");
+    eq(order[1], 294, "coarse-to-fine loads the far end second (spread the ends first)");
+    const early = order.slice(0, 40).sort((a, b) => a - b);
+    let maxGap = 0;
+    for (let i = 1; i < early.length; i++) maxGap = Math.max(maxGap, early[i] - early[i - 1]);
+    ok(maxGap <= 16, "first 40 frames are spread across the clip (max gap ≤16, not a sequential front)");
+  }
 
   const videoPlaneSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
   ok(

@@ -47,6 +47,32 @@ export function frameIndexFor(t: number, count = FRAME_COUNT): number {
   return Math.min(Math.max(i, 0), count - 1);
 }
 
+// Load order: COARSE-TO-FINE across the whole clip, NOT sequential 0→N. A
+// sequential download has a single "front", so a scroll that outruns it shows a
+// frame stuck at the front until it catches up (the church-frame freeze). Loading
+// 0, N-1, N/2, then quarters, eighths, … spreads coverage over the WHOLE range
+// first, so at ANY scroll position a nearby frame is already loaded — get()'s
+// ±window fallback then resolves within a couple of frames while the rest fill in.
+export function buildCoarseToFineOrder(n: number): number[] {
+  const order: number[] = [];
+  const seen = new Uint8Array(Math.max(n, 0));
+  const add = (x: number) => {
+    const i = Math.round(x);
+    if (i >= 0 && i < n && !seen[i]) {
+      seen[i] = 1;
+      order.push(i);
+    }
+  };
+  if (n <= 0) return order;
+  add(0);
+  add(n - 1);
+  for (let div = 2; div < n * 2; div *= 2) {
+    for (let k = 1; k < div; k += 2) add((k / div) * (n - 1));
+  }
+  for (let i = 0; i < n; i++) add(i); // safety net: guarantee a full permutation
+  return order;
+}
+
 export interface FrameLoaderOptions {
   concurrency?: number;
   onFirstReady?: () => void;
@@ -64,6 +90,9 @@ export class FrameSequenceLoader {
   readonly count: number;
   private images: (HTMLImageElement | null)[];
   private loaded: boolean[];
+  private readonly order: number[];
+  private readonly retryQueue: number[] = [];
+  private attempts: Uint8Array;
   private nextToQueue = 0;
   private inFlight = 0;
   private readonly concurrency: number;
@@ -71,24 +100,33 @@ export class FrameSequenceLoader {
   private onFirst?: () => void;
   private firstFired = false;
   loadedCount = 0;
+  lastResolved = -1; // index get() last returned (diagnostic; -1 = none)
+
+  isLoaded(i: number): boolean {
+    return this.loaded[i] ?? false;
+  }
 
   constructor(tier: number, count: number, opts: FrameLoaderOptions = {}) {
     this.tier = tier;
     this.count = count;
     this.images = new Array(count).fill(null);
     this.loaded = new Array(count).fill(false);
+    this.attempts = new Uint8Array(Math.max(count, 0));
+    this.order = buildCoarseToFineOrder(count);
     this.concurrency = opts.concurrency ?? 8;
     this.onFirst = opts.onFirstReady;
     this.pump();
   }
 
   private pump(): void {
-    while (
-      !this.disposed &&
-      this.inFlight < this.concurrency &&
-      this.nextToQueue < this.count
-    ) {
-      this.load(this.nextToQueue++);
+    while (!this.disposed && this.inFlight < this.concurrency) {
+      // Failed frames retry FIRST (so a transient error never abandons a frame),
+      // then the coarse-to-fine order. Both stay inside the concurrency budget.
+      let i: number;
+      if (this.retryQueue.length > 0) i = this.retryQueue.shift()!;
+      else if (this.nextToQueue < this.order.length) i = this.order[this.nextToQueue++];
+      else break;
+      this.load(i);
     }
   }
 
@@ -109,7 +147,11 @@ export class FrameSequenceLoader {
           this.onFirst?.();
         }
       } else {
-        this.images[i] = null; // failed: allow a later retry via get()
+        this.images[i] = null; // failed
+        if (this.attempts[i] < 3) {
+          this.attempts[i] += 1;
+          this.retryQueue.push(i); // re-attempt via pump (capped)
+        }
       }
       this.pump();
     };
@@ -122,12 +164,25 @@ export class FrameSequenceLoader {
   // `window` indices; else null. Prioritises queuing the requested frame.
   get(index: number, window = 32): HTMLImageElement | null {
     const i = Math.min(Math.max(index | 0, 0), this.count - 1);
-    if (this.loaded[i]) return this.images[i];
-    if (!this.images[i]) this.load(i); // jump the queue for the visible frame
-    for (let d = 1; d <= window; d++) {
-      if (i - d >= 0 && this.loaded[i - d]) return this.images[i - d];
-      if (i + d < this.count && this.loaded[i + d]) return this.images[i + d];
+    if (this.loaded[i]) {
+      this.lastResolved = i;
+      return this.images[i];
     }
+    // Jump the queue for the visible frame, but ONLY with spare capacity — an
+    // uncapped jump-queue balloons inFlight during a fast scrub and stalls pump()
+    // (its `inFlight < concurrency` loop never runs), freezing the load frontier.
+    if (!this.images[i] && this.inFlight < this.concurrency) this.load(i);
+    for (let d = 1; d <= window; d++) {
+      if (i - d >= 0 && this.loaded[i - d]) {
+        this.lastResolved = i - d;
+        return this.images[i - d];
+      }
+      if (i + d < this.count && this.loaded[i + d]) {
+        this.lastResolved = i + d;
+        return this.images[i + d];
+      }
+    }
+    this.lastResolved = -1;
     return null;
   }
 

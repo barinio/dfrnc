@@ -197,6 +197,18 @@ export default function VideoPlane({
     // instead of going blank; once decoded the exact frame lands next tick.
     const idx = frameIndexFor(t);
     const img = readyRef.current ? loader.get(idx) : null;
+    if (import.meta.env.DEV) {
+      (window as unknown as { __fp?: unknown }).__fp = {
+        idx,
+        resolved: loader.lastResolved,
+        loadedCount: loader.loadedCount,
+        loadedHere: loader.isLoaded(idx),
+        imgNull: img === null,
+        sp: Math.round(sp * 1000) / 1000,
+        gp: Math.round(gp * 1000) / 1000,
+        t: Math.round(t * 1000) / 1000,
+      };
+    }
     if (img && img !== currentImgRef.current) {
       currentImgRef.current = img;
       texture.image = img;
