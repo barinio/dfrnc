@@ -8,6 +8,7 @@ import { figureStateFor } from "../playback";
 import type { Phase } from "../playback";
 import { makeArc, FIGURES } from "../arc";
 import type { FigureDef } from "../arc";
+import { figureRectsLive } from "../figureHover";
 import type { FigureMaterialMode } from "../renderProfile";
 
 useGLTF.setDecoderPath(
@@ -76,6 +77,11 @@ const materialPool = new Map<string, THREE.MeshPhysicalMaterial>();
 // and can't cover fast flicks (the fade decays in time, not scroll distance).
 export const figureOpacityLive = new Map<string, number>();
 
+// Scratch objects for the per-frame screen-rect projection (no allocations in
+// useFrame).
+const _hoverBox = new THREE.Box3();
+const _hoverCorner = new THREE.Vector3();
+
 function materialFor(
   name: string,
   mode: FigureMaterialMode,
@@ -108,13 +114,26 @@ export default function ArcModel({
   const { scene: modelScene } = useGLTF(
     import.meta.env.BASE_URL + figure.url,
   );
-  const { viewport, pointer } = useThree();
+  const { viewport, camera } = useThree();
   const modelRef = useRef<THREE.Group>(null);
   // Outer group: carries the curve position + a screen-space roll applied
   // OUTSIDE the spin (so the roll rotates the projected image, not local Z).
   const rollGroupRef = useRef<THREE.Group>(null);
   const mouseRotX = useRef<number>(0);
   const mouseRotY = useRef<number>(0);
+
+  // Pointer in normalized device coords, tracked on window (same pattern as
+  // CardStack/GalleryCTA): the canvas layer is pointer-events:none, so events
+  // must be read at the window level, not off the canvas.
+  const ptr = useRef({ x: 0, y: 0 });
+  useEffect(() => {
+    const onMove = (e: PointerEvent) => {
+      ptr.current.x = (e.clientX / window.innerWidth) * 2 - 1;
+      ptr.current.y = -((e.clientY / window.innerHeight) * 2 - 1);
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    return () => window.removeEventListener("pointermove", onMove);
+  }, []);
 
   // Per-figure clone of the shared glass template from the module-level pool.
   // The Material controls below use identical keys in every instance, so leva's
@@ -393,10 +412,12 @@ export default function ArcModel({
   const smoothOpacityRef = useRef<number>(0);
 
   // Zero the live-opacity report on unmount so a stale value can't keep
-  // re-mounting the figure on later scroll events.
+  // re-mounting the figure on later scroll events; drop the hover rect so the
+  // tooltip can't hit-test a figure that no longer exists.
   useEffect(() => {
     return () => {
       figureOpacityLive.set(figure.name, 0);
+      figureRectsLive.delete(figure.name);
     };
   }, [figure.name]);
 
@@ -439,11 +460,13 @@ export default function ArcModel({
         rollPeakRef.current * Math.sin(t * Math.PI);
     }
 
-    // Smooth mouse parallax — ~4° max, framerate-independent lerp
-    const MOUSE_MAX = 0.07;
+    // Smooth mouse parallax — ~8° max (doubled from 0.07 per supervisor: the
+    // cursor reaction on the intro figures read too subtle), framerate-
+    // independent lerp toward the window-tracked pointer.
+    const MOUSE_MAX = 0.14;
     const lerpK = 1 - Math.exp(-delta * 4);
-    mouseRotY.current += (pointer.x * MOUSE_MAX - mouseRotY.current) * lerpK;
-    mouseRotX.current += (-pointer.y * MOUSE_MAX - mouseRotX.current) * lerpK;
+    mouseRotY.current += (ptr.current.x * MOUSE_MAX - mouseRotY.current) * lerpK;
+    mouseRotX.current += (-ptr.current.y * MOUSE_MAX - mouseRotX.current) * lerpK;
 
     // Apex-centred spin: zero (frontal) exactly at t = 0.5 — the dome apex —
     // edge-on entering and leaving. spinTurns is the total turn across the
@@ -465,6 +488,48 @@ export default function ArcModel({
     material.transparent = materialMode === "light" || op < 1;
     material.depthWrite = materialMode !== "light" && op >= 1;
     material.opacity = op * (materialMode === "light" ? LIGHT_GLASS_OPACITY : 1);
+
+    // Project the figure's world bounds to a screen rect (canvas NDC) for the
+    // award tooltip's hover/tap hit-test (FigureTooltip reads figureRectsLive).
+    // Uses last frame's matrixWorld — one frame of lag is imperceptible for a
+    // hover target on a scroll-driven flight. Marked not-visible while the
+    // figure is still fading in/out so a barely-there figure isn't hoverable.
+    let rect = figureRectsLive.get(figure.name);
+    if (visible && op > 0.5) {
+      _hoverBox.setFromObject(modelRef.current);
+      if (!_hoverBox.isEmpty()) {
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
+        for (let ci = 0; ci < 8; ci++) {
+          _hoverCorner
+            .set(
+              ci & 1 ? _hoverBox.max.x : _hoverBox.min.x,
+              ci & 2 ? _hoverBox.max.y : _hoverBox.min.y,
+              ci & 4 ? _hoverBox.max.z : _hoverBox.min.z,
+            )
+            .project(camera);
+          if (_hoverCorner.x < minX) minX = _hoverCorner.x;
+          if (_hoverCorner.x > maxX) maxX = _hoverCorner.x;
+          if (_hoverCorner.y < minY) minY = _hoverCorner.y;
+          if (_hoverCorner.y > maxY) maxY = _hoverCorner.y;
+        }
+        if (!rect) {
+          rect = { label: figure.label, minX, maxX, minY, maxY, visible: true };
+          figureRectsLive.set(figure.name, rect);
+        } else {
+          rect.label = figure.label;
+          rect.minX = minX;
+          rect.maxX = maxX;
+          rect.minY = minY;
+          rect.maxY = maxY;
+          rect.visible = true;
+        }
+      }
+    } else if (rect) {
+      rect.visible = false;
+    }
   });
 
   return (

@@ -28,6 +28,7 @@ import GalleryBackdrop from "./GalleryBackdrop";
 import GalleryTitles from "./GalleryTitles";
 import CardStack from "./CardStack";
 import GalleryCTA from "./GalleryCTA";
+import FigureTooltip from "./FigureTooltip";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
 import { figureVisibleFor, videoStateFor } from "../playback";
@@ -477,6 +478,10 @@ export default function Scene() {
         </Canvas>
       </div>
       <GalleryCTA cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
+      {/* Award captions for the flying figures — hover on desktop, tap on
+          touch. Reads the ArcModels' live screen rects; renders nothing while
+          no figure is airborne. */}
+      {!reducedMotion && <FigureTooltip />}
       {/* Scroll-track: provides the scrollable height that drives the model and
           Lottie phases. The Canvas itself is pinned via position: fixed above. */}
       <div

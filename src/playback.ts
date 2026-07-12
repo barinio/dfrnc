@@ -138,18 +138,53 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
   };
 }
 
+// Anim-track scroll → clip-time map, piecewise-linear over these [sp, clip-
+// fraction] knots. NOT a single linear ramp (supervisor: "затримати погляд на
+// тексті"): the two captions BAKED into the footage get a slower scrub — more
+// scroll distance per clip-second, so there is time to read them — and the
+// scenic stretch between them is correspondingly faster, keeping the endpoints
+// (and therefore the whole gallery timeline) untouched. Caption windows were
+// measured on the extracted frame sequence (12.5 fps, 23.56s clip):
+//   caption 1 "WIR SIND EIN KLEINES…"   ≈ 2.7–7.6s  → clip frac 0.110–0.331
+//   caption 2 "ZUHAUSE IM HERZEN…"      ≈ 16.3s–end → clip frac 0.690–SPLIT
+// Both caption spans get ≈2.25× the scenic run's scroll-per-clip-second (≈1.4×
+// their old linear budget); the scenic middle runs ≈1.65× faster. The second
+// knot pins caption 1's ONSET at its pre-dwell sp (0.682) so the Lottie
+// zoom-through — which must clear the frame by LOTTIE_END (0.68) BEFORE the
+// caption appears — keeps its margin. Re-derive if VIDEO_START / VIDEO_SPLIT /
+// LOTTIE_END move or the clip is swapped.
+const VIDEO_TIME_KNOTS: readonly (readonly [number, number])[] = [
+  [VIDEO_START, 0],
+  [0.682, 0.11], // caption-1 onset — same sp as the old linear map
+  [0.8145, 0.331], // caption-1 read window: ~1.4× more scroll than before
+  [0.9101, 0.69], // scenic stretch (bridge → lake → climb), compressed
+  [1, VIDEO_SPLIT], // caption-2 dwell runs to the end of the anim track
+];
+
+function animTrackClipTimeFor(sp: number): number {
+  const s = Math.min(Math.max(sp, VIDEO_START), 1);
+  for (let i = 1; i < VIDEO_TIME_KNOTS.length; i++) {
+    const [s1, f1] = VIDEO_TIME_KNOTS[i];
+    if (s <= s1) {
+      const [s0, f0] = VIDEO_TIME_KNOTS[i - 1];
+      return f0 + ((s - s0) / (s1 - s0)) * (f1 - f0);
+    }
+  }
+  return VIDEO_SPLIT;
+}
+
 // Video time across the WHOLE life of the clip — extended past sp = 1 into the
 // gallery so the FPV plays continuously while it morphs into slide #1, holds and
 // flies away (never a frozen frame). Monotonic and continuous across the
 // sp → gp boundary (gp > 0 ⟺ sp = 1):
-//   anim track  sp ∈ [VIDEO_START, 1]  → t ∈ [0, VIDEO_SPLIT]
+//   anim track  sp ∈ [VIDEO_START, 1]  → t ∈ [0, VIDEO_SPLIT]  (caption-dwell
+//                                        knots above — not a single linear ramp)
 //   gallery     gp ∈ [0, VID_FLY_END]  → t ∈ [VIDEO_SPLIT, 1]   (last frame as it flies)
 // Replaces videoStateFor.t as the scrub source; videoStateFor stays for the
 // sp-based reveal opacity + grain mix. "done" (reduced motion): frozen last frame.
 export function videoMasterTimeFor(sp: number, gp: number, phase: Phase): number {
   if (phase === "done") return 1;
-  if (gp <= 0)
-    return clamp01((sp - VIDEO_START) / (1 - VIDEO_START)) * VIDEO_SPLIT;
+  if (gp <= 0) return animTrackClipTimeFor(sp);
   return clamp01(VIDEO_SPLIT + (clamp01(gp / VID_FLY_END)) * (1 - VIDEO_SPLIT));
 }
 

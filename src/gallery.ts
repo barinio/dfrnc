@@ -110,14 +110,19 @@ export const MAX_ASPECT = 16 / 9; // cap; letterbox beyond
 export const BACKDROP_FADE_END = 0.06;
 export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
-// CTA reveals over the TAIL of the last card's exit: cardExit ∈ [CTA_REVEAL_FROM, 1].
-// The last card flies UP opaque (no opacity fade to hide behind), so the CTA must
-// already be coming up as the card clears the centre — not pop in once it's fully
-// gone. cardExit equals the leaving card's rise progress, and the card has cleared
-// screen-centre (where the wordmark sits) by ≈0.5, so revealing from 0.6 starts the
-// fade just as the centre opens up: no black gap, no late pop, and the wordmark
-// never bleeds over the still-present card.
-export const CTA_REVEAL_FROM = 0.6;
+// CTA reveals over cardExit ∈ [CTA_REVEAL_FROM, CTA_REVEAL_TO] — the EARLY part
+// of the last card's exit, so the (now shrunk — see .gallery-cta__wordmark) word-
+// mark is already fully there as the rising card's bottom edge sweeps past it and
+// reads as "it was underneath the cards all along" (supervisor: "воно вже
+// знаходиться під карточками"). Geometry: the card's bottom edge starts at ≈0.22
+// screen and rises 1.9 card-heights (≈1.14 screens) over the exit, so it crosses
+// the shrunk wordmark's bottom edge (≈0.43 screen on desktop) at exit ≈0.19 and
+// clears its top (≈0.57) by ≈0.30. Fading over [0.2, 0.34] tracks that sweep:
+// the wordmark is still ~0 while fully covered (the DOM overlay sits ABOVE the
+// canvas — early opacity would bleed OVER the card) and hits 1 right as it is
+// fully uncovered — no late pop, no dead black beat.
+export const CTA_REVEAL_FROM = 0.2;
+export const CTA_REVEAL_TO = 0.34;
 
 // ── Round 3 retiming ─────────────────────────────────────────────────────────
 // The card conveyor TRAILS the title scrub so a card leaves at the END of each
@@ -386,13 +391,16 @@ export function cardFlyProgressFor(gp: number): number {
 }
 
 // CTA overlay opacity, driven by the last card's exit progress (cardExit, 0→1
-// as the last card flies up — see CardStack). The CTA fades in over the TAIL of
-// that exit ([CTA_REVEAL_FROM, 1]) so it appears immediately as the card + title
-// finish leaving, with no black gap. Coupled to the (eased) exit, not gp, so it
-// tracks the fly-out at any scroll speed. 0 the whole time until the LAST card
-// starts leaving (cardExit is 0 for every earlier card).
+// as the last card flies up — see CardStack). Fades in over [CTA_REVEAL_FROM,
+// CTA_REVEAL_TO] — the stretch of the exit during which the rising card's
+// bottom edge sweeps across the shrunk wordmark (see the constants above) — so
+// the text reads as uncovered, not faded in late. Coupled to the (eased) exit,
+// not gp, so it tracks the fly-out at any scroll speed. 0 the whole time until
+// the LAST card starts leaving (cardExit is 0 for every earlier card).
 export function galleryCtaFromExit(cardExit: number): number {
-  return smoothstep(clamp01((cardExit - CTA_REVEAL_FROM) / (1 - CTA_REVEAL_FROM)));
+  return smoothstep(
+    clamp01((cardExit - CTA_REVEAL_FROM) / (CTA_REVEAL_TO - CTA_REVEAL_FROM)),
+  );
 }
 
 // ── Unified card progress (titles sequence by which card is showing) ─────────

@@ -50,6 +50,7 @@ import {
   galleryImageFocusFor,
   videoCardMorphFor,
   CTA_REVEAL_FROM,
+  CTA_REVEAL_TO,
   GALLERY_IMAGES,
   CARD_FILL,
   CARDS_VH,
@@ -347,12 +348,18 @@ for (const f of FIGURES) {
     "conveyor local in [0,1)",
   );
 
-  // CTA: coupled to the last card's exit — hidden while cards present, fades in
-  // over the tail of the exit, full once the last card is gone.
+  // CTA: coupled to the last card's exit — hidden while the card still covers
+  // the (shrunk) wordmark, fully in by CTA_REVEAL_TO (the card's bottom edge
+  // has swept past the wordmark by then), holds at 1 for the rest of the exit.
   eq(galleryCtaFromExit(0), 0, "CTA hidden while cards present");
-  eq(galleryCtaFromExit(CTA_REVEAL_FROM), 0, "CTA hidden until the exit tail");
+  eq(galleryCtaFromExit(CTA_REVEAL_FROM), 0, "CTA hidden until the reveal window");
+  eq(galleryCtaFromExit(CTA_REVEAL_TO), 1, "CTA fully in by the end of the reveal window");
   eq(galleryCtaFromExit(1), 1, "CTA fully in once last card has flown");
-  ok(galleryCtaFromExit(0.95) > galleryCtaFromExit(0.85), "CTA reveal monotonic over the exit tail");
+  ok(
+    galleryCtaFromExit(CTA_REVEAL_FROM + 0.75 * (CTA_REVEAL_TO - CTA_REVEAL_FROM)) >
+      galleryCtaFromExit(CTA_REVEAL_FROM + 0.25 * (CTA_REVEAL_TO - CTA_REVEAL_FROM)),
+    "CTA reveal monotonic inside the reveal window",
+  );
 
   // Round 3 — retimed fly window: 0 through the first-card linger, 1 by fly end.
   eq(cardFlyProgressFor(CARDS_FLY_START), 0, "fly progress 0 at fly start");
@@ -435,6 +442,23 @@ for (const f of FIGURES) {
       ok(t >= prev - 1e-9, `vmt monotonic (gallery) @gp=${gp}`);
       prev = t;
     }
+  }
+
+  // Caption dwell (anim track is piecewise, not linear): the two baked
+  // captions scrub SLOWER (less clip time per unit scroll) than the scenic
+  // stretch between them, and caption 1's onset stays pinned AFTER the Lottie
+  // zoom-through has cleared (LOTTIE_END) so the letters never cover it.
+  {
+    const slope = (sp: number, h = 0.005) =>
+      (videoMasterTimeFor(sp + h, 0, "scroll") - videoMasterTimeFor(sp, 0, "scroll")) / h;
+    const cap1 = slope(0.75); // inside caption 1's dwell window
+    const scenic = slope(0.86); // inside the scenic stretch
+    const cap2 = slope(0.96); // inside caption 2's dwell window
+    ok(cap1 < scenic * 0.5, "caption 1 scrubs ≥2× slower than the scenic run");
+    ok(cap2 < scenic * 0.5, "caption 2 scrubs ≥2× slower than the scenic run");
+    const cap1OnsetSp = 0.682; // knot: clip frac 0.11 (caption 1 fades in ~2.7s)
+    ok(cap1OnsetSp >= LOTTIE_END, "caption 1 onset after the zoom-through clears");
+    eq(videoMasterTimeFor(cap1OnsetSp, 0, "scroll"), 0.11, "caption-1 onset knot anchored");
   }
 
   // imageGalleryProgress: 0 through the morph + hold, opens at IMAGE_GALLERY_START

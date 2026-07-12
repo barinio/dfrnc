@@ -52,6 +52,9 @@ export interface FigureDef {
   // Relative to BASE_URL; files under public/figures/ are drop-in — swapping
   // a GLB needs no code change.
   url: string;
+  // Award name shown in the cursor tooltip on hover (tap on touch devices) —
+  // see FigureTooltip.
+  label: string;
   // Desired on-screen height in world units (the world viewport is ~9.24 units
   // tall at z = 0 regardless of aspect). Normalizing the VERTICAL extent — not
   // the max bbox dimension — is what makes the mixed set read similar in size:
@@ -100,6 +103,7 @@ export const FIGURES: FigureDef[] = [
   {
     name: "and",
     url: "figures/and.glb",
+    label: "German Design Award",
     targetHeight: 3.4,
     arc: {
       legSpreadLandscape: 0.5,
@@ -118,6 +122,7 @@ export const FIGURES: FigureDef[] = [
   {
     name: "tokyo",
     url: "figures/tokyo.glb",
+    label: "Tokyo Type Directors Club Nominierung",
     // Flies well in front of `and` (z=+2.6) to keep the first two meshes from
     // intersecting. Size/spread/height are perspective-compensated so the
     // projected read stays close to the earlier z=+0.9 pass.
@@ -149,6 +154,7 @@ export const FIGURES: FigureDef[] = [
   {
     name: "gba",
     url: "figures/gba.glb",
+    label: "German Brand Award Special Mention",
     // Flies at z=−0.7 (perspective ×0.92). Shrunk ~13% (3.5 → 3.05) so it no
     // longer pokes past the frame at its apex (supervisor: "V" breaks the
     // bounds) — reads as ≈2.8 on screen.

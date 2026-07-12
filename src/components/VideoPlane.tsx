@@ -37,6 +37,17 @@ import type { Phase } from "../playback";
 
 const PLANE_Z = -3.5;
 
+// Horizontal centre of the cover-crop window when the viewport is NARROWER
+// than the 16:9 frame (phones crop to the central ~26% of the source width).
+// 0.5 = centered. Pulled LEFT to 0.45 — a STATIC shift applied from the very
+// start (per supervisor: "зі старту відос змістити", no mid-clip pan) — which
+// moves the whole picture RIGHT on screen so the second baked caption
+// ("ZUHAUSE IM HERZEN DER SCHWEIZ", centred ≈39% of the frame width) stays in
+// view on portrait screens. 0.45 is the floor that keeps the FIRST caption
+// ("WIR SIND EIN KLEINES…", right edge ≈58%) fully inside the portrait window
+// (window right edge = 0.45 + 0.13 = 0.58) — any further left clips it.
+const NARROW_PAN_CENTER_X = 0.45;
+
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
   galleryRef: MutableRefObject<number>;
@@ -243,15 +254,21 @@ export default function VideoPlane({
     const cardScaleX = (r - l) * fullW;
     const cardScaleY = (cropTop - b) * fullH; // = (placeT - placeB): rise is a translation
 
-    // Full-bleed cover-crop: maps the 16:9 source frame onto the WHOLE screen,
-    // always CENTERED (no pan — the clip is framed center).
+    // Full-bleed cover-crop: maps the 16:9 source frame onto the WHOLE screen.
+    // Landscape stays centered; narrow viewports bias the window toward
+    // NARROW_PAN_CENTER_X (a constant shift — no mid-clip pan) so the baked
+    // captions stay readable on phones.
     const frameAspect = 16 / 9;
     let repeatX: number, repeatY: number, offsetX: number, offsetY: number;
     if (aspect < frameAspect) {
-      // Viewport narrower than the frame (portrait phones): crop sides, centered.
+      // Viewport narrower than the frame (portrait phones): crop the sides,
+      // window centred on NARROW_PAN_CENTER_X (clamped inside the frame).
       repeatX = aspect / frameAspect;
       repeatY = 1;
-      offsetX = (1 - repeatX) * 0.5;
+      offsetX = Math.min(
+        Math.max(NARROW_PAN_CENTER_X - repeatX / 2, 0),
+        1 - repeatX,
+      );
       offsetY = 0;
     } else {
       // Viewport wider/flatter (landscape): crop top/bottom, centered.
