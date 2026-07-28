@@ -5,6 +5,8 @@ import * as THREE from "three";
 import GalleryCard, { preloadGalleryTextures } from "./GalleryCard";
 import {
   galleryStackDisplayedFor,
+  galleryEndLayoutFor,
+  galleryCtaRevealFor,
   cardStackPlacementFor,
   imageStackRevealFor,
   imageStackVisibleFor,
@@ -16,6 +18,8 @@ import {
   STACK_VISIBLE,
   GUTTER,
   TOP_TITLE_VH,
+  END_LAYOUT_SCALE,
+  TITLE_END_TEXT_TOP,
 } from "../gallery";
 import { VID_FLY_END } from "../constants";
 import { approach } from "../cursorTilt";
@@ -46,12 +50,16 @@ const ENTER_FADE = 0.4;
 interface Props {
   galleryRef: MutableRefObject<number>;
   cardExitRef: MutableRefObject<number>;
+  // CTA wordmark opacity (galleryCtaRevealFor): 0 until late in the LAST
+  // card's hold, 1 just before that card starts flying. GalleryCTA reads it.
+  ctaRevealRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
 
 export default function CardStack({
   galleryRef,
   cardExitRef,
+  ctaRevealRef,
   reducedMotion = false,
 }: Props) {
   const { viewport, gl } = useThree();
@@ -88,7 +96,7 @@ export default function CardStack({
 
   // Outer gallery frame is the PDF's 96vh × 64vh block. The visible cards fill
   // CARD_FILL of that frame and are placed in three slots inside it.
-  const { cardW, cardH, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY, maxHoverScale } = useMemo(() => {
+  const { cardW, cardH, bandOffsetY, endRiseWorld, hoverHalfX, hoverHalfY, maxHoverScale } = useMemo(() => {
     const vw = viewport.width;
     const vh = viewport.height;
     const aspect = vw / vh;
@@ -101,13 +109,21 @@ export default function CardStack({
     const bandOffsetY = (0.5 - frameCenterFromTop) * vh;
     const hoverHalfX = (w / vw) * HOVER_PAD;
     const hoverHalfY = (h / vh) * HOVER_PAD;
-    const hoverCenterY = (2 * bandOffsetY) / vh;
     // Max hover scale that keeps the centre-scaled front card clear of BOTH title
     // bands: its half-height may grow only into the 3vmin gutter.
     const vmin = Math.min(vw, vh);
     const gutterWorld = GUTTER * vmin;
     const maxHoverScale = 1 + gutterWorld / (h / 2);
-    return { cardW: w, cardH: h, bandOffsetY, hoverHalfX, hoverHalfY, hoverCenterY, maxHoverScale };
+    // End-layout rise: once the finale title (bottom text only) is in, the card
+    // centre moves to the EQUAL-GAP position — gap(viewport top ↔ card top) ==
+    // gap(card bottom ↔ finale text top). The text's top edge in world y uses
+    // the SAME gutter/inner-height mapping GalleryTitles renders the comp with;
+    // equal gaps then put the centre at vh/4 + textTop/2 regardless of the
+    // scaled card height.
+    const innerH = vh - 2 * GUTTER * vmin;
+    const endTextTopY = (0.5 - TITLE_END_TEXT_TOP) * innerH;
+    const endRiseWorld = vh / 4 + endTextTopY / 2 - bandOffsetY;
+    return { cardW: w, cardH: h, bandOffsetY, endRiseWorld, hoverHalfX, hoverHalfY, maxHoverScale };
   }, [viewport.width, viewport.height]);
 
   useFrame((_s, delta) => {
@@ -125,9 +141,16 @@ export default function CardStack({
     group.visible = stackOpacity > 0;
     if (!group.visible) {
       cardExitRef.current = 0; // titles stay fully opaque before the card phase
+      ctaRevealRef.current = 0;
       return;
     }
     group.renderOrder = 0;
+
+    // Finale layout ramp (0→1 during the title swap to the bottom-only text):
+    // the whole stack glides up to the equal-gap centre and grows 15%.
+    const endLayout = galleryEndLayoutFor(gp);
+    const endScale = 1 + (END_LAYOUT_SCALE - 1) * endLayout;
+    const groupY = bandOffsetY + endLayout * endRiseWorld;
 
     const n = GALLERY_IMAGES.length;
     // STEPPED scroll-scrubbed conveyor: each card SETTLES (holds) then FLIES, so a
@@ -149,6 +172,9 @@ export default function CardStack({
     // Last-card exit progress for the synchronized finale: 0 until the last card
     // begins leaving, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
+    // CTA opacity: fades in late in the LAST card's hold, complete just before
+    // its fly-away starts (galleryCtaRevealFor) — GalleryCTA reads the ref.
+    ctaRevealRef.current = galleryCtaRevealFor(gp);
 
     // The ONE interactive card = the front-most still on screen: index `lead`
     // until it has risen off (local ≥ CARD_LEAVE_AT), then `lead + 1` takes over.
@@ -161,21 +187,25 @@ export default function CardStack({
     const activeD = activeIdx - displayed;
     const aRise = activeD < 0 ? -activeD * RISE_OFF : 0;
     const aPlace = cardStackPlacementFor(activeD);
-    const activeCenterX = (2 * aPlace.x * stackReveal * cardW) / viewport.width;
+    // The group is scaled by endScale about its own origin and shifted to
+    // groupY, so the active card's on-screen centre (NDC) folds both in.
+    const activeCenterX =
+      (2 * aPlace.x * stackReveal * cardW * endScale) / viewport.width;
     const activeCenterY =
-      hoverCenterY + (2 * (aPlace.y * stackReveal + aRise) * cardH) / viewport.height;
+      (2 * (groupY + (aPlace.y * stackReveal + aRise) * cardH * endScale)) /
+      viewport.height;
     const relX = ptr.current.x - activeCenterX;
     const relY = ptr.current.y - activeCenterY;
     const over =
       !reducedMotion &&
       gp >= VID_FLY_END &&
-      Math.abs(relX) < hoverHalfX &&
-      Math.abs(relY) < hoverHalfY;
+      Math.abs(relX) < hoverHalfX * endScale &&
+      Math.abs(relY) < hoverHalfY * endScale;
     const tiltTargetX = over ? -relY * HOVER_TILT_MAX : 0;
     const tiltTargetY = over ? relX * HOVER_TILT_MAX : 0;
     const ampTarget = over ? 1 : 0;
     group.rotation.set(0, 0, 0);
-    group.scale.setScalar(1);
+    group.scale.setScalar(endScale);
 
     // Walk all cards; each card's continuous depth d = i − displayed drives its
     // fanned placement: d ≤ 0 = the front card (rising up off the top as it
@@ -219,7 +249,7 @@ export default function CardStack({
       if (mat) mat.opacity = stackOpacity * enterFade;
     }
 
-    group.position.y = bandOffsetY;
+    group.position.y = groupY;
   });
 
   return (

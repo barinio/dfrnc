@@ -110,19 +110,17 @@ export const MAX_ASPECT = 16 / 9; // cap; letterbox beyond
 export const BACKDROP_FADE_END = 0.06;
 export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
-// CTA reveals over cardExit ∈ [CTA_REVEAL_FROM, CTA_REVEAL_TO] — the EARLY part
-// of the last card's exit, so the (now shrunk — see .gallery-cta__wordmark) word-
-// mark is already fully there as the rising card's bottom edge sweeps past it and
-// reads as "it was underneath the cards all along" (supervisor: "воно вже
-// знаходиться під карточками"). Geometry: the card's bottom edge starts at ≈0.22
-// screen and rises 1.9 card-heights (≈1.14 screens) over the exit, so it crosses
-// the shrunk wordmark's bottom edge (≈0.43 screen on desktop) at exit ≈0.19 and
-// clears its top (≈0.57) by ≈0.30. Fading over [0.2, 0.34] tracks that sweep:
-// the wordmark is still ~0 while fully covered (the DOM overlay sits ABOVE the
-// canvas — early opacity would bleed OVER the card) and hits 1 right as it is
-// fully uncovered — no late pop, no dead black beat.
-export const CTA_REVEAL_FROM = 0.2;
-export const CTA_REVEAL_TO = 0.34;
+// CTA reveal timing, in card-beat (lin) units. Driven by the CONTINUOUS linear
+// card progress (NOT `displayed`, which freezes at integers during holds): the
+// fade runs entirely inside the LAST card's HOLD and completes
+// CTA_REVEAL_END_MARGIN of a beat before its fly-away begins (supervisor:
+// "текст з'являвся майже перед тим, як стартує остання картинка на
+// відходження"). Sequencing this gives: the second-to-last card fully leaves →
+// the last photo reads CLEAN for the first stretch of its hold → the wordmark
+// surfaces over it (DOM-above bleed approved earlier) → the card lifts off and
+// leaves the wordmark alone on the backdrop.
+export const CTA_REVEAL_SPAN = 0.3; // fade width, in beats
+export const CTA_REVEAL_END_MARGIN = 0.03; // beats between fade-complete and the fly-start
 
 // ── Round 3 retiming ─────────────────────────────────────────────────────────
 // The card conveyor TRAILS the title scrub so a card leaves at the END of each
@@ -390,17 +388,15 @@ export function cardFlyProgressFor(gp: number): number {
   return clamp01((gp - CARDS_FLY_START) / (CARDS_FLY_END - CARDS_FLY_START));
 }
 
-// CTA overlay opacity, driven by the last card's exit progress (cardExit, 0→1
-// as the last card flies up — see CardStack). Fades in over [CTA_REVEAL_FROM,
-// CTA_REVEAL_TO] — the stretch of the exit during which the rising card's
-// bottom edge sweeps across the shrunk wordmark (see the constants above) — so
-// the text reads as uncovered, not faded in late. Coupled to the (eased) exit,
-// not gp, so it tracks the fly-out at any scroll speed. 0 the whole time until
-// the LAST card starts leaving (cardExit is 0 for every earlier card).
-export function galleryCtaFromExit(cardExit: number): number {
-  return smoothstep(
-    clamp01((cardExit - CTA_REVEAL_FROM) / (CTA_REVEAL_TO - CTA_REVEAL_FROM)),
-  );
+// CTA overlay opacity as a pure function of gallery progress. CardStack writes
+// it into ctaRevealRef each frame; GalleryCTA (a DOM overlay with its own rAF)
+// reads the ref. The fade window sits just before the last card's fly-start —
+// see the CTA_REVEAL_SPAN comment above for the full sequencing.
+export function galleryCtaRevealFor(gp: number): number {
+  const n = GALLERY_IMAGES.length;
+  const lin = cardFlyProgressFor(imageGalleryProgress(gp)) * n;
+  const to = n - 1 + STEP_HOLD_FRAC - CTA_REVEAL_END_MARGIN;
+  return smoothstep(clamp01((lin - (to - CTA_REVEAL_SPAN)) / CTA_REVEAL_SPAN));
 }
 
 // ── Unified card progress (titles sequence by which card is showing) ─────────
@@ -425,37 +421,27 @@ function titleFrameFrac(frame: number): number {
   return frame / TITLE_LAST_FRAME;
 }
 
-// Title-frame fraction (0..1 → titles.json frame range) as a function of the
-// unified card progress `cp`. Each title text squishes in while ITS card is the
-// one showing, then HOLDS on the comp's SETTLED frame (one text per band) while
-// the next cards pass (monotonic non-decreasing):
-//   cp [0,1]  card 1 / video morph → 0 .. 50/99 (WIR LIEFERN + STRATEGISCHE in)
-//   cp [1,3]  cards 2,3            → hold frame 50 (clean STRATEGISCHE)
-//   cp [3,4]  card 4              → frame 50 .. 75 (DESIGN NACH MASS slides in)
-//   cp [4,6]  cards 5,6            → hold frame 75 (clean DESIGN NACH MASS)
-//   cp [6,7]  card 7              → frame 75 .. 99 (UND DIE + GANZ GROSSEN BILDER)
-//   cp [7,9]  cards 8,9            → hold frame 99 (clean final title)
-// The holds land on the comp's CLEAN integer frames (verified render: 50/75/99), so
-// the strategische↔design↔ganz-grossen overlaps only flash by DURING each
-// trigger card's slide-in (cp 3→4, 6→7) — never held static across 3 cards.
+// titles.json (the 2026-07-27 "titles_5" comp) timeline, verified by render:
+//   f0–25   WIR LIEFERN (top) scales in
+//   f25–50  STRATEGISCHE KOMMUNIKATION (bottom) scales in → f50 = clean pair
+//   f50–77  BOTH texts scale out while UND MULTIDISZIPLINÄRE GESTALTUNG
+//           scales in at the BOTTOM (comp y 821–999)
+//   f77–99  static finale: ONLY the bottom text — the top band is empty
+// So the sequence has exactly ONE mid-gallery transition (the old comp's
+// DESIGN/GANZ-GROSSEN pair of transitions is gone).
 const TITLE_F_STRAT = titleFrameFrac(50); // WIR LIEFERN / STRATEGISCHE KOMMUNIKATION
-const TITLE_F_DESIGN = titleFrameFrac(75); // WIR LIEFERN / DESIGN NACH MASS
-const TITLE_F_GROSS = titleFrameFrac(99); // UND DIE / GANZ GROSSEN BILDER
+const TITLE_F_END = titleFrameFrac(90); // UND MULTIDISZIPLINÄRE GESTALTUNG (static ≥ f77)
 export function isGalleryTitleHoldFrame(frac: number): boolean {
   return (
-    Math.abs(frac - TITLE_F_STRAT) < 1e-9 ||
-    Math.abs(frac - TITLE_F_DESIGN) < 1e-9 ||
-    Math.abs(frac - TITLE_F_GROSS) < 1e-9
+    Math.abs(frac - TITLE_F_STRAT) < 1e-9 || Math.abs(frac - TITLE_F_END) < 1e-9
   );
 }
 export function galleryTitleFrameFracForCard(cp: number): number {
   const c = Math.min(Math.max(cp, 0), 9);
   if (c <= 1) return lerp(0, TITLE_F_STRAT, c);
   if (c <= 3) return TITLE_F_STRAT;
-  if (c <= 4) return lerp(TITLE_F_STRAT, TITLE_F_DESIGN, c - 3);
-  if (c <= 6) return TITLE_F_DESIGN;
-  if (c <= 7) return lerp(TITLE_F_DESIGN, TITLE_F_GROSS, c - 6);
-  return TITLE_F_GROSS;
+  if (c <= 4) return lerp(TITLE_F_STRAT, TITLE_F_END, c - 3);
+  return TITLE_F_END;
 }
 
 export function galleryTitlesVisibleFor(gp: number, cardExit: number): boolean {
@@ -502,13 +488,18 @@ export function galleryStackDisplayedFor(gp: number): number {
 //     and STRATEGISCHE during step 2 (bottom/side crop) — keyed to gp/VID_MORPH_END
 //     so both are settled as the card finishes forming, then HELD through the hold
 //     and the fly (no text change while it flies).
-//   • Image cards: the three-card title groups change ONLY while the FIRST card of
-//     the new group is settled in its hold window — DESIGN as image card 2 holds,
-//     GANZ as image card 5 holds — never during a fly-away.
+//   • Image cards: the SINGLE remaining transition (pair out → UND MULTI-
+//     DISZIPLINÄRE GESTALTUNG in at the bottom) plays ONLY while image card
+//     TITLE_END_SWAP_LIN is settled in its hold window — never during a fly-away.
+//     The end-layout card rise/scale-up (galleryEndLayoutFor) rides the same
+//     window so the cards glide up in lockstep with the top text leaving.
 // Frame frac where "WIR LIEFERN" (top, layer 01) has settled and "STRATEGISCHE"
 // (bottom, layer 02) is about to start animating in — layer 02's start time is
 // frame 22.5 of the 100-frame comp (≈22.5/99 of the scrub range).
 const TITLE_F_WIR = 0.227;
+// Image card whose HOLD window hosts the title swap + the end-layout ramp
+// (0-based; card 2 = design_1 — where the old comp's first swap lived).
+const TITLE_END_SWAP_LIN = 2;
 export function galleryTitleFrameFor(gp: number): number {
   if (gp < VID_FLY_END) {
     // Step 1 (top crop) → WIR LIEFERN in; step 2 (bottom crop) → STRATEGISCHE in;
@@ -519,11 +510,31 @@ export function galleryTitleFrameFor(gp: number): number {
     return TITLE_F_STRAT;
   }
   const lin = cardFlyProgressFor(imageGalleryProgress(gp)) * GALLERY_IMAGES.length;
-  if (lin < 2) return TITLE_F_STRAT;
-  if (lin < 2 + STEP_HOLD_FRAC)
-    return lerp(TITLE_F_STRAT, TITLE_F_DESIGN, smoothstep((lin - 2) / STEP_HOLD_FRAC));
-  if (lin < 5) return TITLE_F_DESIGN;
-  if (lin < 5 + STEP_HOLD_FRAC)
-    return lerp(TITLE_F_DESIGN, TITLE_F_GROSS, smoothstep((lin - 5) / STEP_HOLD_FRAC));
-  return TITLE_F_GROSS;
+  if (lin < TITLE_END_SWAP_LIN) return TITLE_F_STRAT;
+  if (lin < TITLE_END_SWAP_LIN + STEP_HOLD_FRAC)
+    return lerp(
+      TITLE_F_STRAT,
+      TITLE_F_END,
+      smoothstep((lin - TITLE_END_SWAP_LIN) / STEP_HOLD_FRAC),
+    );
+  return TITLE_F_END;
+}
+
+// ── End layout: the finale with ONLY the bottom text ─────────────────────────
+// Once the comp reaches its finale (top band empty, just UND MULTIDISZIPLINÄRE
+// GESTALTUNG at the bottom) the supervisor wants the cards to ease UP so the
+// gap between the viewport's top edge and the cards equals the gap between the
+// cards and the bottom text, and to scale up 15% so the gaps don't grow too
+// big. This 0→1 ramp rides EXACTLY the title-swap hold window above, so the
+// cards glide/grow while the front card is settled (nothing flying) and the
+// new layout then persists to the end of the gallery.
+export const END_LAYOUT_SCALE = 1.15;
+// Top edge of the finale text in comp-y fraction (measured render: y 821 of
+// 1000). CardStack converts this to world space with the SAME gutter math
+// GalleryTitles uses, to place the equal-gap card centre.
+export const TITLE_END_TEXT_TOP = 0.821;
+export function galleryEndLayoutFor(gp: number): number {
+  if (gp < VID_FLY_END) return 0;
+  const lin = cardFlyProgressFor(imageGalleryProgress(gp)) * GALLERY_IMAGES.length;
+  return smoothstep(clamp01((lin - TITLE_END_SWAP_LIN) / STEP_HOLD_FRAC));
 }

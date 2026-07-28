@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { figureRectsLive } from "../figureHover";
+import { figureRectsLive, figureHitTesters } from "../figureHover";
 
 // Award tooltip for the flying glass figures (supervisor brief): hovering a
 // figure (tapping on touch) shows its award name pinned to the cursor, ABOVE-
@@ -12,6 +12,12 @@ import { figureRectsLive } from "../figureHover";
 // How long a TAP keeps the tooltip readable before the fade-out starts (touch
 // has no hover life; fade-in 0.25s + this + 1.5s fade-out ≈ 3s on screen).
 const TAP_HOLD_MS = 1200;
+// The precise raycast hit-test follows the figure's SILHOUETTE, so sweeping
+// across an openwork figure (the award ring's hole, gaps between glyphs) drops
+// the hit for a few frames. Keep the last confirmed hit alive this long so the
+// tooltip doesn't flicker over those gaps — short enough that leaving the
+// figure still reads as immediate.
+const HIT_GRACE_MS = 150;
 // Gap between the pointer position and the tooltip's bottom-right corner.
 const GAP_PX = 12;
 // Keep the tooltip inside the viewport when the pointer is near an edge.
@@ -39,6 +45,10 @@ export default function FigureTooltip() {
     let followCursor = true;
     let tapTimer = 0;
 
+    // Last confirmed silhouette hit, for the flicker grace over openwork gaps.
+    let lastHitLabel: string | null = null;
+    let lastHitAt = -Infinity;
+
     const hitLabel = (clientX: number, clientY: number): string | null => {
       const r = layer?.getBoundingClientRect();
       const left = r?.left ?? 0;
@@ -47,12 +57,26 @@ export default function FigureTooltip() {
       const h = r?.height || window.innerHeight;
       const x = ((clientX - left) / w) * 2 - 1;
       const y = -(((clientY - top) / h) * 2 - 1);
-      for (const rect of figureRectsLive.values()) {
+      const now = performance.now();
+      let graced: string | null = null;
+      for (const [name, rect] of figureRectsLive) {
         if (!rect.visible) continue;
-        if (x >= rect.minX && x <= rect.maxX && y >= rect.minY && y <= rect.maxY)
+        if (x < rect.minX || x > rect.maxX || y < rect.minY || y > rect.maxY)
+          continue;
+        // Inside the cheap projected rect — confirm against the actual mesh so
+        // the tooltip only reacts over the visible 3D silhouette, not the box.
+        const precise = figureHitTesters.get(name);
+        if (!precise || precise(x, y)) {
+          lastHitLabel = rect.label;
+          lastHitAt = now;
           return rect.label;
+        }
+        // Raycast missed (a hole/gap in the figure) but we hit this figure a
+        // moment ago — hold the tooltip so sweeping across gaps doesn't flicker.
+        if (rect.label === lastHitLabel && now - lastHitAt < HIT_GRACE_MS)
+          graced = rect.label;
       }
-      return null;
+      return graced;
     };
 
     const show = (label: string) => {

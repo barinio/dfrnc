@@ -8,7 +8,7 @@ import { figureStateFor } from "../playback";
 import type { Phase } from "../playback";
 import { makeArc, FIGURES } from "../arc";
 import type { FigureDef } from "../arc";
-import { figureRectsLive } from "../figureHover";
+import { figureRectsLive, figureHitTesters } from "../figureHover";
 import type { FigureMaterialMode } from "../renderProfile";
 
 useGLTF.setDecoderPath(
@@ -77,10 +77,15 @@ const materialPool = new Map<string, THREE.MeshPhysicalMaterial>();
 // and can't cover fast flicks (the fade decays in time, not scroll distance).
 export const figureOpacityLive = new Map<string, number>();
 
-// Scratch objects for the per-frame screen-rect projection (no allocations in
+// Scratch object for the per-frame screen-rect projection (no allocations in
 // useFrame).
-const _hoverBox = new THREE.Box3();
 const _hoverCorner = new THREE.Vector3();
+
+// The screen AABB of the projected OBB corners still overshoots the glyph
+// silhouette a little; shave this fraction off each side so the tooltip
+// activates only (just about) within the visible element (supervisor: "чисто в
+// рамках елемента").
+const HOVER_RECT_INSET = 0.08;
 
 function materialFor(
   name: string,
@@ -362,6 +367,10 @@ export default function ArcModel({
   // measuring so repeated runs don't compound. useLayoutEffect commits
   // synchronously before the next rendered frame so scale and centering are
   // correct from the very first frame on mount.
+  // Model-local bounding box (modelRef space, after scale + recenter) — the
+  // OBB whose corners the hover hit-rect projection uses each frame.
+  const hoverLocalBoxRef = useRef(new THREE.Box3());
+
   useLayoutEffect(() => {
     if (!modelScene) return;
     modelScene.position.set(0, 0, 0);
@@ -378,6 +387,14 @@ export default function ArcModel({
     // point so rotation pivots about the visual center on all axes.
     const center = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
     modelScene.position.set(-center.x, -center.y, -center.z);
+    // Local bounds after that transform: p → p·s − center. Kept in modelRef
+    // space so the per-frame hover rect can project the ROTATED box (OBB)
+    // instead of a world AABB — the AABB of a spinning figure inflated the
+    // hit-region far past the visible glyphs.
+    hoverLocalBoxRef.current.set(
+      box.min.clone().multiplyScalar(s).sub(center),
+      box.max.clone().multiplyScalar(s).sub(center),
+    );
   }, [modelScene, viewport.width, viewport.height, figure.targetHeight]);
 
   // This figure's dome. side mirrors travel; the apex lands at the curve
@@ -420,6 +437,24 @@ export default function ArcModel({
       figureRectsLive.delete(figure.name);
     };
   }, [figure.name]);
+
+  // Precise silhouette hit-test for the tooltip: raycast the pointer against
+  // the figure's actual mesh. FigureTooltip only calls this after the cheap
+  // projected-rect test passes (see figureHitTesters).
+  useEffect(() => {
+    const raycaster = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    figureHitTesters.set(figure.name, (x, y) => {
+      const model = modelRef.current;
+      if (!model || !model.visible) return false;
+      ndc.set(x, y);
+      raycaster.setFromCamera(ndc, camera);
+      return raycaster.intersectObject(model, true).length > 0;
+    });
+    return () => {
+      figureHitTesters.delete(figure.name);
+    };
+  }, [figure.name, camera]);
 
   useFrame((_state, delta: number) => {
     if (!modelRef.current) return;
@@ -489,15 +524,19 @@ export default function ArcModel({
     material.depthWrite = materialMode !== "light" && op >= 1;
     material.opacity = op * (materialMode === "light" ? LIGHT_GLASS_OPACITY : 1);
 
-    // Project the figure's world bounds to a screen rect (canvas NDC) for the
-    // award tooltip's hover/tap hit-test (FigureTooltip reads figureRectsLive).
-    // Uses last frame's matrixWorld — one frame of lag is imperceptible for a
-    // hover target on a scroll-driven flight. Marked not-visible while the
-    // figure is still fading in/out so a barely-there figure isn't hoverable.
+    // Project the figure's bounds to a screen rect (canvas NDC) for the award
+    // tooltip's hover/tap hit-test (FigureTooltip reads figureRectsLive). The
+    // corners of the model-LOCAL box are pushed through matrixWorld (= the
+    // rotated OBB), which hugs the visible figure far tighter than the world
+    // AABB used before, then the rect is inset a touch more — the tooltip must
+    // only trigger within the element itself. Uses last frame's matrixWorld —
+    // one frame of lag is imperceptible for a hover target on a scroll-driven
+    // flight. Marked not-visible while the figure is still fading in/out so a
+    // barely-there figure isn't hoverable.
     let rect = figureRectsLive.get(figure.name);
+    const localBox = hoverLocalBoxRef.current;
     if (visible && op > 0.5) {
-      _hoverBox.setFromObject(modelRef.current);
-      if (!_hoverBox.isEmpty()) {
+      if (!localBox.isEmpty()) {
         let minX = Infinity;
         let minY = Infinity;
         let maxX = -Infinity;
@@ -505,16 +544,23 @@ export default function ArcModel({
         for (let ci = 0; ci < 8; ci++) {
           _hoverCorner
             .set(
-              ci & 1 ? _hoverBox.max.x : _hoverBox.min.x,
-              ci & 2 ? _hoverBox.max.y : _hoverBox.min.y,
-              ci & 4 ? _hoverBox.max.z : _hoverBox.min.z,
+              ci & 1 ? localBox.max.x : localBox.min.x,
+              ci & 2 ? localBox.max.y : localBox.min.y,
+              ci & 4 ? localBox.max.z : localBox.min.z,
             )
+            .applyMatrix4(modelRef.current.matrixWorld)
             .project(camera);
           if (_hoverCorner.x < minX) minX = _hoverCorner.x;
           if (_hoverCorner.x > maxX) maxX = _hoverCorner.x;
           if (_hoverCorner.y < minY) minY = _hoverCorner.y;
           if (_hoverCorner.y > maxY) maxY = _hoverCorner.y;
         }
+        const insetX = (maxX - minX) * HOVER_RECT_INSET;
+        const insetY = (maxY - minY) * HOVER_RECT_INSET;
+        minX += insetX;
+        maxX -= insetX;
+        minY += insetY;
+        maxY -= insetY;
         if (!rect) {
           rect = { label: figure.label, minX, maxX, minY, maxY, visible: true };
           figureRectsLive.set(figure.name, rect);

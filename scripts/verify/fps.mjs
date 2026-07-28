@@ -23,7 +23,7 @@ const sp = Number(opt("sp", "0.1"));
 const gpRaw = opt("gp", null);
 const gp = gpRaw === null ? null : Number(gpRaw);
 const [w, h] = opt("viewport", "390x844").split("x").map(Number);
-const track = Number(opt("track", "800"));
+const track = Number(opt("track", "1000")); // keep in sync with SCROLL_TRACK_VH
 const wait = Number(opt("wait", "9000"));
 const windowMs = Number(opt("ms", "3000"));
 

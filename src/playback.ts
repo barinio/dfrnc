@@ -142,22 +142,22 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
 // fraction] knots. NOT a single linear ramp (supervisor: "затримати погляд на
 // тексті"): the two captions BAKED into the footage get a slower scrub — more
 // scroll distance per clip-second, so there is time to read them — and the
-// scenic stretch between them is correspondingly faster, keeping the endpoints
-// (and therefore the whole gallery timeline) untouched. Caption windows were
+// scenic stretch between them is correspondingly faster. Caption windows were
 // measured on the extracted frame sequence (12.5 fps, 23.56s clip):
 //   caption 1 "WIR SIND EIN KLEINES…"   ≈ 2.7–7.6s  → clip frac 0.110–0.331
 //   caption 2 "ZUHAUSE IM HERZEN…"      ≈ 16.3s–end → clip frac 0.690–SPLIT
-// Both caption spans get ≈2.25× the scenic run's scroll-per-clip-second (≈1.4×
-// their old linear budget); the scenic middle runs ≈1.65× faster. The second
-// knot pins caption 1's ONSET at its pre-dwell sp (0.682) so the Lottie
-// zoom-through — which must clear the frame by LOTTIE_END (0.68) BEFORE the
-// caption appears — keeps its margin. Re-derive if VIDEO_START / VIDEO_SPLIT /
-// LOTTIE_END move or the clip is swapped.
+// 2026-07-27 "прям дуже повільно" round: SCROLL_TRACK_VH grew 800 → 1000 and
+// ALL 200 extra vh went into the caption dwells — caption 1 now gets ≈225vh of
+// scroll (was ≈106), caption 2 ≈153vh (was ≈72), ≈4.8× the scenic run's
+// scroll-per-clip-second. The scenic stretch keeps its previous ≈76vh budget
+// unchanged. Knot #2 pins caption 1's ONSET just after LOTTIE_END (0.544) so
+// the Lottie zoom-through still clears the frame BEFORE the caption appears.
+// Re-derive if VIDEO_START / VIDEO_SPLIT / LOTTIE_END move or the clip swaps.
 const VIDEO_TIME_KNOTS: readonly (readonly [number, number])[] = [
   [VIDEO_START, 0],
-  [0.682, 0.11], // caption-1 onset — same sp as the old linear map
-  [0.8145, 0.331], // caption-1 read window: ~1.4× more scroll than before
-  [0.9101, 0.69], // scenic stretch (bridge → lake → climb), compressed
+  [0.5456, 0.11], // caption-1 onset — pinned 1.6vh after the zoom-through clears
+  [0.7707, 0.331], // caption-1 read window: ≈225vh of scroll
+  [0.8472, 0.69], // scenic stretch (bridge → lake → climb), same vh as before
   [1, VIDEO_SPLIT], // caption-2 dwell runs to the end of the anim track
 ];
 

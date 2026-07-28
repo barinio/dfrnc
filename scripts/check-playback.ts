@@ -32,12 +32,13 @@ import {
   galleryTitleFrameFracForCard,
   galleryTitleFrameFor,
   galleryTitlesVisibleFor,
+  galleryEndLayoutFor,
   isGalleryTitleHoldFrame,
   cardConveyorDisplayedFor,
   galleryStackDisplayedFor,
   cardConveyorFor,
   cardFlyProgressFor,
-  galleryCtaFromExit,
+  galleryCtaRevealFor,
   imageGalleryProgress,
   imageStackRevealFor,
   imageStackVisibleFor,
@@ -49,8 +50,8 @@ import {
   cardScreenRect,
   galleryImageFocusFor,
   videoCardMorphFor,
-  CTA_REVEAL_FROM,
-  CTA_REVEAL_TO,
+  CTA_REVEAL_END_MARGIN,
+  STEP_HOLD_FRAC,
   GALLERY_IMAGES,
   CARD_FILL,
   CARDS_VH,
@@ -285,11 +286,12 @@ for (const name of ["tokyo"]) {
   );
 }
 // The figures phase begins INSIDE the Lottie reveal: the first figure is
-// already nearly opaque at sp 0.155, just before AUSGEZEICHNETES (the last
-// word) settles at sp ≈ 0.158 (measured empirically from the real export).
+// already nearly opaque at sp 0.124, just before AUSGEZEICHNETES (the last
+// word) settles at sp ≈ 0.126 (measured ≈0.158 on the old 800vh track, ×0.8
+// after the 2026-07-27 track rescale).
 ok(FIGURES_START < REVEAL_END, "figures launch during the reveal");
 ok(
-  figureStateFor(0.155, FIGURES[0].arc.window, "scroll").opacity > 0.9,
+  figureStateFor(0.124, FIGURES[0].arc.window, "scroll").opacity > 0.9,
   "first figure airborne before AUSGEZEICHNETES settles",
 );
 // peaks stay at or below ~half the viewport (0.5 of the upper half) so the
@@ -348,18 +350,36 @@ for (const f of FIGURES) {
     "conveyor local in [0,1)",
   );
 
-  // CTA: coupled to the last card's exit — hidden while the card still covers
-  // the (shrunk) wordmark, fully in by CTA_REVEAL_TO (the card's bottom edge
-  // has swept past the wordmark by then), holds at 1 for the rest of the exit.
-  eq(galleryCtaFromExit(0), 0, "CTA hidden while cards present");
-  eq(galleryCtaFromExit(CTA_REVEAL_FROM), 0, "CTA hidden until the reveal window");
-  eq(galleryCtaFromExit(CTA_REVEAL_TO), 1, "CTA fully in by the end of the reveal window");
-  eq(galleryCtaFromExit(1), 1, "CTA fully in once last card has flown");
-  ok(
-    galleryCtaFromExit(CTA_REVEAL_FROM + 0.75 * (CTA_REVEAL_TO - CTA_REVEAL_FROM)) >
-      galleryCtaFromExit(CTA_REVEAL_FROM + 0.25 * (CTA_REVEAL_TO - CTA_REVEAL_FROM)),
-    "CTA reveal monotonic inside the reveal window",
-  );
+  // CTA: fades in INSIDE the last card's hold and completes just before that
+  // card's fly-away starts — so the second-to-last card is fully gone and the
+  // last photo reads clean before the wordmark surfaces over it.
+  {
+    const gpForLin = (lin: number) => {
+      const igp =
+        CARDS_FLY_START + (lin / N) * (CARDS_FLY_END - CARDS_FLY_START);
+      return IMAGE_GALLERY_START + igp * (1 - IMAGE_GALLERY_START);
+    };
+    const lastFlyStart = N - 1 + STEP_HOLD_FRAC;
+    eq(galleryCtaRevealFor(0), 0, "CTA hidden at the gallery start");
+    eq(galleryCtaRevealFor(gpForLin(N - 1)), 0, "CTA still hidden as the last card settles");
+    ok(
+      galleryCtaRevealFor(gpForLin(lastFlyStart - CTA_REVEAL_END_MARGIN)) >= 1 - 1e-9,
+      "CTA fully in just before the last card's fly-start",
+    );
+    ok(
+      galleryCtaRevealFor(gpForLin(lastFlyStart)) >= 1 - 1e-9,
+      "CTA stays in as the last card lifts off",
+    );
+    eq(galleryCtaRevealFor(1), 1, "CTA fully in at the document bottom");
+    {
+      let prevOp = -1;
+      for (let gp = 0; gp <= 1.0001; gp += 0.002) {
+        const op = galleryCtaRevealFor(gp);
+        ok(op >= prevOp - 1e-9, `CTA reveal monotonic @gp=${gp.toFixed(3)}`);
+        prevOp = op;
+      }
+    }
+  }
 
   // Round 3 — retimed fly window: 0 through the first-card linger, 1 by fly end.
   eq(cardFlyProgressFor(CARDS_FLY_START), 0, "fly progress 0 at fly start");
@@ -397,15 +417,13 @@ for (const f of FIGURES) {
   }
 
   // galleryTitleFrameFracForCard: the per-card frac mapping. Holds land on the
-  // comp's CLEAN integer frames (50/75/99) so the texts never sit in a
-  // half-overlapped state. Anchors + holds + monotonic non-decreasing.
+  // comp's CLEAN frames (50 = settled pair, 90 = static finale) so the texts
+  // never sit in a half-overlapped state. Anchors + holds + monotonic.
   eq(galleryTitleFrameFracForCard(0), 0, "title frac 0 at cp 0");
   eq(titleFrame(galleryTitleFrameFracForCard(1)), 50, "title frame = clean STRATEGISCHE once card 1 is in");
   eq(titleFrame(galleryTitleFrameFracForCard(3)), 50, "title frame holds clean STRATEGISCHE over cards 2,3");
-  eq(titleFrame(galleryTitleFrameFracForCard(4)), 75, "title frame = clean DESIGN NACH MASS once card 4 is in");
-  eq(titleFrame(galleryTitleFrameFracForCard(6)), 75, "title frame holds clean DESIGN NACH MASS over cards 5,6");
-  eq(titleFrame(galleryTitleFrameFracForCard(7)), 99, "title frame = clean GANZ GROSSEN BILDER once card 7 is in");
-  eq(titleFrame(galleryTitleFrameFracForCard(9)), 99, "title frame holds clean over cards 8,9");
+  eq(titleFrame(galleryTitleFrameFracForCard(4)), 90, "title frame = clean MULTIDISZIPLINÄRE finale once card 4 is in");
+  eq(titleFrame(galleryTitleFrameFracForCard(9)), 90, "title frame holds the finale to the end");
   {
     let prev = -1;
     for (let cp = -0.5; cp <= 9.5; cp += 0.01) {
@@ -445,18 +463,20 @@ for (const f of FIGURES) {
   }
 
   // Caption dwell (anim track is piecewise, not linear): the two baked
-  // captions scrub SLOWER (less clip time per unit scroll) than the scenic
-  // stretch between them, and caption 1's onset stays pinned AFTER the Lottie
-  // zoom-through has cleared (LOTTIE_END) so the letters never cover it.
+  // captions scrub MUCH slower (less clip time per unit scroll) than the
+  // scenic stretch between them — the 2026-07-27 "прям дуже повільно" round
+  // put ≈4.8× more scroll per clip-second on the captions — and caption 1's
+  // onset stays pinned AFTER the Lottie zoom-through has cleared (LOTTIE_END)
+  // so the letters never cover it.
   {
     const slope = (sp: number, h = 0.005) =>
       (videoMasterTimeFor(sp + h, 0, "scroll") - videoMasterTimeFor(sp, 0, "scroll")) / h;
-    const cap1 = slope(0.75); // inside caption 1's dwell window
-    const scenic = slope(0.86); // inside the scenic stretch
-    const cap2 = slope(0.96); // inside caption 2's dwell window
-    ok(cap1 < scenic * 0.5, "caption 1 scrubs ≥2× slower than the scenic run");
-    ok(cap2 < scenic * 0.5, "caption 2 scrubs ≥2× slower than the scenic run");
-    const cap1OnsetSp = 0.682; // knot: clip frac 0.11 (caption 1 fades in ~2.7s)
+    const cap1 = slope(0.65); // inside caption 1's dwell window [0.5456, 0.7707]
+    const scenic = slope(0.81); // inside the scenic stretch [0.7707, 0.8472]
+    const cap2 = slope(0.93); // inside caption 2's dwell window [0.8472, 1]
+    ok(cap1 < scenic * 0.25, "caption 1 scrubs ≥4× slower than the scenic run");
+    ok(cap2 < scenic * 0.25, "caption 2 scrubs ≥4× slower than the scenic run");
+    const cap1OnsetSp = 0.5456; // knot: clip frac 0.11 (caption 1 fades in ~2.7s)
     ok(cap1OnsetSp >= LOTTIE_END, "caption 1 onset after the zoom-through clears");
     eq(videoMasterTimeFor(cap1OnsetSp, 0, "scroll"), 0.11, "caption-1 onset knot anchored");
   }
@@ -725,15 +745,35 @@ for (const f of FIGURES) {
         (lin / GALLERY_IMAGES.length) * (CARDS_FLY_END - CARDS_FLY_START);
       return IMAGE_GALLERY_START + igp * (1 - IMAGE_GALLERY_START);
     };
-    eq(titleFrame(galleryTitleFrameFor(gpForLin(3))), 75, "design title freezes on clean frame 75");
-    eq(titleFrame(galleryTitleFrameFor(gpForLin(6))), 99, "final title freezes on clean frame 99");
-    ok(isGalleryTitleHoldFrame(galleryTitleFrameFor(gpForLin(3))), "design clean frame is detected as a hold");
+    // The SINGLE mid-gallery swap (pair → bottom-only finale) plays inside
+    // image card 2's hold window and lands on the comp's static finale (f90).
+    eq(titleFrame(galleryTitleFrameFor(gpForLin(2))), 50, "pair still clean at the swap card's settle");
+    eq(titleFrame(galleryTitleFrameFor(gpForLin(3))), 90, "finale title freezes on clean frame 90");
+    eq(titleFrame(galleryTitleFrameFor(gpForLin(6))), 90, "finale title held to the end");
+    ok(isGalleryTitleHoldFrame(galleryTitleFrameFor(gpForLin(3))), "finale clean frame is detected as a hold");
     ok(
-      !isGalleryTitleHoldFrame(
-        (galleryTitleFrameFor(gpForLin(3)) + galleryTitleFrameFor(gpForLin(6))) / 2,
-      ),
+      !isGalleryTitleHoldFrame(galleryTitleFrameFor(gpForLin(2.25))),
       "transition frames are not detected as holds",
     );
+
+    // End layout (cards ease up + scale 15% for the bottom-only finale): rides
+    // EXACTLY the title-swap hold window, then persists to the end.
+    eq(galleryEndLayoutFor(0), 0, "end layout off at gallery start");
+    eq(galleryEndLayoutFor(gpForLin(2)), 0, "end layout off until the swap");
+    ok(
+      galleryEndLayoutFor(gpForLin(2.25)) > 0 && galleryEndLayoutFor(gpForLin(2.25)) < 1,
+      "end layout ramps during the swap hold",
+    );
+    eq(galleryEndLayoutFor(gpForLin(2.5)), 1, "end layout settled once the finale text is in");
+    eq(galleryEndLayoutFor(1), 1, "end layout persists to the document bottom");
+    {
+      let prevE = -1;
+      for (let gp = 0; gp <= 1.0001; gp += 0.002) {
+        const e = galleryEndLayoutFor(gp);
+        ok(e >= prevE - 1e-9, `end layout monotonic @gp=${gp.toFixed(3)}`);
+        prevE = e;
+      }
+    }
   }
   {
     const galleryTitlesSource = readFileSync(new URL("../src/components/GalleryTitles.tsx", import.meta.url), "utf8");

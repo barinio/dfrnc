@@ -13,13 +13,15 @@ import {
   MAX_ASPECT,
 } from "../gallery";
 
-// titles.json scrubbed by the UNIFIED card progress `cp` (galleryCardProgressFor):
-// the 5 title texts squish in over BOTH the video card (slide #1) and the image
-// cards — each text appears while ITS card is showing. The 1000×1000 comp encodes
-// the title frames at the top(≈8%)/bottom(≈16%) positions, so a full-frame
-// stretched render (preserveAspectRatio:"none"), inset by the 3% vmin gutter,
-// reproduces the layout. The middle of the comp is transparent — the card stack
-// renders there (a separate component). Titles never tilt.
+// titles.json (the "titles_5" comp) scrubbed by galleryTitleFrameFor: WIR
+// LIEFERN + STRATEGISCHE KOMMUNIKATION squish in over the video card's morph
+// steps, then ONE mid-gallery swap replaces the pair with the finale UND
+// MULTIDISZIPLINÄRE GESTALTUNG at the bottom (top band empty from there — the
+// cards ride up into the freed space, see galleryEndLayoutFor). The 1000×1000
+// comp encodes the texts at the top(≈8%)/bottom(≈16%) positions, so a
+// full-frame stretched render (preserveAspectRatio:"none"), inset by the 3%
+// vmin gutter, reproduces the layout. The middle of the comp is transparent —
+// the card stack renders there (a separate component). Titles never tilt.
 //
 // The comp is rendered as TWO half-height planes (top band v∈[0.5,1] = the top
 // title line, bottom band v∈[0,0.5] = the bottom title block) so that on the

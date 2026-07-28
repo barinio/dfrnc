@@ -17,3 +17,12 @@ export interface FigureScreenRect {
 }
 
 export const figureRectsLive = new Map<string, FigureScreenRect>();
+
+// Precise hit-tester per figure: a raycast against the ACTUAL mesh (ArcModel
+// registers one per mounted figure). FigureTooltip calls it only AFTER the
+// cheap screen-rect test passes, so the tooltip reacts over the visible 3D
+// silhouette — not the whole bounding box. The figures are tiny (≈0.7–2.3k
+// triangles), so a raycast is microseconds; the rect pre-check keeps it to at
+// most one call per frame while the cursor is near a figure.
+export type FigureHitTester = (ndcX: number, ndcY: number) => boolean;
+export const figureHitTesters = new Map<string, FigureHitTester>();

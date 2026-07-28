@@ -149,6 +149,10 @@ export default function Scene() {
   // up). CardStack writes it each frame; GalleryTitles reads it to fade the
   // title in exact lockstep with the last card rising — the synchronized finale.
   const cardExitRef = useRef(0);
+  // Extended CTA reveal progress (starts at the second-to-last card's fly, 1
+  // once the last card is gone). CardStack writes it; GalleryCTA fades the
+  // wordmark in over its early stretch — before the last card's exit.
+  const ctaRevealRef = useRef(0);
   const noiseRef = useRef<NoiseEffect | null>(null);
   const toneMapRef = useRef<ScrollToneMappingEffect | null>(null);
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
@@ -430,6 +434,7 @@ export default function Scene() {
             <CardStack
               galleryRef={galleryRef}
               cardExitRef={cardExitRef}
+              ctaRevealRef={ctaRevealRef}
               reducedMotion={reducedMotion}
             />
             {FIGURES.map(
@@ -477,7 +482,7 @@ export default function Scene() {
           )}
         </Canvas>
       </div>
-      <GalleryCTA cardExitRef={cardExitRef} reducedMotion={reducedMotion} />
+      <GalleryCTA ctaRevealRef={ctaRevealRef} reducedMotion={reducedMotion} />
       {/* Award captions for the flying figures — hover on desktop, tap on
           touch. Reads the ArcModels' live screen rects; renders nothing while
           no figure is airborne. */}

@@ -9,7 +9,7 @@ const opt = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const url = opt("url", "http://localhost:5173");
 const mbps = Number(opt("mbps", "6"));
-const track = Number(opt("track", "800"));
+const track = Number(opt("track", "1000")); // keep in sync with SCROLL_TRACK_VH
 const [w, h] = opt("viewport", "390x844").split("x").map(Number);
 const VCARD = 140, FLY = 0.4;
 

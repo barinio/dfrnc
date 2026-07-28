@@ -30,33 +30,38 @@ export const LOTTIE_TOTAL_S = 266 / 30; // 8.8667s — 30 fps, 266 frames
 //                                      the video's baked caption appears (else the
 //                                      giant letters block it, unreadable)
 //   [LOTTIE_END, 1]                    Lottie fully done — pure video owns the frame
-export const REVEAL_END = 0.17;
+// NOTE (2026-07-27): every sp constant below was rescaled ×0.8 when
+// SCROLL_TRACK_VH grew 800 → 1000, so each phase keeps EXACTLY the same scroll
+// budget in vh (0.17·800 = 0.136·1000 = 136vh, etc.). The 200 extra vh all went
+// to the two baked-caption dwells in VIDEO_TIME_KNOTS (playback.ts) — the
+// supervisor wanted the caption scrub "прям дуже повільно".
+export const REVEAL_END = 0.136;
 // Start of the figures phase. Sits INSIDE the Lottie reveal: AUSGEZEICHNETES
-// (the last word to appear) animates in at sp ≈ 0.147–0.158 (measured), and the
-// first figure must already be flying before it settles. With FIGURE_FADE 0.18
-// of a 0.34-wide window, the first figure is fully opaque by sp ≈ 0.153.
-export const FIGURES_START = 0.125;
+// (the last word to appear) animates in near the end of the reveal (measured),
+// and the first figure must already be flying before it settles.
+export const FIGURES_START = 0.1;
 // Lottie hold ends and the typography starts appearing again. Decoupled from
 // FIGURES_END so the tail of the figure sequence exits WHILE the text animates.
 // Pulled in from 0.5 → 0.41 when gba's flight was sped up (its window narrowed
 // 0.55 → 0.36, so it lands ~0.09 sp earlier): the scrub now resumes right as gba
-// touches down (sp ≈0.425), keeping the background continuation tight with no
-// dead-air hold. The readable-words assembly [LOTTIE_SCRUB_START, VIDEO_START] is
+// touches down, keeping the background continuation tight with no dead-air
+// hold. The readable-words assembly [LOTTIE_SCRUB_START, VIDEO_START] is
 // correspondingly a touch slower; its endpoints (LOTTIE_INTRO_S → LOTTIE_ZOOM_S
 // at VIDEO_START) are unchanged, so the zoom-through / caption timing is intact.
-export const LOTTIE_SCRUB_START = 0.41;
+export const LOTTIE_SCRUB_START = 0.328;
 // End of the figures phase. Must stay below VIDEO_START so the last figure's
 // exit completes before the video shows up behind the typography.
-export const FIGURES_END = 0.58;
+export const FIGURES_END = 0.464;
 // The Lottie reaches its final (empty) frame here — the zoom-through has fully
 // passed the camera and the typography is gone. Pulled in from 0.78 so the
 // letters clear BEFORE the video's baked caption ("WIR SIND EIN KLEINES…",
 // on-screen at video-time ≈2.8–7.5s ⇒ sp ≈ 0.682–0.77): with the old 0.78 the
 // caption played its whole life behind the still-zooming giant letters and was
-// unreadable. Must stay ≤ ~0.682 (caption onset) so the frame is clean when it
-// appears. The zoom-through window is [VIDEO_START, LOTTIE_END] (see
-// lottieTimeFor) — keep it short for a snappy fly-past, not a lingering zoom.
-export const LOTTIE_END = 0.68;
+// unreadable. Must stay ≤ the caption-1 onset knot (0.5456 — see
+// VIDEO_TIME_KNOTS) so the frame is clean when it appears. The zoom-through
+// window is [VIDEO_START, LOTTIE_END] (see lottieTimeFor) — keep it short for a
+// snappy fly-past, not a lingering zoom.
+export const LOTTIE_END = 0.544;
 
 // Lottie time (s) reached at VIDEO_START — the seam between the readable-words
 // assembly and the zoom-through. KONZEPTE has just settled and the zoom is about
@@ -66,16 +71,16 @@ export const LOTTIE_END = 0.68;
 export const LOTTIE_ZOOM_S = 5.72;
 
 // Scroll progress where the video starts fading in BEHIND the typography —
-// anchored to the moment KONZEPTE has settled (Lottie t ≈ LOTTIE_ZOOM_S, sp ≈
-// 0.6312) just before the zoom-in begins (~6.1s). The letters occlude the video;
-// it shows through the alphaTest gaps, then the (now short) zoom-through clears
-// them. Measured from real export (Animation - 1781083424055.json).
-export const VIDEO_START = 0.63;
+// anchored to the moment KONZEPTE has settled (Lottie t ≈ LOTTIE_ZOOM_S) just
+// before the zoom-in begins (~6.1s). The letters occlude the video; it shows
+// through the alphaTest gaps, then the (now short) zoom-through clears them.
+// Measured from real export (Animation - 1781083424055.json).
+export const VIDEO_START = 0.504;
 
 // Scroll-progress width of the video fade after VIDEO_START. Tuned so the video
-// reaches 100% opacity at VIDEO time ≈ 1.5s (direction): with VIDEO_SPLIT below,
-// 1.5s ≈ clip-fraction 0.064, reached at sp = VIDEO_START + VIDEO_FADE.
-export const VIDEO_FADE = 0.028;
+// reaches 100% opacity at VIDEO time ≈ 1.4s (direction): the fade completes just
+// over halfway to the caption-1 onset knot (clip frac 0.11).
+export const VIDEO_FADE = 0.0224;
 
 // Fraction of a figure's own flight window spent fading opacity in/out.
 // ZERO by design: per supervisor direction the figures must NOT change opacity —
@@ -87,8 +92,11 @@ export const VIDEO_FADE = 0.028;
 // two at once). figureStateFor returns a binary 0/1 opacity when this is 0.
 export const FIGURE_FADE = 0;
 
-// Total scrollable track height (vh). 800 gives the video phase ~154vh.
-export const SCROLL_TRACK_VH = 800;
+// Total scrollable track height (vh). Raised 800 → 1000 to slow the scrub over
+// the two baked video captions (see VIDEO_TIME_KNOTS): the pre-video phases
+// keep their exact vh budgets (their sp constants were rescaled ×0.8), so all
+// 200 extra vh land in the caption dwells.
+export const SCROLL_TRACK_VH = 1000;
 
 // Additional scrollable track (vh) appended AFTER the animation track for the
 // gallery section. The animation timeline (sp) is unchanged — it stays clamped

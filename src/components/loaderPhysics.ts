@@ -210,6 +210,23 @@ function bouncePhase(progress: number, bounceSpeed: number): number {
   return baseFrequency * phase;
 }
 
+// Total wall-clock length of the settle phase: the moment the LAST ball has
+// rolled fully off the right edge (travel > 1). travel is monotonic in
+// progress, so bisect horizontalDistance for the exit progress once. The
+// loading-text lottie times its disappearance off the midpoint of this
+// (Loader.tsx): "halfway through the final loop where the balls roll out".
+export const SETTLE_TOTAL_MS = (() => {
+  let lo = 1;
+  let hi = 3;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + hi) / 2;
+    if (horizontalDistance(mid) > 1) hi = mid;
+    else lo = mid;
+  }
+  const lastStart = Math.max(...SETTLE_BALLS.map((b) => b.finalPhase));
+  return lastStart * PAUSE_DURATION + hi * TRAVEL_DURATION;
+})();
+
 // Draw the settle frame. Returns true once EVERY ball has rolled fully off the
 // right edge — the loader's completion signal.
 export function drawSettleFrame(

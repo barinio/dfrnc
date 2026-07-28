@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
-import { galleryCtaFromExit } from "../gallery";
 import { approach, idleTilt } from "../cursorTilt";
 // Inline the wordmark as raw SVG markup so it stays crisp vector and keeps its
 // baked-in white (#fff) fills. `?raw` is typed by vite/client. Strip the XML
@@ -19,11 +18,13 @@ const CTA_TILT_RATE = 5; // exponential easing rate toward the target
 const ctaWordmark = ctaWordmarkRaw.slice(ctaWordmarkRaw.indexOf("<svg"));
 
 interface Props {
-  cardExitRef: MutableRefObject<number>;
+  // CTA wordmark opacity, written by CardStack (galleryCtaRevealFor): fades in
+  // late in the last card's hold, complete just before it flies away.
+  ctaRevealRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
 
-export default function GalleryCTA({ cardExitRef, reducedMotion = false }: Props) {
+export default function GalleryCTA({ ctaRevealRef, reducedMotion = false }: Props) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const innerRef = useRef<HTMLAnchorElement>(null);
   const rotX = useRef(0);
@@ -56,7 +57,7 @@ export default function GalleryCTA({ cardExitRef, reducedMotion = false }: Props
       const delta = Math.min((now - last) / 1000, 1 / 30);
       last = now;
       elapsed += delta;
-      const op = galleryCtaFromExit(cardExitRef.current);
+      const op = ctaRevealRef.current;
       const wrap = wrapRef.current;
       const inner = innerRef.current;
       if (wrap) {
@@ -92,7 +93,7 @@ export default function GalleryCTA({ cardExitRef, reducedMotion = false }: Props
       window.removeEventListener("blur", recenter);
       cancelAnimationFrame(raf);
     };
-  }, [cardExitRef, reducedMotion]);
+  }, [ctaRevealRef, reducedMotion]);
 
   return (
     <div ref={wrapRef} className="gallery-cta">

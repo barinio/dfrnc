@@ -79,10 +79,38 @@ body.scroll-locked {
     display: block;
 }
 
+/* "Etwas Geduld, bitte." loading line. The 1000×1000 comp maps onto the same
+   3vmin-inset box the gallery titles use (same distance to the borders), and
+   its text band is the TOP 16% of the comp — so the line renders top-anchored,
+   spanning horizontally, 16% of the viewport height tall. Width capped at 16:9
+   like the titles' MAX_ASPECT so ultra-wide screens don't over-stretch it. */
+.loader-text {
+    position: absolute;
+    inset: 3vmin;
+    display: flex;
+    justify-content: center;
+    pointer-events: none;
+}
+
+.loader-text__anim {
+    width: 100%;
+    max-width: calc((100svh - 6vmin) * 1.7778);
+    height: 100%;
+}
+
+.loader-text__anim svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+}
+
 /* Award tooltip for the flying glass figures. Pinned to the cursor (above-left
-   of the point — FigureTooltip drives the translate3d), white 16px on a
-   blurred 50% black pill. Fade-out is the resting 1.5s opacity transition;
-   the --show state overrides it with the quick 0.25s fade-in. */
+   of the point — FigureTooltip drives the translate3d), white 16px over a
+   barely-there DIFFUSE shadow (supervisor: "ледве тінь розсіяна") — no pill,
+   no blur: a soft radial dark cloud that fades to nothing at the edges, so the
+   text stays readable over the white letters without reading as a chip.
+   Fade-out is the resting 1.5s opacity transition; the --show state overrides
+   it with the quick 0.25s fade-in. */
 .figure-tooltip {
     position: fixed;
     left: 0;
@@ -93,11 +121,14 @@ body.scroll-locked {
     font: 400 16px/1.35 "Founders Grotesk", "Helvetica Neue", Helvetica, Arial,
         sans-serif;
     white-space: nowrap;
-    padding: 10px 14px;
-    border-radius: 10px;
-    background: rgba(0, 0, 0, 0.5);
-    -webkit-backdrop-filter: blur(24px);
-    backdrop-filter: blur(24px);
+    /* generous padding = room for the radial shadow to dissipate around the text */
+    padding: 18px 30px;
+    background: radial-gradient(
+        closest-side,
+        rgba(0, 0, 0, 0.45),
+        rgba(0, 0, 0, 0)
+    );
+    text-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
     opacity: 0;
     /* linear so the 1.5s fade-out reads as its full length ("ease" front-loads
        the drop and the caption looks gone by ~0.9s) */

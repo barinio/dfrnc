@@ -1,10 +1,30 @@
 import { useEffect, useRef } from "react";
+import lottie from "lottie-web";
+import type { AnimationItem } from "lottie-web";
+import loadingTextData from "../assets/loadingText.json";
 import {
   drawLoopFrame,
   drawSettleFrame,
   loopScreenEmpty,
   TRAVEL_DURATION,
+  SETTLE_TOTAL_MS,
 } from "./loaderPhysics";
+
+// "ETWAS GEDULD, BITTE." lottie segments (50 fps comp, measured render):
+// scale-in with overshoot over f0–29, settled clean at f49; stretch-up
+// anticipation + collapse over f49–67, fully empty from f68. The appear part
+// plays immediately on mount and holds on the settled frame.
+const TEXT_IN: [number, number] = [0, 49];
+const TEXT_OUT: [number, number] = [49, 69];
+// The disappear is SLOWED (setSpeed) to last TEXT_OUT_MS and back-timed from
+// the settle phase's total length so it FINISHES TEXT_OUT_END_MARGIN_MS before
+// the last ball rolls off the right edge (supervisor: the text should vanish
+// "за мить до того, як остання кулька викочується" — not seconds earlier,
+// leaving a dull empty wait).
+const TEXT_OUT_MS = 1200;
+const TEXT_OUT_END_MARGIN_MS = 250;
+const TEXT_OUT_NATURAL_MS =
+  ((TEXT_OUT[1] - TEXT_OUT[0]) / loadingTextData.fr) * 1000;
 
 interface LoaderProps {
   // GLTF/Draco/Lottie all ready (Scene's useProgress + animationStarted).
@@ -38,6 +58,8 @@ export default function Loader({
   }, [onSettled]);
   const firedRef = useRef(false);
 
+  const textHostRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (reducedMotion || hidden) return;
     if (firedRef.current) return;
@@ -45,6 +67,25 @@ export default function Loader({
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+
+    // Loading-text lottie (SVG = crisp vector in the DOM overlay). Appears
+    // right away; the disappear segment is triggered from the settle branch of
+    // the rAF loop below.
+    let textAnim: AnimationItem | null = null;
+    let textOutStarted = false;
+    if (textHostRef.current) {
+      textAnim = lottie.loadAnimation({
+        container: textHostRef.current,
+        renderer: "svg",
+        loop: false,
+        autoplay: false,
+        animationData: loadingTextData,
+        rendererSettings: { preserveAspectRatio: "none" },
+      });
+      textAnim.addEventListener("DOMLoaded", () => {
+        textAnim?.playSegments(TEXT_IN, true);
+      });
+    }
 
     const resize = () => {
       const dpr = window.devicePixelRatio || 1;
@@ -82,6 +123,16 @@ export default function Loader({
           settleStart = now;
         }
       } else {
+        // Back-timed from the last ball's exit: start the (slowed) roll-out so
+        // it completes just TEXT_OUT_END_MARGIN_MS before the ball leaves.
+        const outStartMs = SETTLE_TOTAL_MS - TEXT_OUT_END_MARGIN_MS - TEXT_OUT_MS;
+        if (!textOutStarted && now - settleStart >= outStartMs) {
+          textOutStarted = true;
+          if (textAnim) {
+            textAnim.setSpeed(TEXT_OUT_NATURAL_MS / TEXT_OUT_MS);
+            textAnim.playSegments(TEXT_OUT, true);
+          }
+        }
         const done = drawSettleFrame(ctx, now - settleStart, w, h);
         if (done) {
           cancelAnimationFrame(raf);
@@ -97,6 +148,7 @@ export default function Loader({
     return () => {
       cancelAnimationFrame(raf);
       window.removeEventListener("resize", resize);
+      textAnim?.destroy();
     };
   }, [reducedMotion, hidden]);
 
@@ -113,7 +165,14 @@ export default function Loader({
       className={`loader-overlay${hidden ? " loader-overlay--hidden" : ""}`}
       aria-hidden
     >
-      {!reducedMotion && !hidden && <canvas ref={canvasRef} className="loader-canvas" />}
+      {!reducedMotion && !hidden && (
+        <>
+          <canvas ref={canvasRef} className="loader-canvas" />
+          <div className="loader-text">
+            <div ref={textHostRef} className="loader-text__anim" />
+          </div>
+        </>
+      )}
     </div>
   );
 }
