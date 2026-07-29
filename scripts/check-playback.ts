@@ -51,7 +51,7 @@ import {
   galleryImageFocusFor,
   videoCardMorphFor,
   galleryLastCardOpacityFor,
-  CTA_REVEAL_DELAY,
+  CTA_REVEAL_BASE,
   STEP_HOLD_FRAC,
   GALLERY_IMAGES,
   CARD_FILL,
@@ -352,9 +352,10 @@ for (const f of FIGURES) {
   );
 
   // CTA: the wordmark reads as BEHIND the last card. The card no longer flies
-  // up — over its exit window it DISSOLVES in place, and the CTA reveal TRAILS
-  // the dissolve (CTA_REVEAL_DELAY): the card visibly loses opacity FIRST,
-  // then the text surfaces, both complete together.
+  // up — over its exit window it DISSOLVES in place, and the CTA is faintly
+  // there (CTA_REVEAL_BASE 0.1) from the exit onset — the same ramp that
+  // slides the titles off — growing to 1 in exact proportion to the card's
+  // 1 → 0 fade.
   {
     const gpForLin = (lin: number) => {
       const igp =
@@ -369,27 +370,33 @@ for (const f of FIGURES) {
       "CTA still hidden through the last card's hold (dissolve not started)",
     );
     {
-      // Early dissolve: the card has ALREADY visibly faded while the text is
-      // still fully hidden — cause before effect.
+      // Early exit: the card has begun fading AND the text is already faintly
+      // noticeable (≥ the 0.1 floor) — they move together from the onset.
       const gpEarly = gpForLin(N - 0.35);
       ok(
         galleryLastCardOpacityFor(gpEarly) < 0.95,
         "last card already fading early in its exit",
       );
-      eq(galleryCtaRevealFor(gpEarly), 0, "CTA still hidden while the card starts fading");
+      ok(
+        galleryCtaRevealFor(gpEarly) >= CTA_REVEAL_BASE - 1e-9,
+        "CTA already faintly visible as the card starts fading",
+      );
       const mid = galleryCtaRevealFor(gpForLin(N - 0.25)); // halfway through the exit window
-      ok(mid > 0.05 && mid < 0.95, "CTA surfacing while the last card dissolves");
+      ok(mid > 0.4 && mid < 0.7, "CTA halfway in while the card is half dissolved");
     }
     ok(galleryCtaRevealFor(gpForLin(N)) >= 1 - 1e-9, "CTA fully in once the last card has dissolved");
     eq(galleryLastCardOpacityFor(gpForLin(N)), 0, "last card fully dissolved once the CTA is in");
     eq(galleryCtaRevealFor(1), 1, "CTA fully in at the document bottom");
-    // The delay invariant: wherever the text is visible at all, the card has
-    // already lost at least CTA_REVEAL_DELAY of its opacity.
+    // Proportionality invariant: past the micro-ramp, reveal = BASE + (1−BASE)
+    // × (how much opacity the card has lost) at every gp.
     for (let gp = 0; gp <= 1.0001; gp += 0.002) {
-      if (galleryCtaRevealFor(gp) > 0)
-        ok(
-          galleryLastCardOpacityFor(gp) <= 1 - CTA_REVEAL_DELAY + 1e-9,
-          `card visibly faded before the CTA shows @gp=${gp.toFixed(3)}`,
+      const lost = 1 - galleryLastCardOpacityFor(gp);
+      if (lost > 0.05 && lost < 1)
+        eq(
+          galleryCtaRevealFor(gp),
+          CTA_REVEAL_BASE + (1 - CTA_REVEAL_BASE) * lost,
+          `CTA grows in proportion to the card's fade @gp=${gp.toFixed(3)}`,
+          1e-6,
         );
     }
     {

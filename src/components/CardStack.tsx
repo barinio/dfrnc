@@ -43,10 +43,11 @@ const CARD_LEAVE_AT = 0.6;
 // (direction: "слайди без опасіті улітають"). Distance in card-heights, big
 // enough to clear the frame before the next card settles.
 // EXCEPTION — the LAST card: it does not fly. It DISSOLVES in place
-// (galleryLastCardOpacityFor) while the CTA wordmark fades in DELAYED behind it
-// (galleryCtaRevealFor: the card visibly loses opacity first, then the text
-// surfaces), so the text reads as having been BEHIND the card all along
-// (supervisor: "картка типу зникає в прозорість і ми бачимо текст").
+// (galleryLastCardOpacityFor) while the CTA wordmark sits faintly behind it
+// from the exit onset (galleryCtaRevealFor: 0.1 floor, growing to 1 in
+// proportion to the card's fade), so the text reads as having been BEHIND the
+// card all along (supervisor: "картка типу зникає в прозорість і ми бачимо
+// текст").
 const RISE_OFF = 1.9;
 
 // Depth band over which the just-entering card fades in (so the 3-spot cycle
@@ -178,9 +179,9 @@ export default function CardStack({
     // Last-card exit progress for the synchronized finale: 0 until the last card
     // begins leaving, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
-    // CTA opacity trails the last card's in-place dissolve (the card fades
-    // first, the wordmark surfaces through it a beat later) — GalleryCTA reads
-    // the ref.
+    // CTA opacity rides the last card's in-place dissolve: faint (0.1) from
+    // the exit onset, growing proportionally as the card fades — GalleryCTA
+    // reads the ref.
     ctaRevealRef.current = galleryCtaRevealFor(gp);
     const lastCardOpacity = galleryLastCardOpacityFor(gp);
 
