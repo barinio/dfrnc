@@ -106,11 +106,12 @@ body.scroll-locked {
 
 /* Award tooltip for the flying glass figures. Pinned to the cursor (above-left
    of the point — FigureTooltip drives the translate3d), white 16px over a
-   barely-there DIFFUSE shadow (supervisor: "ледве тінь розсіяна") — no pill,
-   no blur: a soft radial dark cloud that fades to nothing at the edges, so the
-   text stays readable over the white letters without reading as a chip.
-   Fade-out is the resting 1.5s opacity transition; the --show state overrides
-   it with the quick 0.25s fade-in. */
+   barely-there DIFFUSE shadow (supervisor: "ледве тінь розсіяна") with a
+   RECTANGULAR footprint (round 2: "як було але не з овалом" — the radial
+   gradient read as an oval, a solid plate as a hard chip). The ::before is a
+   blurred dark RECTANGLE: soft dissolving edges like the old cloud, but the
+   shape stays rectangular. Fade-out is the resting 1.5s opacity transition;
+   the --show state overrides it with the quick 0.25s fade-in. */
 .figure-tooltip {
     position: fixed;
     left: 0;
@@ -121,19 +122,25 @@ body.scroll-locked {
     font: 400 16px/1.35 "Founders Grotesk", "Helvetica Neue", Helvetica, Arial,
         sans-serif;
     white-space: nowrap;
-    /* generous padding = room for the radial shadow to dissipate around the text */
-    padding: 18px 30px;
-    background: radial-gradient(
-        closest-side,
-        rgba(0, 0, 0, 0.45),
-        rgba(0, 0, 0, 0)
-    );
+    /* generous padding = room for the blurred shadow to dissipate around the text */
+    padding: 16px 26px;
     text-shadow: 0 0 10px rgba(0, 0, 0, 0.4);
     opacity: 0;
     /* linear so the 1.5s fade-out reads as its full length ("ease" front-loads
        the drop and the caption looks gone by ~0.9s) */
     transition: opacity 1.5s linear;
     will-change: transform, opacity;
+}
+
+.figure-tooltip::before {
+    content: "";
+    position: absolute;
+    /* the crisp core rectangle under the text; the blur dissolves its edges
+       outward into the padding */
+    inset: 8px 12px;
+    background: rgba(0, 0, 0, 0.45);
+    filter: blur(9px);
+    z-index: -1; /* behind the caption, inside the tooltip's stacking context */
 }
 
 .figure-tooltip--show {
@@ -146,12 +153,13 @@ body.scroll-locked {
    gallery frame (opacity driven imperatively from gallery progress). Reads as a
    10th "slide": JUST the wordmark on the scene's existing dark backdrop. The
    wrapper is transparent ON PURPOSE: it sits ABOVE .canvas-layer, so an opaque
-   background here would fade in as a full-screen sheet ON TOP of the rising last
-   card ("a black sheet drops over the card") instead of "the card flies up to
-   reveal the CTA behind it". The persistent black comes from the canvas's
-   GalleryBackdrop (opaque from gp ≥ BACKDROP_FADE_END through the end of the
-   track), so only the white wordmark fades in here — the card rises freely over
-   that backdrop and uncovers the wordmark underneath. */
+   background here would fade in as a full-screen sheet ON TOP of the dissolving
+   last card ("a black sheet drops over the card") instead of "the card fades to
+   transparent and the CTA shows through from behind". The persistent black
+   comes from the canvas's GalleryBackdrop (opaque from gp ≥ BACKDROP_FADE_END
+   through the end of the track), so only the white wordmark fades in here —
+   the card dissolves in place over that backdrop and the wordmark surfaces
+   through it a beat later (see galleryCtaRevealFor). */
 .gallery-cta {
     position: fixed;
     inset: 0;

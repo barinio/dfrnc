@@ -9,7 +9,7 @@ import puppeteer from "puppeteer-core";
 const opt = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 ? process.argv[i + 1] : d; };
 const CHROME = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const url = opt("url", "http://localhost:5173");
-const track = Number(opt("track", "1000")); // keep in sync with SCROLL_TRACK_VH
+const track = Number(opt("track", "1240")); // keep in sync with SCROLL_TRACK_VH
 const H1 = 750, H2 = 844, W = 390; // mount height (url bar visible) → grown (hidden)
 
 const browser = await puppeteer.launch({
@@ -47,11 +47,19 @@ try {
   }, { track, H1, H2 });
 
   const seq = res.out;
+  // The window's tail runs past the point where the master time clamps at the
+  // clip's LAST frame (the sampling range scales with --track, and past
+  // gp = VID_FLY_END the idx legitimately freezes on the final frame). Trim
+  // that terminal clamped run — a REAL seam dead zone freezes mid-sequence on
+  // the boundary frame and then jumps, which the checks below still catch.
+  let end = seq.length;
+  while (end > 1 && seq[end - 1] === seq[seq.length - 1]) end--;
+  const body = seq.slice(0, end + 1);
   // longest run of identical idx (the freeze) + any backward jumps
   let maxRun = 1, run = 1, maxJump = 0;
-  for (let i = 1; i < seq.length; i++) {
-    if (seq[i] === seq[i - 1]) { run++; maxRun = Math.max(maxRun, run); } else run = 1;
-    maxJump = Math.max(maxJump, Math.abs(seq[i] - seq[i - 1]));
+  for (let i = 1; i < body.length; i++) {
+    if (body[i] === body[i - 1]) { run++; maxRun = Math.max(maxRun, run); } else run = 1;
+    maxJump = Math.max(maxJump, Math.abs(body[i] - body[i - 1]));
   }
   const span = seq.length ? seq[seq.length - 1] - seq[0] : 0;
   console.log(`seam test: ${seq.length} samples across the sp→gp boundary (height ${H1}→${H2})`);

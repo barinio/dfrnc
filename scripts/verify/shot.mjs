@@ -33,7 +33,7 @@ if (gps.some(Number.isNaN)) {
 const out = opt("out", "/tmp/shots");
 const [w, h] = opt("viewport", "1280x800").split("x").map(Number);
 const deviceScaleFactor = Number(opt("device-scale-factor", "1"));
-const track = Number(opt("track", "1000")); // keep in sync with SCROLL_TRACK_VH
+const track = Number(opt("track", "1240")); // keep in sync with SCROLL_TRACK_VH
 const wait = Number(opt("wait", "9000"));
 const reducedMotion = argv.includes("--reduced-motion");
 const ua = opt("ua", null);

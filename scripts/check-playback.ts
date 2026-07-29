@@ -50,7 +50,8 @@ import {
   cardScreenRect,
   galleryImageFocusFor,
   videoCardMorphFor,
-  CTA_REVEAL_END_MARGIN,
+  galleryLastCardOpacityFor,
+  CTA_REVEAL_DELAY,
   STEP_HOLD_FRAC,
   GALLERY_IMAGES,
   CARD_FILL,
@@ -111,7 +112,7 @@ eq(lottieTimeFor(REVEAL_END, "scroll"), LOTTIE_INTRO_S, "lottie @REVEAL_END");
 eq(lottieTimeFor(LOTTIE_SCRUB_START, "scroll"), LOTTIE_INTRO_S, "lottie hold");
 eq(lottieTimeFor(LOTTIE_END, "scroll"), LOTTIE_TOTAL_S, "lottie @LOTTIE_END");
 eq(lottieTimeFor(1, "scroll"), LOTTIE_TOTAL_S, "lottie clamped after end");
-eq(lottieTimeFor(0.5, "done"), LOTTIE_INTRO_S, "lottie done: readable frame held");
+eq(lottieTimeFor(500 / SCROLL_TRACK_VH, "done"), LOTTIE_INTRO_S, "lottie done: readable frame held");
 eq(lottieTimeFor(0.9, "done"), LOTTIE_TOTAL_S, "lottie done: final frame at tail");
 // Reduced-motion handoff: the readable frame may only swap to the (empty)
 // final frame once the video is FULLY opaque — otherwise these users see the
@@ -286,12 +287,12 @@ for (const name of ["tokyo"]) {
   );
 }
 // The figures phase begins INSIDE the Lottie reveal: the first figure is
-// already nearly opaque at sp 0.124, just before AUSGEZEICHNETES (the last
-// word) settles at sp ≈ 0.126 (measured ≈0.158 on the old 800vh track, ×0.8
-// after the 2026-07-27 track rescale).
+// already nearly opaque at 124vh of scroll, just before AUSGEZEICHNETES (the
+// last word) settles at ≈126vh (measured ≈0.158 on the old 800vh track; the
+// probe is anchored in physical vh so track growth never retimes it).
 ok(FIGURES_START < REVEAL_END, "figures launch during the reveal");
 ok(
-  figureStateFor(0.124, FIGURES[0].arc.window, "scroll").opacity > 0.9,
+  figureStateFor(124 / SCROLL_TRACK_VH, FIGURES[0].arc.window, "scroll").opacity > 0.9,
   "first figure airborne before AUSGEZEICHNETES settles",
 );
 // peaks stay at or below ~half the viewport (0.5 of the upper half) so the
@@ -350,9 +351,10 @@ for (const f of FIGURES) {
     "conveyor local in [0,1)",
   );
 
-  // CTA: fades in INSIDE the last card's hold and completes just before that
-  // card's fly-away starts — so the second-to-last card is fully gone and the
-  // last photo reads clean before the wordmark surfaces over it.
+  // CTA: the wordmark reads as BEHIND the last card. The card no longer flies
+  // up — over its exit window it DISSOLVES in place, and the CTA reveal TRAILS
+  // the dissolve (CTA_REVEAL_DELAY): the card visibly loses opacity FIRST,
+  // then the text surfaces, both complete together.
   {
     const gpForLin = (lin: number) => {
       const igp =
@@ -362,15 +364,34 @@ for (const f of FIGURES) {
     const lastFlyStart = N - 1 + STEP_HOLD_FRAC;
     eq(galleryCtaRevealFor(0), 0, "CTA hidden at the gallery start");
     eq(galleryCtaRevealFor(gpForLin(N - 1)), 0, "CTA still hidden as the last card settles");
-    ok(
-      galleryCtaRevealFor(gpForLin(lastFlyStart - CTA_REVEAL_END_MARGIN)) >= 1 - 1e-9,
-      "CTA fully in just before the last card's fly-start",
+    eq(
+      galleryCtaRevealFor(gpForLin(lastFlyStart)), 0,
+      "CTA still hidden through the last card's hold (dissolve not started)",
     );
-    ok(
-      galleryCtaRevealFor(gpForLin(lastFlyStart)) >= 1 - 1e-9,
-      "CTA stays in as the last card lifts off",
-    );
+    {
+      // Early dissolve: the card has ALREADY visibly faded while the text is
+      // still fully hidden — cause before effect.
+      const gpEarly = gpForLin(N - 0.35);
+      ok(
+        galleryLastCardOpacityFor(gpEarly) < 0.95,
+        "last card already fading early in its exit",
+      );
+      eq(galleryCtaRevealFor(gpEarly), 0, "CTA still hidden while the card starts fading");
+      const mid = galleryCtaRevealFor(gpForLin(N - 0.25)); // halfway through the exit window
+      ok(mid > 0.05 && mid < 0.95, "CTA surfacing while the last card dissolves");
+    }
+    ok(galleryCtaRevealFor(gpForLin(N)) >= 1 - 1e-9, "CTA fully in once the last card has dissolved");
+    eq(galleryLastCardOpacityFor(gpForLin(N)), 0, "last card fully dissolved once the CTA is in");
     eq(galleryCtaRevealFor(1), 1, "CTA fully in at the document bottom");
+    // The delay invariant: wherever the text is visible at all, the card has
+    // already lost at least CTA_REVEAL_DELAY of its opacity.
+    for (let gp = 0; gp <= 1.0001; gp += 0.002) {
+      if (galleryCtaRevealFor(gp) > 0)
+        ok(
+          galleryLastCardOpacityFor(gp) <= 1 - CTA_REVEAL_DELAY + 1e-9,
+          `card visibly faded before the CTA shows @gp=${gp.toFixed(3)}`,
+        );
+    }
     {
       let prevOp = -1;
       for (let gp = 0; gp <= 1.0001; gp += 0.002) {
@@ -462,23 +483,37 @@ for (const f of FIGURES) {
     }
   }
 
-  // Caption dwell (anim track is piecewise, not linear): the two baked
-  // captions scrub MUCH slower (less clip time per unit scroll) than the
-  // scenic stretch between them — the 2026-07-27 "прям дуже повільно" round
-  // put ≈4.8× more scroll per clip-second on the captions — and caption 1's
-  // onset stays pinned AFTER the Lottie zoom-through has cleared (LOTTIE_END)
-  // so the letters never cover it.
+  // Caption dwell (anim track is piecewise, not linear): the dwells cover ONLY
+  // the READABLE text windows (2026-07-29 round — no brake while caption 1 is
+  // still behind the clouds, none once either caption is too close to read),
+  // and inside them the slope is 0.5 clip-frac per 1000vh of scroll (0.3 read
+  // as jerky — ≈11vh per source frame) — vs the ≈4.7 scenic pace, an ≈9×
+  // contrast. Caption 1's onset stays pinned AFTER the Lottie zoom-through has
+  // cleared (LOTTIE_END).
   {
+    const vh = (v: number) => v / SCROLL_TRACK_VH; // physical scroll → sp
     const slope = (sp: number, h = 0.005) =>
       (videoMasterTimeFor(sp + h, 0, "scroll") - videoMasterTimeFor(sp, 0, "scroll")) / h;
-    const cap1 = slope(0.65); // inside caption 1's dwell window [0.5456, 0.7707]
-    const scenic = slope(0.81); // inside the scenic stretch [0.7707, 0.8472]
-    const cap2 = slope(0.93); // inside caption 2's dwell window [0.8472, 1]
-    ok(cap1 < scenic * 0.25, "caption 1 scrubs ≥4× slower than the scenic run");
-    ok(cap2 < scenic * 0.25, "caption 2 scrubs ≥4× slower than the scenic run");
-    const cap1OnsetSp = 0.5456; // knot: clip frac 0.11 (caption 1 fades in ~2.7s)
+    // Slope in clip-frac per 1000vh (the units of the dwell "0.5" dial).
+    const slopePerKvh = (sp: number, h?: number) =>
+      slope(sp, h) * (1000 / SCROLL_TRACK_VH);
+    const clouds = slopePerKvh(vh(546.5), 0.002); // caption 1 on screen but still IN the clouds
+    const cap1 = slopePerKvh(vh(650)); // inside caption-1's readable dwell [551.8, 769.8]vh
+    const scenic = slopePerKvh(vh(800)); // scenic run [769.8, 843.1]vh
+    const cap2 = slopePerKvh(vh(1000)); // inside caption-2's readable dwell [843.1, 1228.5]vh
+    ok(Math.abs(cap1 - 0.5) < 0.02, `caption-1 dwell slope ≈0.5 per 1000vh (got ${cap1.toFixed(3)})`);
+    ok(Math.abs(cap2 - 0.5) < 0.02, `caption-2 dwell slope ≈0.5 per 1000vh (got ${cap2.toFixed(3)})`);
+    ok(cap1 < scenic * 0.15, "caption 1 scrubs ≥6× slower than the scenic run");
+    ok(cap2 < scenic * 0.15, "caption 2 scrubs ≥6× slower than the scenic run");
+    ok(clouds > cap1 * 3, "NO dwell while caption 1 is still behind the clouds");
+    const cap1OnsetSp = 545.6 / SCROLL_TRACK_VH; // knot: clip frac 0.11 (caption 1 fades in, in clouds)
     ok(cap1OnsetSp >= LOTTIE_END, "caption 1 onset after the zoom-through clears");
     eq(videoMasterTimeFor(cap1OnsetSp, 0, "scroll"), 0.11, "caption-1 onset knot anchored");
+    // Readable-window anchors (measured on the frame sequence, see playback.ts).
+    eq(videoMasterTimeFor(vh(551.8), 0, "scroll"), 0.139, "caption-1 dwell starts out of the clouds");
+    eq(videoMasterTimeFor(vh(769.8), 0, "scroll"), 0.248, "caption-1 dwell releases at the camera dive");
+    eq(videoMasterTimeFor(vh(843.1), 0, "scroll"), 0.592, "caption-2 dwell starts when the text is readable");
+    eq(videoMasterTimeFor(vh(1228.5), 0, "scroll"), 0.786, "caption-2 dwell releases when too close to read");
   }
 
   // imageGalleryProgress: 0 through the morph + hold, opens at IMAGE_GALLERY_START

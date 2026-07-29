@@ -7,6 +7,7 @@ import {
   galleryStackDisplayedFor,
   galleryEndLayoutFor,
   galleryCtaRevealFor,
+  galleryLastCardOpacityFor,
   cardStackPlacementFor,
   imageStackRevealFor,
   imageStackVisibleFor,
@@ -41,6 +42,11 @@ const CARD_LEAVE_AT = 0.6;
 // The leaving (front) card flies straight UP and off the top — NO opacity fade
 // (direction: "слайди без опасіті улітають"). Distance in card-heights, big
 // enough to clear the frame before the next card settles.
+// EXCEPTION — the LAST card: it does not fly. It DISSOLVES in place
+// (galleryLastCardOpacityFor) while the CTA wordmark fades in DELAYED behind it
+// (galleryCtaRevealFor: the card visibly loses opacity first, then the text
+// surfaces), so the text reads as having been BEHIND the card all along
+// (supervisor: "картка типу зникає в прозорість і ми бачимо текст").
 const RISE_OFF = 1.9;
 
 // Depth band over which the just-entering card fades in (so the 3-spot cycle
@@ -172,9 +178,11 @@ export default function CardStack({
     // Last-card exit progress for the synchronized finale: 0 until the last card
     // begins leaving, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
-    // CTA opacity: fades in late in the LAST card's hold, complete just before
-    // its fly-away starts (galleryCtaRevealFor) — GalleryCTA reads the ref.
+    // CTA opacity trails the last card's in-place dissolve (the card fades
+    // first, the wordmark surfaces through it a beat later) — GalleryCTA reads
+    // the ref.
     ctaRevealRef.current = galleryCtaRevealFor(gp);
+    const lastCardOpacity = galleryLastCardOpacityFor(gp);
 
     // The ONE interactive card = the front-most still on screen: index `lead`
     // until it has risen off (local ≥ CARD_LEAVE_AT), then `lead + 1` takes over.
@@ -185,7 +193,9 @@ export default function CardStack({
     // sits at its fanned spot. Testing against this moving centre keeps parallax
     // tracking the card across its whole life.
     const activeD = activeIdx - displayed;
-    const aRise = activeD < 0 ? -activeD * RISE_OFF : 0;
+    // The last card dissolves in place instead of rising, so its hit-region
+    // stays put through the fade.
+    const aRise = activeD < 0 && activeIdx < n - 1 ? -activeD * RISE_OFF : 0;
     const aPlace = cardStackPlacementFor(activeD);
     // The group is scaled by endScale about its own origin and shifted to
     // groupY, so the active card's on-screen centre (NDC) folds both in.
@@ -229,14 +239,18 @@ export default function CardStack({
         continue;
       }
       const place = cardStackPlacementFor(d);
-      const rise = d < 0 ? -d * RISE_OFF : 0; // leaving front card rises straight up
+      // Leaving front card rises straight up — EXCEPT the last card, which
+      // dissolves in place (its exit reveals the CTA wordmark "behind" it).
+      const isLast = i === n - 1;
+      const rise = d < 0 && !isLast ? -d * RISE_OFF : 0;
       const x = place.x * stackReveal;
       const y = place.y * stackReveal + rise;
       const hoverScale = Math.min(1 + (HOVER_SCALE - 1) * cardAmt.current[i], maxHoverScale);
       const scale = place.scale * hoverScale;
       // Fade in only the entering card (d in (STACK_VISIBLE, +ENTER_FADE)); the
       // front + the two settled neighbours stay fully opaque, and the leaving
-      // front card (d < 0) flies up opaque too.
+      // front card (d < 0) flies up opaque too. The LAST card additionally
+      // multiplies its in-place dissolve (1 → 0 as the CTA fades in).
       const enterFade = THREE.MathUtils.clamp((STACK_VISIBLE + ENTER_FADE - d) / ENTER_FADE, 0, 1);
 
       ref.rotation.set(cardRotX.current[i], cardRotY.current[i], 0);
@@ -246,7 +260,7 @@ export default function CardStack({
       const mesh = ref.children[0] as THREE.Mesh | undefined;
       if (mesh) mesh.renderOrder = 0;
       const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
-      if (mat) mat.opacity = stackOpacity * enterFade;
+      if (mat) mat.opacity = stackOpacity * enterFade * (isLast ? lastCardOpacity : 1);
     }
 
     group.position.y = groupY;

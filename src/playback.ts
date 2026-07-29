@@ -13,6 +13,7 @@ import {
   FIGURE_FADE,
   VIDEO_SPLIT,
   VID_FLY_END,
+  SCROLL_TRACK_VH,
 } from "./constants";
 
 // Single source of truth for the scroll-driven timeline. LottiePlane, the
@@ -142,23 +143,37 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
 // fraction] knots. NOT a single linear ramp (supervisor: "затримати погляд на
 // тексті"): the two captions BAKED into the footage get a slower scrub — more
 // scroll distance per clip-second, so there is time to read them — and the
-// scenic stretch between them is correspondingly faster. Caption windows were
-// measured on the extracted frame sequence (12.5 fps, 23.56s clip):
-//   caption 1 "WIR SIND EIN KLEINES…"   ≈ 2.7–7.6s  → clip frac 0.110–0.331
-//   caption 2 "ZUHAUSE IM HERZEN…"      ≈ 16.3s–end → clip frac 0.690–SPLIT
-// 2026-07-27 "прям дуже повільно" round: SCROLL_TRACK_VH grew 800 → 1000 and
-// ALL 200 extra vh went into the caption dwells — caption 1 now gets ≈225vh of
-// scroll (was ≈106), caption 2 ≈153vh (was ≈72), ≈4.8× the scenic run's
-// scroll-per-clip-second. The scenic stretch keeps its previous ≈76vh budget
-// unchanged. Knot #2 pins caption 1's ONSET just after LOTTIE_END (0.544) so
-// the Lottie zoom-through still clears the frame BEFORE the caption appears.
+// scenic stretch between them is correspondingly faster.
+//
+// 2026-07-29 round (client: the slowdown still "не видно"): the dwells now
+// cover ONLY the windows where the text is actually READABLE — measured frame
+// by frame on the extracted sequence (295 frames / 23.56s):
+//   caption 1 "WIR SIND EIN KLEINES…":  onset frac 0.110 but BEHIND the cloud
+//     fly-through until ≈frame 42 (frac 0.139); readable until the camera dive
+//     rotates it away ≈frame 74 (frac 0.248).
+//   caption 2 "ZUHAUSE IM HERZEN…":  readable from ≈frame 175 (frac 0.592);
+//     too close/rotated to read past ≈frame 232 (frac 0.786).
+// Inside those windows the scrub slope is 0.5 clip-frac per 1000vh of scroll
+// (the old dwell slope was ≈1; the first cut at the supervisor's literal "0.3"
+// advanced only one source frame per ≈11vh and READ AS JERKY — "дьорганим" —
+// so it was relaxed to 0.5 ≈ 6.8vh/frame, still a hard ≈2× brake vs before).
+// EVERYWHERE else (the cloud approach, the bridge→lake→climb scenic run, the
+// post-caption tails) the scrub runs at the familiar scenic pace (≈213vh per
+// unit clip), so the slow-down snaps in exactly when the text becomes readable
+// and releases the moment it stops being readable. SCROLL_TRACK_VH funds the
+// two dwells (≈218vh + ≈385vh); every knot is anchored in PHYSICAL vh so track
+// growth cannot silently retime them.
+// Knot #2 still pins caption 1's ONSET just after LOTTIE_END (544vh) so the
+// Lottie zoom-through clears the frame BEFORE the caption appears.
 // Re-derive if VIDEO_START / VIDEO_SPLIT / LOTTIE_END move or the clip swaps.
 const VIDEO_TIME_KNOTS: readonly (readonly [number, number])[] = [
-  [VIDEO_START, 0],
-  [0.5456, 0.11], // caption-1 onset — pinned 1.6vh after the zoom-through clears
-  [0.7707, 0.331], // caption-1 read window: ≈225vh of scroll
-  [0.8472, 0.69], // scenic stretch (bridge → lake → climb), same vh as before
-  [1, VIDEO_SPLIT], // caption-2 dwell runs to the end of the anim track
+  [VIDEO_START, 0], // 504vh
+  [545.6 / SCROLL_TRACK_VH, 0.11], // caption-1 onset (in clouds) — 1.6vh after the zoom-through clears
+  [551.8 / SCROLL_TRACK_VH, 0.139], // out of the clouds → text readable; dwell begins
+  [769.8 / SCROLL_TRACK_VH, 0.248], // caption-1 dwell ends (camera dives): ≈218vh @ slope 0.5
+  [843.1 / SCROLL_TRACK_VH, 0.592], // scenic run (bridge → lake → climb) at the normal pace
+  [1228.5 / SCROLL_TRACK_VH, 0.786], // caption-2 dwell ends (too close to read): ≈385vh @ slope 0.5
+  [1, VIDEO_SPLIT], // short scenic tail to the morph point
 ];
 
 function animTrackClipTimeFor(sp: number): number {

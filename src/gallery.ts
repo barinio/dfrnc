@@ -105,22 +105,11 @@ export const MAX_ASPECT = 16 / 9; // cap; letterbox beyond
 // [BACKDROP_FADE_END, TITLES_END]  titles scrub 0→1 (the 3 title frames)
 // [TITLES_END, CTA_START]  titles hold on frame 3 while the last card flies out
 // CTA_START marks the END of the card phase (last card gone by here). The CTA
-// reveal itself is no longer gp-gated — it tracks the last card's exit (see
-// galleryCtaFromExit) so it appears right as the card + title finish leaving.
+// reveal itself is no longer gp-gated — it is the inverse of the last card's
+// in-place dissolve (see galleryCtaRevealFor / galleryLastCardOpacityFor).
 export const BACKDROP_FADE_END = 0.06;
 export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
-// CTA reveal timing, in card-beat (lin) units. Driven by the CONTINUOUS linear
-// card progress (NOT `displayed`, which freezes at integers during holds): the
-// fade runs entirely inside the LAST card's HOLD and completes
-// CTA_REVEAL_END_MARGIN of a beat before its fly-away begins (supervisor:
-// "текст з'являвся майже перед тим, як стартує остання картинка на
-// відходження"). Sequencing this gives: the second-to-last card fully leaves →
-// the last photo reads CLEAN for the first stretch of its hold → the wordmark
-// surfaces over it (DOM-above bleed approved earlier) → the card lifts off and
-// leaves the wordmark alone on the backdrop.
-export const CTA_REVEAL_SPAN = 0.3; // fade width, in beats
-export const CTA_REVEAL_END_MARGIN = 0.03; // beats between fade-complete and the fly-start
 
 // ── Round 3 retiming ─────────────────────────────────────────────────────────
 // The card conveyor TRAILS the title scrub so a card leaves at the END of each
@@ -388,15 +377,39 @@ export function cardFlyProgressFor(gp: number): number {
   return clamp01((gp - CARDS_FLY_START) / (CARDS_FLY_END - CARDS_FLY_START));
 }
 
+// The last card's exit ramp (0 → 1 over the final conveyor beat's fly window,
+// already eased by cardConveyorDisplayedFor's smoothstep flip). Drives BOTH the
+// card's in-place dissolve and the delayed CTA reveal below.
+function galleryLastCardExitFor(gp: number): number {
+  const n = GALLERY_IMAGES.length;
+  return clamp01(galleryStackDisplayedFor(gp) - (n - 1));
+}
+
+// The wordmark reads as sitting BEHIND the last card (supervisor: "текст був
+// позаду картки, і картка типу зникає в прозорість і ми бачимо текст"): the
+// last card does NOT fly up — over its exit window it DISSOLVES in place.
+// CardStack multiplies this into the last card's material opacity in place of
+// the fly-up rise.
+export function galleryLastCardOpacityFor(gp: number): number {
+  return 1 - galleryLastCardExitFor(gp);
+}
+
+// How much of the card's dissolve must have happened BEFORE the wordmark
+// starts fading in (supervisor round 2: "текст має зʼявлятись трішечки
+// пізніше... карточка уходить в опасіті, і через це починає бути видно
+// текст") — the card visibly loses opacity first, and only then the text
+// surfaces, completing together with the card's disappearance.
+export const CTA_REVEAL_DELAY = 0.35;
+
 // CTA overlay opacity as a pure function of gallery progress. CardStack writes
 // it into ctaRevealRef each frame; GalleryCTA (a DOM overlay with its own rAF)
-// reads the ref. The fade window sits just before the last card's fly-start —
-// see the CTA_REVEAL_SPAN comment above for the full sequencing.
+// reads the ref. A DELAYED remap of the card's exit: 0 until the card has lost
+// CTA_REVEAL_DELAY of its opacity, then ramps to 1 as the card finishes
+// dissolving — cause (card fades) reads before effect (text appears).
 export function galleryCtaRevealFor(gp: number): number {
-  const n = GALLERY_IMAGES.length;
-  const lin = cardFlyProgressFor(imageGalleryProgress(gp)) * n;
-  const to = n - 1 + STEP_HOLD_FRAC - CTA_REVEAL_END_MARGIN;
-  return smoothstep(clamp01((lin - (to - CTA_REVEAL_SPAN)) / CTA_REVEAL_SPAN));
+  return clamp01(
+    (galleryLastCardExitFor(gp) - CTA_REVEAL_DELAY) / (1 - CTA_REVEAL_DELAY),
+  );
 }
 
 // ── Unified card progress (titles sequence by which card is showing) ─────────
