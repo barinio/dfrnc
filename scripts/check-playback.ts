@@ -51,7 +51,7 @@ import {
   galleryImageFocusFor,
   videoCardMorphFor,
   galleryLastCardOpacityFor,
-  CTA_REVEAL_BASE,
+  galleryCtaPlaneOpacityFor,
   STEP_HOLD_FRAC,
   GALLERY_IMAGES,
   CARD_FILL,
@@ -351,11 +351,12 @@ for (const f of FIGURES) {
     "conveyor local in [0,1)",
   );
 
-  // CTA: the wordmark reads as BEHIND the last card. The card no longer flies
-  // up — over its exit window it DISSOLVES in place, and the CTA is faintly
-  // there (CTA_REVEAL_BASE 0.1) from the exit onset — the same ramp that
-  // slides the titles off — growing to 1 in exact proportion to the card's
-  // 1 → 0 fade.
+  // CTA: the wordmark sits BEHIND the last card — REAL layering (in-canvas
+  // CtaWordmark plane under the card). The card no longer flies up — over its
+  // exit window it DISSOLVES in place ON TOP of the text. The plane's own
+  // opacity (galleryCtaPlaneOpacityFor) snaps to 1 over a tiny onset ramp; the
+  // visible reveal is then purely the card's fade. galleryCtaRevealFor now
+  // just mirrors the exit ramp (it gates the DOM mailto hit-area).
   {
     const gpForLin = (lin: number) => {
       const igp =
@@ -364,47 +365,52 @@ for (const f of FIGURES) {
     };
     const lastFlyStart = N - 1 + STEP_HOLD_FRAC;
     eq(galleryCtaRevealFor(0), 0, "CTA hidden at the gallery start");
+    eq(galleryCtaPlaneOpacityFor(0), 0, "wordmark plane hidden at the gallery start");
     eq(galleryCtaRevealFor(gpForLin(N - 1)), 0, "CTA still hidden as the last card settles");
     eq(
-      galleryCtaRevealFor(gpForLin(lastFlyStart)), 0,
-      "CTA still hidden through the last card's hold (dissolve not started)",
+      galleryCtaPlaneOpacityFor(gpForLin(lastFlyStart)), 0,
+      "wordmark plane still hidden through the last card's hold (nothing may peek around the card)",
     );
     {
-      // Early exit: the card has begun fading AND the text is already faintly
-      // noticeable (≥ the 0.1 floor) — they move together from the onset.
+      // Early exit: the card has begun fading and the plane is ALREADY at full
+      // opacity (past the tiny onset ramp) — the card's dissolve alone drives
+      // what the viewer sees from here.
       const gpEarly = gpForLin(N - 0.35);
       ok(
         galleryLastCardOpacityFor(gpEarly) < 0.95,
         "last card already fading early in its exit",
       );
       ok(
-        galleryCtaRevealFor(gpEarly) >= CTA_REVEAL_BASE - 1e-9,
-        "CTA already faintly visible as the card starts fading",
+        galleryCtaPlaneOpacityFor(gpEarly) >= 1 - 1e-9,
+        "wordmark plane fully opaque once the dissolve is underway",
       );
       const mid = galleryCtaRevealFor(gpForLin(N - 0.25)); // halfway through the exit window
-      ok(mid > 0.4 && mid < 0.7, "CTA halfway in while the card is half dissolved");
+      ok(mid > 0.4 && mid < 0.7, "hit-area gate halfway while the card is half dissolved");
     }
     ok(galleryCtaRevealFor(gpForLin(N)) >= 1 - 1e-9, "CTA fully in once the last card has dissolved");
     eq(galleryLastCardOpacityFor(gpForLin(N)), 0, "last card fully dissolved once the CTA is in");
     eq(galleryCtaRevealFor(1), 1, "CTA fully in at the document bottom");
-    // Proportionality invariant: past the micro-ramp, reveal = BASE + (1−BASE)
-    // × (how much opacity the card has lost) at every gp.
+    // Complement invariant: the DOM gate follows the card's opacity loss 1:1 at
+    // every gp — reveal = 1 − cardOpacity across the whole exit.
     for (let gp = 0; gp <= 1.0001; gp += 0.002) {
       const lost = 1 - galleryLastCardOpacityFor(gp);
-      if (lost > 0.05 && lost < 1)
-        eq(
-          galleryCtaRevealFor(gp),
-          CTA_REVEAL_BASE + (1 - CTA_REVEAL_BASE) * lost,
-          `CTA grows in proportion to the card's fade @gp=${gp.toFixed(3)}`,
-          1e-6,
-        );
+      eq(
+        galleryCtaRevealFor(gp),
+        lost,
+        `CTA gate is the exact complement of the card's opacity @gp=${gp.toFixed(3)}`,
+        1e-6,
+      );
     }
     {
       let prevOp = -1;
+      let prevPlane = -1;
       for (let gp = 0; gp <= 1.0001; gp += 0.002) {
         const op = galleryCtaRevealFor(gp);
         ok(op >= prevOp - 1e-9, `CTA reveal monotonic @gp=${gp.toFixed(3)}`);
         prevOp = op;
+        const plane = galleryCtaPlaneOpacityFor(gp);
+        ok(plane >= prevPlane - 1e-9, `wordmark plane opacity monotonic @gp=${gp.toFixed(3)}`);
+        prevPlane = plane;
       }
     }
   }

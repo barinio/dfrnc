@@ -43,11 +43,10 @@ const CARD_LEAVE_AT = 0.6;
 // (direction: "слайди без опасіті улітають"). Distance in card-heights, big
 // enough to clear the frame before the next card settles.
 // EXCEPTION — the LAST card: it does not fly. It DISSOLVES in place
-// (galleryLastCardOpacityFor) while the CTA wordmark sits faintly behind it
-// from the exit onset (galleryCtaRevealFor: 0.1 floor, growing to 1 in
-// proportion to the card's fade), so the text reads as having been BEHIND the
-// card all along (supervisor: "картка типу зникає в прозорість і ми бачимо
-// текст").
+// (galleryLastCardOpacityFor) ON TOP of the in-canvas CTA wordmark
+// (CtaWordmark, renderOrder −1) — real layering since round 4 (supervisor:
+// "потрібно аби карточка була попереду тексту, і типу карточка в опасіті -
+// а там текст"), so the glyphs show TINTED through the semi-opaque photo.
 const RISE_OFF = 1.9;
 
 // Depth band over which the just-entering card fades in (so the 3-spot cycle
@@ -57,8 +56,8 @@ const ENTER_FADE = 0.4;
 interface Props {
   galleryRef: MutableRefObject<number>;
   cardExitRef: MutableRefObject<number>;
-  // CTA wordmark opacity (galleryCtaRevealFor): 0 until late in the LAST
-  // card's hold, 1 just before that card starts flying. GalleryCTA reads it.
+  // Card-exit ramp (galleryCtaRevealFor): 0 through the last card's hold, 1
+  // once it has dissolved. GalleryCTA gates its mailto hit-area on it.
   ctaRevealRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
@@ -179,9 +178,8 @@ export default function CardStack({
     // Last-card exit progress for the synchronized finale: 0 until the last card
     // begins leaving, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
-    // CTA opacity rides the last card's in-place dissolve: faint (0.1) from
-    // the exit onset, growing proportionally as the card fades — GalleryCTA
-    // reads the ref.
+    // The DOM hit-area's gate rides the last card's in-place dissolve —
+    // GalleryCTA reads the ref (the VISIBLE wordmark is CtaWordmark in-canvas).
     ctaRevealRef.current = galleryCtaRevealFor(gp);
     const lastCardOpacity = galleryLastCardOpacityFor(gp);
 

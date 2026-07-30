@@ -28,6 +28,7 @@ import GalleryBackdrop from "./GalleryBackdrop";
 import GalleryTitles from "./GalleryTitles";
 import CardStack from "./CardStack";
 import GalleryCTA from "./GalleryCTA";
+import CtaWordmark from "./CtaWordmark";
 import FigureTooltip from "./FigureTooltip";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
@@ -437,6 +438,14 @@ export default function Scene() {
               ctaRevealRef={ctaRevealRef}
               reducedMotion={reducedMotion}
             />
+            {/* In-canvas CTA wordmark — drawn BETWEEN the backdrop and the
+                cards so the last card dissolves ON TOP of the text; the DOM
+                GalleryCTA below is only the invisible mailto hit-area. */}
+            <CtaWordmark
+              galleryRef={galleryRef}
+              reducedMotion={reducedMotion}
+              maxTextureDpr={renderProfile.maxCanvasTextureDpr}
+            />
             {FIGURES.map(
               (f, i) =>
                 !reducedMotion &&
@@ -482,7 +491,7 @@ export default function Scene() {
           )}
         </Canvas>
       </div>
-      <GalleryCTA ctaRevealRef={ctaRevealRef} reducedMotion={reducedMotion} />
+      <GalleryCTA ctaRevealRef={ctaRevealRef} />
       {/* Award captions for the flying figures — hover on desktop, tap on
           touch. Reads the ArcModels' live screen rects; renders nothing while
           no figure is airborne. */}

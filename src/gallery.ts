@@ -385,36 +385,38 @@ function galleryLastCardExitFor(gp: number): number {
   return clamp01(galleryStackDisplayedFor(gp) - (n - 1));
 }
 
-// The wordmark reads as sitting BEHIND the last card (supervisor: "текст був
-// позаду картки, і картка типу зникає в прозорість і ми бачимо текст"): the
-// last card does NOT fly up — over its exit window it DISSOLVES in place.
+// The wordmark sits BEHIND the last card — since round 4 this is REAL layering
+// (supervisor: "потрібно аби карточка була попереду тексту, і типу карточка в
+// опасіті - а там текст"): the wordmark renders INSIDE the canvas (CtaWordmark,
+// renderOrder −1) between the black backdrop and the cards, and the last card
+// does NOT fly up — over its exit window it DISSOLVES in place ON TOP of the
+// text, tinting the glyphs through the photo while it's still semi-opaque.
 // CardStack multiplies this into the last card's material opacity in place of
 // the fly-up rise.
 export function galleryLastCardOpacityFor(gp: number): number {
   return 1 - galleryLastCardExitFor(gp);
 }
 
-// The wordmark's opacity floor the moment the exit begins (supervisor round 3:
-// "зроби його одразу помітним, але з опасіті 0.1, і нехай росте до 1
-// пропорційно до того, як карточка втрачає видимість з 1 до 0") — as soon as
-// the bottom title starts sliding off / the card starts dissolving (they share
-// the SAME exit ramp), the text is already faintly there at 0.1 and grows to 1
-// in exact proportion to the card's 1 → 0 fade.
-export const CTA_REVEAL_BASE = 0.1;
-// Tiny slice of the exit over which the 0.1 floor itself fades in, so a scrub
-// across the exit onset never pops the text 0 → 0.1 in a single frame.
-const CTA_REVEAL_BASE_RAMP = 0.05;
+// Tiny slice of the exit over which the in-canvas wordmark's own opacity snaps
+// to full, so a scrub across the exit onset never pops it in a single frame.
+// The card is still ~95% opaque at the end of this ramp, so the text still
+// ENTERS at ~5% visibility — the reveal itself is purely the card's dissolve
+// over the fully-opaque glyphs (the old simulated 0.1 floor is gone).
+const CTA_PLANE_RAMP = 0.05;
 
-// CTA overlay opacity as a pure function of gallery progress. CardStack writes
-// it into ctaRevealRef each frame; GalleryCTA (a DOM overlay with its own rAF)
-// reads the ref. 0 through the hold; from the exit onset it jumps (via the
-// micro-ramp) to the CTA_REVEAL_BASE floor and then rises linearly with the
-// exit — i.e. proportionally to the card's opacity loss — reaching 1 exactly
-// as the card disappears.
+// Opacity of the in-canvas wordmark plane (CtaWordmark reads this every frame):
+// 0 through the hold — so nothing can peek around the card's edges — then full
+// almost immediately as the dissolve starts; from there what the viewer sees is
+// true behind-the-card compositing driven by galleryLastCardOpacityFor.
+export function galleryCtaPlaneOpacityFor(gp: number): number {
+  return clamp01(galleryLastCardExitFor(gp) / CTA_PLANE_RAMP);
+}
+
+// DOM-side CTA ramp — now only GATES the invisible mailto hit-area (GalleryCTA
+// unlocks pointer events above 0.5) and its focus ring; the VISUAL lives in
+// CtaWordmark. Follows the card's exit 1:1, 1 exactly as the card disappears.
 export function galleryCtaRevealFor(gp: number): number {
-  const exit = galleryLastCardExitFor(gp);
-  const base = CTA_REVEAL_BASE * clamp01(exit / CTA_REVEAL_BASE_RAMP);
-  return clamp01(base + (1 - CTA_REVEAL_BASE) * exit);
+  return galleryLastCardExitFor(gp);
 }
 
 // ── Unified card progress (titles sequence by which card is showing) ─────────
