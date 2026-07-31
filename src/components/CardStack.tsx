@@ -6,8 +6,6 @@ import GalleryCard, { preloadGalleryTextures } from "./GalleryCard";
 import {
   galleryStackDisplayedFor,
   galleryEndLayoutFor,
-  galleryCtaRevealFor,
-  galleryLastCardOpacityFor,
   cardStackPlacementFor,
   imageStackRevealFor,
   imageStackVisibleFor,
@@ -41,12 +39,9 @@ const CARD_LEAVE_AT = 0.6;
 
 // The leaving (front) card flies straight UP and off the top — NO opacity fade
 // (direction: "слайди без опасіті улітають"). Distance in card-heights, big
-// enough to clear the frame before the next card settles.
-// EXCEPTION — the LAST card: it does not fly. It DISSOLVES in place
-// (galleryLastCardOpacityFor) ON TOP of the in-canvas CTA wordmark
-// (CtaWordmark, renderOrder −1) — real layering since round 4 (supervisor:
-// "потрібно аби карточка була попереду тексту, і типу карточка в опасіті -
-// а там текст"), so the glyphs show TINTED through the semi-opaque photo.
+// enough to clear the frame before the next card settles. The LAST card leaves
+// the same way — its rise uncovers the CTA wordmark waiting underneath (the
+// DOM overlay fades in over the sweep window, see galleryCtaFromExit).
 const RISE_OFF = 1.9;
 
 // Depth band over which the just-entering card fades in (so the 3-spot cycle
@@ -56,16 +51,17 @@ const ENTER_FADE = 0.4;
 interface Props {
   galleryRef: MutableRefObject<number>;
   cardExitRef: MutableRefObject<number>;
-  // Card-exit ramp (galleryCtaRevealFor): 0 through the last card's hold, 1
-  // once it has dissolved. GalleryCTA gates its mailto hit-area on it.
-  ctaRevealRef: MutableRefObject<number>;
+  // Screen fraction (from the top) of the LAST card's live bottom edge —
+  // GalleryCTA clips the wordmark to BELOW this line, so the rising card
+  // uncovers already-opaque text. 1 = wordmark fully hidden, 0 = no clipping.
+  ctaClipRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
 
 export default function CardStack({
   galleryRef,
   cardExitRef,
-  ctaRevealRef,
+  ctaClipRef,
   reducedMotion = false,
 }: Props) {
   const { viewport, gl } = useThree();
@@ -147,7 +143,7 @@ export default function CardStack({
     group.visible = stackOpacity > 0;
     if (!group.visible) {
       cardExitRef.current = 0; // titles stay fully opaque before the card phase
-      ctaRevealRef.current = 0;
+      ctaClipRef.current = 1; // wordmark fully clipped outside the card phase
       return;
     }
     group.renderOrder = 0;
@@ -176,12 +172,9 @@ export default function CardStack({
     const local = displayed - lead;
 
     // Last-card exit progress for the synchronized finale: 0 until the last card
-    // begins leaving, 1 once it is gone. GalleryTitles fades by (1 − cardExit).
+    // begins leaving, 1 once it is gone. GalleryTitles fades by (1 − cardExit);
+    // GalleryCTA fades IN over its early stretch (galleryCtaFromExit).
     cardExitRef.current = THREE.MathUtils.clamp(displayed - (n - 1), 0, 1);
-    // The DOM hit-area's gate rides the last card's in-place dissolve —
-    // GalleryCTA reads the ref (the VISIBLE wordmark is CtaWordmark in-canvas).
-    ctaRevealRef.current = galleryCtaRevealFor(gp);
-    const lastCardOpacity = galleryLastCardOpacityFor(gp);
 
     // The ONE interactive card = the front-most still on screen: index `lead`
     // until it has risen off (local ≥ CARD_LEAVE_AT), then `lead + 1` takes over.
@@ -192,9 +185,7 @@ export default function CardStack({
     // sits at its fanned spot. Testing against this moving centre keeps parallax
     // tracking the card across its whole life.
     const activeD = activeIdx - displayed;
-    // The last card dissolves in place instead of rising, so its hit-region
-    // stays put through the fade.
-    const aRise = activeD < 0 && activeIdx < n - 1 ? -activeD * RISE_OFF : 0;
+    const aRise = activeD < 0 ? -activeD * RISE_OFF : 0;
     const aPlace = cardStackPlacementFor(activeD);
     // The group is scaled by endScale about its own origin and shifted to
     // groupY, so the active card's on-screen centre (NDC) folds both in.
@@ -215,6 +206,11 @@ export default function CardStack({
     const ampTarget = over ? 1 : 0;
     group.rotation.set(0, 0, 0);
     group.scale.setScalar(endScale);
+
+    // CTA clip line — overwritten with the LAST card's real bottom edge while
+    // that card is on screen; once it has fully flown (d ≤ −1, hidden) nothing
+    // covers the wordmark any more, so the clip opens completely.
+    let lastCardBottomFrac = cardExitRef.current >= 1 ? 0 : 1;
 
     // Walk all cards; each card's continuous depth d = i − displayed drives its
     // fanned placement: d ≤ 0 = the front card (rising up off the top as it
@@ -238,18 +234,14 @@ export default function CardStack({
         continue;
       }
       const place = cardStackPlacementFor(d);
-      // Leaving front card rises straight up — EXCEPT the last card, which
-      // dissolves in place (its exit reveals the CTA wordmark "behind" it).
-      const isLast = i === n - 1;
-      const rise = d < 0 && !isLast ? -d * RISE_OFF : 0;
+      const rise = d < 0 ? -d * RISE_OFF : 0; // leaving front card rises straight up
       const x = place.x * stackReveal;
       const y = place.y * stackReveal + rise;
       const hoverScale = Math.min(1 + (HOVER_SCALE - 1) * cardAmt.current[i], maxHoverScale);
       const scale = place.scale * hoverScale;
       // Fade in only the entering card (d in (STACK_VISIBLE, +ENTER_FADE)); the
       // front + the two settled neighbours stay fully opaque, and the leaving
-      // front card (d < 0) flies up opaque too. The LAST card additionally
-      // multiplies its in-place dissolve (1 → 0 as the CTA fades in).
+      // front card (d < 0) flies up opaque too.
       const enterFade = THREE.MathUtils.clamp((STACK_VISIBLE + ENTER_FADE - d) / ENTER_FADE, 0, 1);
 
       ref.rotation.set(cardRotX.current[i], cardRotY.current[i], 0);
@@ -259,8 +251,17 @@ export default function CardStack({
       const mesh = ref.children[0] as THREE.Mesh | undefined;
       if (mesh) mesh.renderOrder = 0;
       const mat = mesh?.material as THREE.MeshBasicMaterial | undefined;
-      if (mat) mat.opacity = stackOpacity * enterFade * (isLast ? lastCardOpacity : 1);
+      if (mat) mat.opacity = stackOpacity * enterFade;
+
+      if (i === n - 1) {
+        // The card's world-space bottom edge (group shift + scale folded in,
+        // incl. the live hover scale) → screen fraction from the top for the
+        // CTA clip. NDC y = world / (viewport.height / 2).
+        const bottomWorld = groupY + endScale * (y * cardH - (cardH * scale) / 2);
+        lastCardBottomFrac = 0.5 - bottomWorld / viewport.height;
+      }
     }
+    ctaClipRef.current = THREE.MathUtils.clamp(lastCardBottomFrac, 0, 1);
 
     group.position.y = groupY;
   });

@@ -149,13 +149,19 @@ body.scroll-locked {
     transition-timing-function: ease;
 }
 
-/* Gallery CTA — since round 4 this DOM overlay is ONLY the invisible mailto
-   hit-area + focus ring: the VISIBLE wordmark moved INSIDE the canvas
-   (CtaWordmark, drawn between the black backdrop and the cards) so the last
-   card genuinely dissolves ON TOP of the text (supervisor: "потрібно аби
-   карточка була попереду тексту, і типу карточка в опасіті - а там текст").
-   The wrapper stays transparent and keeps the exact box the visual occupies —
-   pointer events unlock late in the card's dissolve (galleryCtaRevealFor). */
+/* Gallery CTA — DOM overlay above the fixed canvas, shown only on the final
+   gallery frame (opacity driven imperatively from gallery progress). Reads as a
+   10th "slide": JUST the wordmark on the scene's existing dark backdrop. The
+   wrapper is transparent ON PURPOSE: it sits ABOVE .canvas-layer, so an opaque
+   background here would fade in as a full-screen sheet ON TOP of the rising last
+   card ("a black sheet drops over the card") instead of "the card flies up to
+   reveal the CTA behind it". The persistent black comes from the canvas's
+   GalleryBackdrop (opaque from gp ≥ BACKDROP_FADE_END through the end of the
+   track), so only the white wordmark shows here — the card rises freely over
+   that backdrop and uncovers the wordmark underneath. The uncovering is a CLIP
+   reveal: GalleryCTA drives clip-path to the last card's live bottom edge, so
+   the visible part of the text is always at FULL opacity ("текст уже повинен
+   бути видимий одразу, а не полупрозорим") — never a translucent fade. */
 .gallery-cta {
     position: fixed;
     inset: 0;
@@ -165,6 +171,7 @@ body.scroll-locked {
     justify-content: center;
     background-color: transparent;
     opacity: 0;
+    clip-path: inset(100% 0 0 0); /* fully clipped until CardStack drives it */
     pointer-events: none;
     perspective: 800px;
 }
@@ -182,15 +189,12 @@ body.scroll-locked {
     display: block;
     width: 100%;
     /* Shrunk per supervisor: ~50% horizontally, ~65% vertically (deliberately
-       non-uniform), so the wordmark hides fully UNDER the gallery card. The
-       same numbers are replicated in CtaWordmark (CTA_SCALE_X/_Y) — keep them
-       in sync if this ever changes. */
+       non-uniform), so the wordmark hides fully UNDER the gallery card and is
+       revealed as the last card flies up (clip-driven — GalleryCTA clips the
+       overlay to below the card's bottom edge). A transform keeps the flex
+       centering and the vector crispness. */
     transform: scale(0.5, 0.65);
     transform-origin: center;
-    /* Invisible on purpose: the visible wordmark is rendered in-canvas by
-       CtaWordmark (behind the dissolving card); this span only sizes the
-       link's hit-box to match. */
-    opacity: 0;
 }
 
 /* The inlined wordmark scales to its container, stays crisp (vector), and keeps

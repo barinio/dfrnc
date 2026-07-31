@@ -105,11 +105,22 @@ export const MAX_ASPECT = 16 / 9; // cap; letterbox beyond
 // [BACKDROP_FADE_END, TITLES_END]  titles scrub 0→1 (the 3 title frames)
 // [TITLES_END, CTA_START]  titles hold on frame 3 while the last card flies out
 // CTA_START marks the END of the card phase (last card gone by here). The CTA
-// reveal itself is no longer gp-gated — it is the inverse of the last card's
-// in-place dissolve (see galleryCtaRevealFor / galleryLastCardOpacityFor).
+// reveal itself is no longer gp-gated — it tracks the last card's exit (see
+// galleryCtaFromExit) so it appears right as the card + title finish leaving.
 export const BACKDROP_FADE_END = 0.06;
 export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
+// The CTA reveal is a CLIP reveal, not a fade: GalleryCTA holds the wordmark
+// at FULL opacity and clips it to the region BELOW the last card's live bottom
+// edge (CardStack writes that clip line into ctaClipRef each frame), so the
+// rising card genuinely UNCOVERS already-opaque text (supervisor: "текст уже
+// повинен бути видимий одразу, а не полупрозорим"). The overlay's own opacity
+// only snaps in over a tiny slice at the exit ONSET — while the text is still
+// fully covered by the clip on every viewport (the card's bottom edge first
+// crosses the wordmark at exit ≈0.16 desktop / ≈0.17 portrait) — purely so a
+// scrub across the onset can never pop it within a single frame.
+export const CTA_REVEAL_FROM = 0;
+export const CTA_REVEAL_TO = 0.08;
 
 // ── Round 3 retiming ─────────────────────────────────────────────────────────
 // The card conveyor TRAILS the title scrub so a card leaves at the END of each
@@ -377,46 +388,18 @@ export function cardFlyProgressFor(gp: number): number {
   return clamp01((gp - CARDS_FLY_START) / (CARDS_FLY_END - CARDS_FLY_START));
 }
 
-// The last card's exit ramp (0 → 1 over the final conveyor beat's fly window,
-// already eased by cardConveyorDisplayedFor's smoothstep flip). Drives BOTH the
-// card's in-place dissolve and the delayed CTA reveal below.
-function galleryLastCardExitFor(gp: number): number {
-  const n = GALLERY_IMAGES.length;
-  return clamp01(galleryStackDisplayedFor(gp) - (n - 1));
-}
-
-// The wordmark sits BEHIND the last card — since round 4 this is REAL layering
-// (supervisor: "потрібно аби карточка була попереду тексту, і типу карточка в
-// опасіті - а там текст"): the wordmark renders INSIDE the canvas (CtaWordmark,
-// renderOrder −1) between the black backdrop and the cards, and the last card
-// does NOT fly up — over its exit window it DISSOLVES in place ON TOP of the
-// text, tinting the glyphs through the photo while it's still semi-opaque.
-// CardStack multiplies this into the last card's material opacity in place of
-// the fly-up rise.
-export function galleryLastCardOpacityFor(gp: number): number {
-  return 1 - galleryLastCardExitFor(gp);
-}
-
-// Tiny slice of the exit over which the in-canvas wordmark's own opacity snaps
-// to full, so a scrub across the exit onset never pops it in a single frame.
-// The card is still ~95% opaque at the end of this ramp, so the text still
-// ENTERS at ~5% visibility — the reveal itself is purely the card's dissolve
-// over the fully-opaque glyphs (the old simulated 0.1 floor is gone).
-const CTA_PLANE_RAMP = 0.05;
-
-// Opacity of the in-canvas wordmark plane (CtaWordmark reads this every frame):
-// 0 through the hold — so nothing can peek around the card's edges — then full
-// almost immediately as the dissolve starts; from there what the viewer sees is
-// true behind-the-card compositing driven by galleryLastCardOpacityFor.
-export function galleryCtaPlaneOpacityFor(gp: number): number {
-  return clamp01(galleryLastCardExitFor(gp) / CTA_PLANE_RAMP);
-}
-
-// DOM-side CTA ramp — now only GATES the invisible mailto hit-area (GalleryCTA
-// unlocks pointer events above 0.5) and its focus ring; the VISUAL lives in
-// CtaWordmark. Follows the card's exit 1:1, 1 exactly as the card disappears.
-export function galleryCtaRevealFor(gp: number): number {
-  return galleryLastCardExitFor(gp);
+// CTA overlay opacity, driven by the last card's exit progress (cardExit, 0→1
+// as the last card flies up — see CardStack). Snaps to 1 over the tiny onset
+// window [CTA_REVEAL_FROM, CTA_REVEAL_TO] while the wordmark is still fully
+// clipped behind the card (see the comment above — the VISIBLE reveal is the
+// clip line following the card's bottom edge, not this ramp). Coupled to the
+// (eased) exit, not gp, so it tracks the fly-out at any scroll speed. 0 the
+// whole time until the LAST card starts leaving (cardExit is 0 for every
+// earlier card).
+export function galleryCtaFromExit(cardExit: number): number {
+  return smoothstep(
+    clamp01((cardExit - CTA_REVEAL_FROM) / (CTA_REVEAL_TO - CTA_REVEAL_FROM)),
+  );
 }
 
 // ── Unified card progress (titles sequence by which card is showing) ─────────

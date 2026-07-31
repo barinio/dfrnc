@@ -28,7 +28,6 @@ import GalleryBackdrop from "./GalleryBackdrop";
 import GalleryTitles from "./GalleryTitles";
 import CardStack from "./CardStack";
 import GalleryCTA from "./GalleryCTA";
-import CtaWordmark from "./CtaWordmark";
 import FigureTooltip from "./FigureTooltip";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
@@ -148,12 +147,13 @@ export default function Scene() {
   const galleryRef = useGalleryProgressRef();
   // Last-card exit progress (0 = front card resting, 1 = last card fully flown
   // up). CardStack writes it each frame; GalleryTitles reads it to fade the
-  // title in exact lockstep with the last card rising — the synchronized finale.
+  // title in exact lockstep with the last card rising, and GalleryCTA fades the
+  // wordmark in over its early stretch — the synchronized finale.
   const cardExitRef = useRef(0);
-  // Extended CTA reveal progress (starts at the second-to-last card's fly, 1
-  // once the last card is gone). CardStack writes it; GalleryCTA fades the
-  // wordmark in over its early stretch — before the last card's exit.
-  const ctaRevealRef = useRef(0);
+  // Screen fraction (from the top) of the last card's live bottom edge.
+  // CardStack writes it; GalleryCTA clips the CTA wordmark to below this line
+  // so the rising card uncovers fully-opaque text (a clip reveal, not a fade).
+  const ctaClipRef = useRef(1);
   const noiseRef = useRef<NoiseEffect | null>(null);
   const toneMapRef = useRef<ScrollToneMappingEffect | null>(null);
   const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
@@ -435,16 +435,8 @@ export default function Scene() {
             <CardStack
               galleryRef={galleryRef}
               cardExitRef={cardExitRef}
-              ctaRevealRef={ctaRevealRef}
+              ctaClipRef={ctaClipRef}
               reducedMotion={reducedMotion}
-            />
-            {/* In-canvas CTA wordmark — drawn BETWEEN the backdrop and the
-                cards so the last card dissolves ON TOP of the text; the DOM
-                GalleryCTA below is only the invisible mailto hit-area. */}
-            <CtaWordmark
-              galleryRef={galleryRef}
-              reducedMotion={reducedMotion}
-              maxTextureDpr={renderProfile.maxCanvasTextureDpr}
             />
             {FIGURES.map(
               (f, i) =>
@@ -491,7 +483,11 @@ export default function Scene() {
           )}
         </Canvas>
       </div>
-      <GalleryCTA ctaRevealRef={ctaRevealRef} />
+      <GalleryCTA
+        cardExitRef={cardExitRef}
+        ctaClipRef={ctaClipRef}
+        reducedMotion={reducedMotion}
+      />
       {/* Award captions for the flying figures — hover on desktop, tap on
           touch. Reads the ArcModels' live screen rects; renders nothing while
           no figure is airborne. */}
