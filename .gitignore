@@ -23,6 +23,7 @@ Thumbs.db
 # Claude Code / AI tools
 .claude/
 .superpowers/
+.worktrees/
 
 # Source video master(s) for scripts/extract-frames.mjs — NOT committed (the
 # deployed site uses the pre-extracted public/frames/ WebP tiers). Drop the
