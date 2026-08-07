@@ -1,6 +1,7 @@
 // Pure-function sanity assertions for the scroll timeline. No test runner in
 // this project — run manually with:  npx tsx scripts/check-playback.ts
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import {
   lottieTimeFor,
   figureStateFor,
@@ -98,9 +99,50 @@ function ok(cond: boolean, label: string) {
   if (!cond) throw new Error(label);
 }
 
+function findNamedObject(value: unknown, name: string): Record<string, any> | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  if (!Array.isArray(value) && (value as { nm?: unknown }).nm === name)
+    return value as Record<string, any>;
+
+  for (const child of Object.values(value)) {
+    const found = findNamedObject(child, name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+const titleBytes = readFileSync(
+  new URL("../src/assets/titles.json", import.meta.url),
+);
 const titleData = JSON.parse(
-  readFileSync(new URL("../src/assets/titles.json", import.meta.url), "utf8"),
+  titleBytes.toString("utf8"),
 ) as { ip: number; op: number };
+const approvedTitleHash =
+  "1ec3df8fee4662bebe35c491a7f3d6e289ecec0b04d477df0ed8cb6571fe7462";
+const titleHash = createHash("sha256").update(titleBytes).digest("hex");
+ok(
+  titleHash === approvedTitleHash,
+  `corrected gallery-title export hash: expected ${approvedTitleHash}, got ${titleHash}`,
+);
+const finalGalleryTitle = findNamedObject(
+  titleData,
+  "multidisziplinaere_gestaltung Outlines",
+);
+ok(Boolean(finalGalleryTitle), "corrected final gallery-title layer exists");
+eq(finalGalleryTitle!.ks.p.k[1], 998.5, "final gallery-title position y");
+eq(finalGalleryTitle!.ks.s.k.length, 14, "final gallery-title scale keyframe count");
+eq(finalGalleryTitle!.ks.s.k.at(-1).t, 73, "final gallery-title last scale keyframe");
+
+const introData = JSON.parse(
+  readFileSync(new URL("../src/assets/animation.json", import.meta.url), "utf8"),
+);
+const undLayer = findNamedObject(introData, "5_UND Outlines");
+const entwickeltLayer = findNamedObject(introData, "6_ENTWICKELT Outlines");
+ok(Boolean(undLayer), "UND intro layer exists");
+ok(Boolean(entwickeltLayer), "ENTWICKELT intro layer exists");
+eq(undLayer!.ks.p.k[0].s[0], -260, "UND initial position x");
+eq(entwickeltLayer!.ks.p.k[0].s[0], 1745, "ENTWICKELT initial position x");
+
 const titleLastFrame = titleData.op - titleData.ip - 1;
 function titleFrame(frac: number): number {
   return frac * titleLastFrame;
