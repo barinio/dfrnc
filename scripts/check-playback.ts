@@ -91,24 +91,71 @@ import {
   createRenderProfile,
 } from "../src/renderProfile";
 
-function eq(actual: number, expected: number, label: string, eps = 1e-9) {
+function eq(actual: unknown, expected: unknown, label: string, eps = 1e-9) {
+  if (typeof actual !== "number" || !Number.isFinite(actual))
+    throw new Error(`${label}: actual value must be a finite number, got ${String(actual)}`);
+  if (typeof expected !== "number" || !Number.isFinite(expected))
+    throw new Error(
+      `${label}: expected value must be a finite number, got ${String(expected)}`,
+    );
   if (Math.abs(actual - expected) > eps)
     throw new Error(`${label}: expected ${expected}, got ${actual}`);
 }
-function ok(cond: boolean, label: string) {
+function ok(cond: unknown, label: string): asserts cond {
   if (!cond) throw new Error(label);
 }
 
-function findNamedObject(value: unknown, name: string): Record<string, any> | undefined {
-  if (value === null || typeof value !== "object") return undefined;
-  if (!Array.isArray(value) && (value as { nm?: unknown }).nm === name)
-    return value as Record<string, any>;
+function expectEqRejection(value: unknown, label: string) {
+  let rejected = false;
+  try {
+    eq(value, 0, `intentional invalid value for ${label}`);
+  } catch {
+    rejected = true;
+  }
+  ok(rejected, `eq rejects ${label}`);
+}
+expectEqRejection(Number.NaN, "NaN");
+expectEqRejection("0", "numeric strings");
 
-  for (const child of Object.values(value)) {
+function findNamedObject(
+  value: unknown,
+  name: string,
+): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const found = findNamedObject(child, name);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  const object = value as Record<string, unknown>;
+  if (object.nm === name) return object;
+  for (const child of Object.values(object)) {
     const found = findNamedObject(child, name);
     if (found) return found;
   }
   return undefined;
+}
+
+function valueAtPath(
+  value: unknown,
+  path: readonly (string | number)[],
+): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(current)) return undefined;
+      current = current[segment];
+      continue;
+    }
+    if (current === null || typeof current !== "object" || Array.isArray(current))
+      return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return current;
 }
 
 const titleBytes = readFileSync(
@@ -129,9 +176,17 @@ const finalGalleryTitle = findNamedObject(
   "multidisziplinaere_gestaltung Outlines",
 );
 ok(Boolean(finalGalleryTitle), "corrected final gallery-title layer exists");
-eq(finalGalleryTitle!.ks.p.k[1], 998.5, "final gallery-title position y");
-eq(finalGalleryTitle!.ks.s.k.length, 14, "final gallery-title scale keyframe count");
-eq(finalGalleryTitle!.ks.s.k.at(-1).t, 73, "final gallery-title last scale keyframe");
+const finalTitlePosition = valueAtPath(finalGalleryTitle, ["ks", "p", "k"]);
+const finalTitleScaleKeys = valueAtPath(finalGalleryTitle, ["ks", "s", "k"]);
+ok(Array.isArray(finalTitlePosition), "final gallery-title position is an array");
+ok(Array.isArray(finalTitleScaleKeys), "final gallery-title scale keys are an array");
+eq(finalTitlePosition[1], 998.5, "final gallery-title position y");
+eq(finalTitleScaleKeys.length, 14, "final gallery-title scale keyframe count");
+eq(
+  valueAtPath(finalTitleScaleKeys.at(-1), ["t"]),
+  73,
+  "final gallery-title last scale keyframe",
+);
 
 const introData = JSON.parse(
   readFileSync(new URL("../src/assets/animation.json", import.meta.url), "utf8"),
@@ -140,8 +195,16 @@ const undLayer = findNamedObject(introData, "5_UND Outlines");
 const entwickeltLayer = findNamedObject(introData, "6_ENTWICKELT Outlines");
 ok(Boolean(undLayer), "UND intro layer exists");
 ok(Boolean(entwickeltLayer), "ENTWICKELT intro layer exists");
-eq(undLayer!.ks.p.k[0].s[0], -260, "UND initial position x");
-eq(entwickeltLayer!.ks.p.k[0].s[0], 1745, "ENTWICKELT initial position x");
+eq(
+  valueAtPath(undLayer, ["ks", "p", "k", 0, "s", 0]),
+  -260,
+  "UND initial position x",
+);
+eq(
+  valueAtPath(entwickeltLayer, ["ks", "p", "k", 0, "s", 0]),
+  1745,
+  "ENTWICKELT initial position x",
+);
 
 const titleLastFrame = titleData.op - titleData.ip - 1;
 function titleFrame(frac: number): number {
@@ -881,8 +944,14 @@ for (const f of FIGURES) {
   eq(frameTierFor(390), 1280, "narrow phones get the lighter 1280px frame tier");
   eq(frameTierFor(899.98), 1280, "the 899.98px breakpoint is inclusive of the mobile tier");
   eq(frameTierFor(900), 1920, "wider screens get the crisp 1920px frame tier");
-  eq(frameUrl(1280, 0), "/frames/1280/0001.webp", "frame URL is 1-indexed + zero-padded");
-  eq(frameUrl(1920, 294), "/frames/1920/0295.webp", "frame URL maps the last index to the last file");
+  ok(
+    frameUrl(1280, 0) === "/frames/1280/0001.webp",
+    "frame URL is 1-indexed + zero-padded",
+  );
+  ok(
+    frameUrl(1920, 294) === "/frames/1920/0295.webp",
+    "frame URL maps the last index to the last file",
+  );
   ok(FRAME_COUNT > 1, "frame manifest reports a real frame count");
 
   // Coarse-to-fine load order (spreads coverage across the whole clip first, so a
