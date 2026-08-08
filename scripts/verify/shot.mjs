@@ -38,6 +38,15 @@ const wait = Number(opt("wait", "9000"));
 const reducedMotion = argv.includes("--reduced-motion");
 const ua = opt("ua", null);
 const printCanvasInfo = argv.includes("--print-canvas-info");
+const canvasHeightRaw = opt("canvas-height", null);
+const canvasHeight =
+  canvasHeightRaw === null ? null : Number(canvasHeightRaw);
+if (
+  canvasHeight !== null &&
+  (!Number.isFinite(canvasHeight) || canvasHeight <= 0)
+) {
+  throw new Error("--canvas-height must be a positive pixel value");
+}
 
 mkdirSync(out, { recursive: true });
 
@@ -67,6 +76,15 @@ await page.waitForFunction(
   () => !document.body.classList.contains("scroll-locked"),
   { timeout: 30000 },
 );
+if (canvasHeight !== null) {
+  await page.evaluate((height) => {
+    const canvasLayer = document.querySelector(".canvas-layer");
+    if (!(canvasLayer instanceof HTMLElement)) {
+      throw new Error(".canvas-layer is missing for --canvas-height");
+    }
+    canvasLayer.style.setProperty("height", `${height}px`, "important");
+  }, canvasHeight);
+}
 if (printCanvasInfo) {
   const info = await page.evaluate(() => {
     const glCanvas = document.querySelector(".canvas-layer canvas");

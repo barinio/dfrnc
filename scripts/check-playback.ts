@@ -118,6 +118,51 @@ function expectEqRejection(value: unknown, label: string) {
 expectEqRejection(Number.NaN, "NaN");
 expectEqRejection("0", "numeric strings");
 
+function cssRuleBody(css: string, selector: string): string {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`${escapedSelector}\\s*\\{([^}]*)\\}`));
+  ok(match, `${selector} CSS rule exists`);
+  return match[1];
+}
+
+const indexCss = readFileSync(
+  new URL("../src/index.css", import.meta.url),
+  "utf8",
+);
+const canvasLayerRule = cssRuleBody(indexCss, ".canvas-layer");
+const galleryCtaRule = cssRuleBody(indexCss, ".gallery-cta");
+ok(
+  /height:\s*100svh\s*;/.test(canvasLayerRule),
+  "canvas layer keeps the stable 100svh height",
+);
+ok(/position:\s*fixed\s*;/.test(galleryCtaRule), "gallery CTA stays fixed");
+ok(/inset:\s*0\s*;/.test(galleryCtaRule), "gallery CTA covers the viewport");
+ok(
+  /background-color:\s*#(?:000|000000)\s*;/i.test(galleryCtaRule),
+  "gallery CTA coverage is pure black",
+);
+ok(
+  /clip-path:\s*inset\([^;]+\)\s*;/.test(galleryCtaRule),
+  "gallery CTA coverage stays clip-revealed",
+);
+
+const shotHarnessSource = readFileSync(
+  new URL("./verify/shot.mjs", import.meta.url),
+  "utf8",
+);
+ok(
+  /Number\.isFinite\(canvasHeight\)[\s\S]*canvasHeight\s*<=\s*0[\s\S]*--canvas-height must be a positive pixel value/.test(
+    shotHarnessSource,
+  ),
+  "shot harness rejects non-positive and non-finite canvas heights",
+);
+ok(
+  /style\.setProperty\(\s*["']height["'],\s*`\$\{height\}px`,\s*["']important["']\s*\)/.test(
+    shotHarnessSource,
+  ),
+  "shot harness can override the canvas height with important priority",
+);
+
 function findNamedObject(
   value: unknown,
   name: string,
