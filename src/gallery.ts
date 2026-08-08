@@ -26,12 +26,13 @@ export function galleryCtaClipForProjectedCorners(
   // to a top-origin fraction and place the clip a few CSS pixels farther down.
   // Invalid geometry stays conservatively hidden instead of exposing the CTA.
   if (!Number.isFinite(viewportHeightPx) || viewportHeightPx <= 0) return 1;
+  if (ndcYs.length !== 4) return 1;
 
   let lowestNdcY = Infinity;
   for (const ndcY of ndcYs) {
-    if (Number.isFinite(ndcY)) lowestNdcY = Math.min(lowestNdcY, ndcY);
+    if (!Number.isFinite(ndcY)) return 1;
+    lowestNdcY = Math.min(lowestNdcY, ndcY);
   }
-  if (!Number.isFinite(lowestNdcY)) return 1;
 
   const safeGuardPx = Number.isFinite(guardPx) ? Math.max(guardPx, 0) : 0;
   return clamp01(0.5 - lowestNdcY / 2 + safeGuardPx / viewportHeightPx);

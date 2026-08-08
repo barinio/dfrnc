@@ -44,6 +44,7 @@ const CARD_LEAVE_AT = 0.6;
 const CTA_CARD_CORNER_SIGNS = [-1, -1, 1, -1, -1, 1, 1, 1] as const;
 const CTA_PROJECTED_CORNER_YS = [0, 0, 0, 0];
 const CTA_PROJECTED_CORNER = new THREE.Vector3();
+const CTA_CAMERA_SPACE_CORNER = new THREE.Vector3();
 
 // The leaving (front) card flies straight UP and off the top — NO opacity fade
 // (direction: "слайди без опасіті улітають"). Distance in card-heights, big
@@ -277,8 +278,20 @@ export default function CardStack({
               (CTA_CARD_CORNER_SIGNS[signIndex + 1] * cardH) / 2,
               0,
             )
-            .applyMatrix4(ref.matrixWorld)
-            .project(camera);
+            .applyMatrix4(ref.matrixWorld);
+          CTA_CAMERA_SPACE_CORNER
+            .copy(CTA_PROJECTED_CORNER)
+            .applyMatrix4(camera.matrixWorldInverse);
+          // Perspective clip w is -cameraSpaceZ. A corner on/behind the camera
+          // has no safe screen-space lower edge, so fail closed for this frame.
+          if (
+            !Number.isFinite(CTA_CAMERA_SPACE_CORNER.z) ||
+            CTA_CAMERA_SPACE_CORNER.z >= 0
+          ) {
+            CTA_PROJECTED_CORNER_YS[cornerIndex] = Number.NaN;
+            continue;
+          }
+          CTA_PROJECTED_CORNER.project(camera);
           CTA_PROJECTED_CORNER_YS[cornerIndex] = CTA_PROJECTED_CORNER.y;
         }
         lastCardBottomFrac = galleryCtaClipForProjectedCorners(

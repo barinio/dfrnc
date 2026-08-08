@@ -190,15 +190,28 @@ eq(
   "CTA clip safely hides the overlay without projected corners",
 );
 eq(
-  galleryCtaClipForProjectedCorners([Number.NaN, Infinity], 800),
+  galleryCtaClipForProjectedCorners(
+    [Number.NaN, Infinity, -Infinity, Number.NaN],
+    800,
+  ),
   1,
   "CTA clip safely hides the overlay when every corner is invalid",
 );
 eq(
-  galleryCtaClipForProjectedCorners([Number.NaN, -0.25, Infinity], 1000),
-  0.627,
-  "CTA clip ignores invalid corners when a finite projection exists",
+  galleryCtaClipForProjectedCorners(
+    [Number.NaN, -0.25, 0.5, Infinity],
+    1000,
+  ),
+  1,
+  "CTA clip fails closed when any projected corner is invalid",
 );
+for (const ndcYs of [[-0.25], [-0.25, 0, 0.25], [-0.5, -0.25, 0, 0.25, 0.5]]) {
+  eq(
+    galleryCtaClipForProjectedCorners(ndcYs, 1000),
+    1,
+    `CTA clip requires exactly four corners (got ${ndcYs.length})`,
+  );
+}
 eq(
   galleryCtaClipForProjectedCorners([-0.25], 0),
   1,
@@ -220,6 +233,9 @@ ok(
       cardStackProjectionSource,
     ) &&
     /ref\.updateWorldMatrix\(true,\s*false\)/.test(cardStackProjectionSource) &&
+    /applyMatrix4\(camera\.matrixWorldInverse\)[\s\S]*?Number\.isFinite\(CTA_CAMERA_SPACE_CORNER\.z\)[\s\S]*?CTA_CAMERA_SPACE_CORNER\.z\s*>=\s*0[\s\S]*?Number\.NaN/.test(
+      cardStackProjectionSource,
+    ) &&
     !/bottomWorld/.test(cardStackProjectionSource),
   "CardStack clips below all four corners projected through the live camera",
 );
