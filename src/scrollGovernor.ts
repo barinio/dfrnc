@@ -189,9 +189,23 @@ function sampleTime(nowMs: number, state: ScrollGovernorState): number {
 }
 
 function forwardInputMs(state: ScrollGovernorState, nowMs: number): number {
-  if (state.direction !== 1 || state.lastInputAtMs === null) {
+  if (state.direction === 0) {
     return INITIAL_INPUT_QUANTUM_MS;
   }
+
+  // A reverse sample already established a real input timestamp. Reversing
+  // direction must not manufacture another full first-sample quantum: rapid
+  // +/- alternation would otherwise advance the clip much faster than time.
+  if (state.direction === -1) {
+    if (state.lastInputAtMs === null) return 0;
+    const directionChangeGap = nowMs - state.lastInputAtMs;
+    if (!Number.isFinite(directionChangeGap) || directionChangeGap <= 0) {
+      return 0;
+    }
+    return Math.min(directionChangeGap, INITIAL_INPUT_QUANTUM_MS);
+  }
+
+  if (state.lastInputAtMs === null) return INITIAL_INPUT_QUANTUM_MS;
 
   const gap = nowMs - state.lastInputAtMs;
   if (!Number.isFinite(gap) || gap < 0 || gap > MAX_ACTIVE_GAP_MS) {
@@ -218,6 +232,8 @@ export function beginScrollGesture(
   nowMs: number,
 ): ScrollGovernorState {
   const current = normalizedState(state);
+  if (current.gestureActive) return current;
+
   return {
     ...current,
     lastInputAtMs: Number.isFinite(nowMs) ? nowMs : null,
@@ -247,10 +263,24 @@ export function applyScrollSample(
       lastRawY: rawY,
       lastInputAtMs: null,
       direction: 0,
+      gestureActive: false,
       gestureLocksGallery: false,
       suppressForward: false,
     };
     return stepFor(synchronized, sample.innerHeight);
+  }
+
+  if (!validHeight(sample.innerHeight)) {
+    return stepFor(
+      {
+        ...current,
+        lastRawY: rawY,
+        lastInputAtMs: null,
+        direction: 0,
+      },
+      sample.innerHeight,
+      Math.max(rawDelta, 0),
+    );
   }
 
   if (rawDelta === 0) {
@@ -357,7 +387,7 @@ export function endScrollGesture(
     lastInputAtMs: null,
     direction: 0,
     gestureActive: false,
-    suppressForward: needsReanchor,
+    suppressForward: current.suppressForward || needsReanchor,
   };
   return stepFor(ended, innerHeight);
 }

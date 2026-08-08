@@ -479,7 +479,78 @@ eq(
   1e-10,
 );
 
+// Repeated reverse/forward changes cannot mint a fresh frame quantum on every
+// alternation. Start next to an authored knot so this also crosses between two
+// different piecewise-linear mapping segments.
+const alternatingStartY = scrollYForVideoTime(0.1095, IH);
+state = begunAt(alternatingStartY);
+let alternatingRawY = alternatingStartY + 100;
+step = applyScrollSample(state, {
+  rawY: alternatingRawY,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+let aggregateForwardClipAdvance =
+  videoTimeForY(step.state.virtualY, IH) - 0.1095;
+ok(
+  videoTimeForY(step.state.virtualY, IH) > 0.11,
+  "initial quantum crosses an authored piecewise knot",
+);
+const alternatingCycles = 20;
+for (let cycle = 0; cycle < alternatingCycles; cycle++) {
+  alternatingRawY -= 1;
+  step = applyScrollSample(step.state, {
+    rawY: alternatingRawY,
+    nowMs: cycle * 2 + 1,
+    innerHeight: IH,
+    maxScrollY,
+  });
+  const beforeAlternatingForwardT = videoTimeForY(step.state.virtualY, IH);
+
+  alternatingRawY += 100;
+  step = applyScrollSample(step.state, {
+    rawY: alternatingRawY,
+    nowMs: cycle * 2 + 2,
+    innerHeight: IH,
+    maxScrollY,
+  });
+  const alternatingForwardAdvance =
+    videoTimeForY(step.state.virtualY, IH) - beforeAlternatingForwardT;
+  ok(
+    alternatingForwardAdvance <= 1 / (VIDEO_DURATION_S * 1000) + 1e-10,
+    `post-reverse forward sample ${cycle} uses at most its actual 1ms gap`,
+  );
+  aggregateForwardClipAdvance += Math.max(alternatingForwardAdvance, 0);
+}
+ok(
+  aggregateForwardClipAdvance <=
+    (INITIAL_INPUT_QUANTUM_MS + alternatingCycles) /
+      (VIDEO_DURATION_S * 1000) +
+      1e-9,
+  "alternating directions stay bounded by initial quantum plus real input time",
+);
+
 // Raw bookkeeping advances for capped, discarded, and zero-distance samples.
+state = begunAt(bounds.startY);
+step = applyScrollSample(state, {
+  rawY: bounds.startY + 10_000,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY - 1,
+  nowMs: 10,
+  innerHeight: IH,
+  maxScrollY,
+});
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY + 10_000,
+  nowMs: 49,
+  innerHeight: IH,
+  maxScrollY,
+});
 eq(step.state.lastRawY, maxScrollY, "discarded sample still updates lastRawY", 0);
 step = applyScrollSample(step.state, {
   rawY: maxScrollY - 50,
@@ -500,7 +571,7 @@ eq(step.state.lastRawY, maxScrollY - 50, "zero sample updates lastRawY", 0);
 // only one pixel before the seam makes one quantum sufficient to land exactly.
 state = begunAt(bounds.endY - 1);
 step = applyScrollSample(state, {
-  rawY: maxScrollY,
+  rawY: bounds.endY + 100,
   nowMs: 0,
   innerHeight: IH,
   maxScrollY,
@@ -513,7 +584,7 @@ eqProgress(
   1e-10,
 );
 step = applyScrollSample(step.state, {
-  rawY: maxScrollY,
+  rawY: bounds.endY + 200,
   nowMs: 16,
   innerHeight: IH,
   maxScrollY,
@@ -524,29 +595,60 @@ eqProgress(
   "same gesture cannot spill into image slides",
   1e-10,
 );
-step = applyScrollSample(step.state, {
-  rawY: step.state.lastRawY - 1,
-  nowMs: 32,
-  innerHeight: IH,
-  maxScrollY,
-});
-ok(step.state.gestureLocksGallery, "reverse preserves the same-gesture gallery lock");
-step = applyScrollSample(step.state, {
-  rawY: maxScrollY,
-  nowMs: 48,
+
+// Repeated touch starts (for example a second finger) are not new gestures.
+// They must leave every active lifecycle field intact, especially the gallery
+// lock that prevents this gesture's remaining momentum reaching slide #2.
+const lockedWithSuppression = { ...step.state, suppressForward: true };
+state = beginScrollGesture(lockedWithSuppression, 999);
+eq(state.virtualY, lockedWithSuppression.virtualY, "repeated begin preserves virtualY", 0);
+eq(state.lastRawY, lockedWithSuppression.lastRawY, "repeated begin preserves lastRawY", 0);
+eq(
+  state.lastInputAtMs ?? Number.NaN,
+  lockedWithSuppression.lastInputAtMs ?? Number.NaN,
+  "repeated begin preserves input timing",
+  0,
+);
+eq(state.direction, lockedWithSuppression.direction, "repeated begin preserves direction", 0);
+ok(state.gestureActive, "repeated begin keeps the gesture active");
+ok(state.gestureLocksGallery, "repeated begin preserves the gallery lock");
+ok(state.suppressForward, "repeated begin preserves suppression");
+state = releaseScrollSuppression(state);
+step = applyScrollSample(state, {
+  rawY: state.lastRawY + 100,
+  nowMs: 1_000,
   innerHeight: IH,
   maxScrollY,
 });
 eqProgress(
   step.progress,
   { sp: 1, gp: VID_FLY_END },
-  "re-forward motion in the same gesture remains locked",
+  "repeated begin cannot unlock image-gallery spill",
   1e-10,
+);
+const lockedAtVideoEndState = step.state;
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY - 1,
+  nowMs: 1_001,
+  innerHeight: IH,
+  maxScrollY,
+});
+ok(step.state.gestureLocksGallery, "reverse preserves the same-gesture gallery lock");
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY + 100,
+  nowMs: 1_002,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.progress.sp, 1, "re-forward motion remains on the gallery phase", 1e-10);
+ok(
+  step.progress.gp <= VID_FLY_END + 1e-10,
+  "re-forward motion in the same gesture remains locked",
 );
 
 // A newly begun gesture at the seam is allowed onto the ordinary gallery
 // track. Re-anchor raw bookkeeping first, as the browser hook does.
-let ended = endScrollGesture(step.state, IH);
+let ended = endScrollGesture(lockedAtVideoEndState, IH);
 ok(ended.needsReanchor, "capped gesture requests a re-anchor");
 state = syncRawScrollPosition(ended.state, bounds.endY);
 state = beginScrollGesture(state, 100);
@@ -560,9 +662,16 @@ step = applyScrollSample(state, {
 ok(step.progress.gp > VID_FLY_END, "fresh gallery gesture advances normally");
 eq(step.state.virtualY, bounds.endY + 100, "gallery motion remains exact", 0);
 
-// Programmatic scrolling and reduced motion bypass the governor.
-state = begunAt(bounds.startY);
-step = applyScrollSample(state, {
+// Programmatic scrolling and reduced motion bypass the governor and clear all
+// dirty gesture lifecycle fields rather than leaking them back into the hook.
+const dirtyLifecycleState = {
+  ...begunAt(bounds.startY),
+  lastInputAtMs: 42,
+  direction: 1 as const,
+  gestureLocksGallery: true,
+  suppressForward: true,
+};
+step = applyScrollSample(dirtyLifecycleState, {
   rawY: bounds.endY + 123,
   nowMs: 10,
   innerHeight: IH,
@@ -572,8 +681,20 @@ step = applyScrollSample(state, {
 eq(step.state.virtualY, bounds.endY + 123, "bypass synchronizes virtual position", 0);
 eq(step.state.lastRawY, bounds.endY + 123, "bypass synchronizes raw position", 0);
 eq(step.discardedForwardPx, 0, "bypass discards no distance", 0);
+eqProgress(
+  step.progress,
+  timelineProgressForY(bounds.endY + 123, IH),
+  "bypass synchronizes progress",
+  0,
+);
+ok(!step.needsReanchor, "bypass leaves no re-anchor mismatch");
+eq(step.state.lastInputAtMs ?? 0, 0, "bypass clears input timing", 0);
+eq(step.state.direction, 0, "bypass clears direction", 0);
+ok(!step.state.gestureActive, "bypass ends the active gesture");
+ok(!step.state.gestureLocksGallery, "bypass clears gallery lock");
+ok(!step.state.suppressForward, "bypass clears suppression");
 
-step = applyScrollSample(step.state, {
+step = applyScrollSample(dirtyLifecycleState, {
   rawY: bounds.startY + 321,
   nowMs: 20,
   innerHeight: IH,
@@ -582,6 +703,73 @@ step = applyScrollSample(step.state, {
 });
 eq(step.state.virtualY, bounds.startY + 321, "reduced motion synchronizes directly", 0);
 eq(step.state.lastRawY, bounds.startY + 321, "reduced motion updates raw position", 0);
+eqProgress(
+  step.progress,
+  timelineProgressForY(bounds.startY + 321, IH),
+  "reduced motion synchronizes progress",
+  0,
+);
+ok(!step.needsReanchor, "reduced motion leaves no re-anchor mismatch");
+eq(step.state.lastInputAtMs ?? 0, 0, "reduced motion clears input timing", 0);
+eq(step.state.direction, 0, "reduced motion clears direction", 0);
+ok(!step.state.gestureActive, "reduced motion ends the active gesture");
+ok(!step.state.gestureLocksGallery, "reduced motion clears gallery lock");
+ok(!step.state.suppressForward, "reduced motion clears suppression");
+
+// Invalid viewport heights cannot move the governed cursor while reporting
+// zero progress. Raw input is still consumed, and restoring a valid viewport
+// with no new delta never catches up.
+for (const invalidHeight of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  state = begunAt(bounds.startY);
+  const invalidRequestedRawY = bounds.startY + 100;
+  step = applyScrollSample(state, {
+    rawY: invalidRequestedRawY,
+    nowMs: 10,
+    innerHeight: invalidHeight,
+    maxScrollY,
+  });
+  eq(
+    step.state.virtualY,
+    bounds.startY,
+    `invalid height ${invalidHeight}: virtual position holds`,
+    0,
+  );
+  eq(
+    step.state.lastRawY,
+    invalidRequestedRawY,
+    `invalid height ${invalidHeight}: raw input is consumed`,
+    0,
+  );
+  eq(
+    step.discardedForwardPx,
+    100,
+    `invalid height ${invalidHeight}: forward distance is discarded`,
+    1e-10,
+  );
+  eqProgress(
+    step.progress,
+    { sp: 0, gp: 0 },
+    `invalid height ${invalidHeight}: progress fails closed`,
+  );
+  ok(
+    step.state.lastInputAtMs === null,
+    `invalid height ${invalidHeight}: timing resets`,
+  );
+  eq(step.state.direction, 0, `invalid height ${invalidHeight}: direction resets`, 0);
+
+  step = applyScrollSample(step.state, {
+    rawY: invalidRequestedRawY,
+    nowMs: 20,
+    innerHeight: IH,
+    maxScrollY,
+  });
+  eq(
+    step.state.virtualY,
+    bounds.startY,
+    `invalid height ${invalidHeight}: zero delta never catches up`,
+    0,
+  );
+}
 
 // Document bounds and malformed inputs are deterministic and finite.
 state = createScrollGovernorState(-100);
@@ -626,6 +814,9 @@ eqProgress(
   0,
 );
 const suppressedY = ended.state.virtualY;
+state = syncRawScrollPosition(ended.state, suppressedY);
+ended = endScrollGesture(state, IH);
+ok(ended.state.suppressForward, "duplicate end preserves residual suppression");
 state = syncRawScrollPosition(ended.state, suppressedY);
 step = applyScrollSample(state, {
   rawY: suppressedY + 100,
