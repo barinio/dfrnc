@@ -19,6 +19,7 @@ import {
   TOP_TITLE_VH,
   END_LAYOUT_SCALE,
   TITLE_END_TEXT_TOP,
+  galleryCtaClipForProjectedCorners,
 } from "../gallery";
 import { VID_FLY_END } from "../constants";
 import { approach } from "../cursorTilt";
@@ -37,6 +38,13 @@ const HOVER_PAD = 1.08; // hover hit-region padding (forgiving)
 // becomes interactive. Per-card eased tilt → no pop at the swap.
 const CARD_LEAVE_AT = 0.6;
 
+// Reused for the CTA occlusion boundary. Projecting the four rectangle corners
+// captures live scale, X/Y tilt, depth, and perspective without per-frame
+// allocations.
+const CTA_CARD_CORNER_SIGNS = [-1, -1, 1, -1, -1, 1, 1, 1] as const;
+const CTA_PROJECTED_CORNER_YS = [0, 0, 0, 0];
+const CTA_PROJECTED_CORNER = new THREE.Vector3();
+
 // The leaving (front) card flies straight UP and off the top — NO opacity fade
 // (direction: "слайди без опасіті улітають"). Distance in card-heights, big
 // enough to clear the frame before the next card settles. The LAST card leaves
@@ -51,9 +59,10 @@ const ENTER_FADE = 0.4;
 interface Props {
   galleryRef: MutableRefObject<number>;
   cardExitRef: MutableRefObject<number>;
-  // Screen fraction (from the top) of the LAST card's live bottom edge —
-  // GalleryCTA clips the wordmark to BELOW this line, so the rising card
-  // uncovers already-opaque text. 1 = wordmark fully hidden, 0 = no clipping.
+  // Screen fraction (from the top) just below the LAST card's lowest projected
+  // corner (plus a 2px antialiasing guard). GalleryCTA clips to BELOW this line,
+  // so the rising card uncovers already-opaque text without being occluded.
+  // 1 = wordmark fully hidden, 0 = no clipping.
   ctaClipRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
@@ -64,7 +73,7 @@ export default function CardStack({
   ctaClipRef,
   reducedMotion = false,
 }: Props) {
-  const { viewport, gl } = useThree();
+  const { viewport, gl, camera, size } = useThree();
   const groupRef = useRef<THREE.Group>(null);
   // One PERSISTENT mesh per image card. Each keeps its own fixed texture for the
   // whole session and is positioned imperatively by absolute index (no React
@@ -206,10 +215,11 @@ export default function CardStack({
     const ampTarget = over ? 1 : 0;
     group.rotation.set(0, 0, 0);
     group.scale.setScalar(endScale);
+    group.position.y = groupY;
 
-    // CTA clip line — overwritten with the LAST card's real bottom edge while
-    // that card is on screen; once it has fully flown (d ≤ −1, hidden) nothing
-    // covers the wordmark any more, so the clip opens completely.
+    // CTA clip line — overwritten with the LAST card's lowest projected corner
+    // plus a small guard while that card is on screen. Once it has fully flown
+    // (d ≤ −1, hidden), nothing covers the wordmark and the clip opens fully.
     let lastCardBottomFrac = cardExitRef.current >= 1 ? 0 : 1;
 
     // Walk all cards; each card's continuous depth d = i − displayed drives its
@@ -254,16 +264,30 @@ export default function CardStack({
       if (mat) mat.opacity = stackOpacity * enterFade;
 
       if (i === n - 1) {
-        // The card's world-space bottom edge (group shift + scale folded in,
-        // incl. the live hover scale) → screen fraction from the top for the
-        // CTA clip. NDC y = world / (viewport.height / 2).
-        const bottomWorld = groupY + endScale * (y * cardH - (cardH * scale) / 2);
-        lastCardBottomFrac = 0.5 - bottomWorld / viewport.height;
+        // Update the transforms written above before projecting. The four local
+        // rectangle corners then include parent position/scale, per-card
+        // position/scale, live X/Y hover rotation, z depth, and camera perspective.
+        camera.updateWorldMatrix(true, false);
+        ref.updateWorldMatrix(true, false);
+        for (let cornerIndex = 0; cornerIndex < 4; cornerIndex++) {
+          const signIndex = cornerIndex * 2;
+          CTA_PROJECTED_CORNER
+            .set(
+              (CTA_CARD_CORNER_SIGNS[signIndex] * cardW) / 2,
+              (CTA_CARD_CORNER_SIGNS[signIndex + 1] * cardH) / 2,
+              0,
+            )
+            .applyMatrix4(ref.matrixWorld)
+            .project(camera);
+          CTA_PROJECTED_CORNER_YS[cornerIndex] = CTA_PROJECTED_CORNER.y;
+        }
+        lastCardBottomFrac = galleryCtaClipForProjectedCorners(
+          CTA_PROJECTED_CORNER_YS,
+          size.height,
+        );
       }
     }
     ctaClipRef.current = THREE.MathUtils.clamp(lastCardBottomFrac, 0, 1);
-
-    group.position.y = groupY;
   });
 
   return (

@@ -20,9 +20,10 @@ const ctaWordmark = ctaWordmarkRaw.slice(ctaWordmarkRaw.indexOf("<svg"));
 
 interface Props {
   cardExitRef: MutableRefObject<number>;
-  // Screen fraction (from the top) of the last card's live bottom edge,
-  // written by CardStack. The wordmark is clipped to BELOW this line, so the
-  // rising card UNCOVERS fully-opaque text instead of fading it in.
+  // Screen fraction (from the top) just below the last card's lowest corner,
+  // projected by CardStack through the live camera with a 2px guard. The
+  // wordmark is clipped BELOW this line, so the rising card uncovers fully
+  // opaque text without the CTA occluding a tilted card corner.
   ctaClipRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
@@ -70,8 +71,8 @@ export default function GalleryCTA({
       const inner = innerRef.current;
       if (wrap) {
         wrap.style.opacity = String(op);
-        // The visible reveal: only the region BELOW the card's bottom edge
-        // shows, at full opacity — the card genuinely uncovers the text.
+        // The visible reveal starts below the card's lowest projected corner
+        // and antialiasing guard, at full opacity.
         wrap.style.clipPath = `inset(${(ctaClipRef.current * 100).toFixed(2)}% 0 0 0)`;
         wrap.style.pointerEvents = exit > 0.5 ? "auto" : "none";
         wrap.setAttribute("aria-hidden", exit > 0.5 ? "false" : "true");

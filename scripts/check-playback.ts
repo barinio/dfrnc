@@ -67,6 +67,7 @@ import {
   CARDS_FLY_START,
   CARDS_FLY_END,
   CTA_START,
+  galleryCtaClipForProjectedCorners,
 } from "../src/gallery";
 import {
   SCROLL_TRACK_VH,
@@ -128,7 +129,7 @@ function cssRuleBody(css: string, selector: string): string {
 const indexCss = readFileSync(
   new URL("../src/index.css", import.meta.url),
   "utf8",
-);
+).replace(/\/\*[\s\S]*?\*\//g, "");
 const canvasLayerRule = cssRuleBody(indexCss, ".canvas-layer");
 const galleryCtaRule = cssRuleBody(indexCss, ".gallery-cta");
 ok(
@@ -161,6 +162,66 @@ ok(
     shotHarnessSource,
   ),
   "shot harness can override the canvas height with important priority",
+);
+
+eq(
+  galleryCtaClipForProjectedCorners([0.25, -0.4, 0.1, -0.2], 800),
+  0.7025,
+  "CTA clip follows the lowest projected corner and adds a 2px guard",
+);
+eq(
+  galleryCtaClipForProjectedCorners([0.25, -0.4, 0.1, -0.2], 400),
+  0.705,
+  "CTA clip scales the CSS-pixel guard by viewport height",
+);
+eq(
+  galleryCtaClipForProjectedCorners([3, 2.5, 2.8, 2.6], 400),
+  0,
+  "CTA clip clamps above the viewport",
+);
+eq(
+  galleryCtaClipForProjectedCorners([-2, -1.5, -1.8, -1.6], 400),
+  1,
+  "CTA clip clamps below the viewport",
+);
+eq(
+  galleryCtaClipForProjectedCorners([], 800),
+  1,
+  "CTA clip safely hides the overlay without projected corners",
+);
+eq(
+  galleryCtaClipForProjectedCorners([Number.NaN, Infinity], 800),
+  1,
+  "CTA clip safely hides the overlay when every corner is invalid",
+);
+eq(
+  galleryCtaClipForProjectedCorners([Number.NaN, -0.25, Infinity], 1000),
+  0.627,
+  "CTA clip ignores invalid corners when a finite projection exists",
+);
+eq(
+  galleryCtaClipForProjectedCorners([-0.25], 0),
+  1,
+  "CTA clip safely hides the overlay for an invalid viewport height",
+);
+
+const cardStackProjectionSource = readFileSync(
+  new URL("../src/components/CardStack.tsx", import.meta.url),
+  "utf8",
+);
+ok(
+  /for\s*\(let cornerIndex\s*=\s*0;\s*cornerIndex\s*<\s*4;[\s\S]*?\.applyMatrix4\(ref\.matrixWorld\)[\s\S]*?\.project\(camera\)[\s\S]*?galleryCtaClipForProjectedCorners\(/.test(
+    cardStackProjectionSource,
+  ) &&
+    /CTA_CARD_CORNER_SIGNS\s*=\s*\[-1,\s*-1,\s*1,\s*-1,\s*-1,\s*1,\s*1,\s*1\]/.test(
+      cardStackProjectionSource,
+    ) &&
+    /const\s*\{[^}]*camera[^}]*\}\s*=\s*useThree\(\)/.test(
+      cardStackProjectionSource,
+    ) &&
+    /ref\.updateWorldMatrix\(true,\s*false\)/.test(cardStackProjectionSource) &&
+    !/bottomWorld/.test(cardStackProjectionSource),
+  "CardStack clips below all four corners projected through the live camera",
 );
 
 function findNamedObject(
@@ -586,9 +647,9 @@ for (const f of FIGURES) {
   );
 
   // CTA: the wordmark hides UNDER the last card and is UNCOVERED as the card
-  // flies up. The VISIBLE reveal is a clip line following the card's bottom
-  // edge (CardStack → ctaClipRef → GalleryCTA's clip-path) — geometry-driven,
-  // not testable here. galleryCtaFromExit is only the overlay's opacity gate:
+  // flies up. The VISIBLE reveal is a clip line following the card's lowest
+  // projected corner (CardStack → ctaClipRef → GalleryCTA's clip-path).
+  // galleryCtaFromExit is only the overlay's opacity gate:
   // it snaps 0→1 over the tiny onset window [CTA_REVEAL_FROM, CTA_REVEAL_TO],
   // while the text is still fully clipped behind the card (first uncover is at
   // exit ≈0.16), so the text is already at FULL opacity when the edge reaches

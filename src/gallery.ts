@@ -16,6 +16,27 @@ import {
 function clamp01(x: number): number {
   return Math.min(Math.max(x, 0), 1);
 }
+
+export function galleryCtaClipForProjectedCorners(
+  ndcYs: readonly number[],
+  viewportHeightPx: number,
+  guardPx = 2,
+): number {
+  // NDC y grows upward, so the minimum is the screen-lowest corner. Convert it
+  // to a top-origin fraction and place the clip a few CSS pixels farther down.
+  // Invalid geometry stays conservatively hidden instead of exposing the CTA.
+  if (!Number.isFinite(viewportHeightPx) || viewportHeightPx <= 0) return 1;
+
+  let lowestNdcY = Infinity;
+  for (const ndcY of ndcYs) {
+    if (Number.isFinite(ndcY)) lowestNdcY = Math.min(lowestNdcY, ndcY);
+  }
+  if (!Number.isFinite(lowestNdcY)) return 1;
+
+  const safeGuardPx = Number.isFinite(guardPx) ? Math.max(guardPx, 0) : 0;
+  return clamp01(0.5 - lowestNdcY / 2 + safeGuardPx / viewportHeightPx);
+}
+
 function smoothstep(x: number): number {
   const t = clamp01(x);
   return t * t * (3 - 2 * t);
@@ -111,9 +132,9 @@ export const BACKDROP_FADE_END = 0.06;
 export const TITLES_END = 0.72;
 export const CTA_START = 0.82;
 // The CTA reveal is a CLIP reveal, not a fade: GalleryCTA holds the wordmark
-// at FULL opacity and clips it to the region BELOW the last card's live bottom
-// edge (CardStack writes that clip line into ctaClipRef each frame), so the
-// rising card genuinely UNCOVERS already-opaque text (supervisor: "текст уже
+// at FULL opacity and clips it below the last card's lowest projected corner
+// plus a 2px guard (CardStack writes that line into ctaClipRef each frame), so
+// the rising card genuinely UNCOVERS already-opaque text (supervisor: "текст уже
 // повинен бути видимий одразу, а не полупрозорим"). The overlay's own opacity
 // only snaps in over a tiny slice at the exit ONSET — while the text is still
 // fully covered by the clip on every viewport (the card's bottom edge first
@@ -392,7 +413,7 @@ export function cardFlyProgressFor(gp: number): number {
 // as the last card flies up — see CardStack). Snaps to 1 over the tiny onset
 // window [CTA_REVEAL_FROM, CTA_REVEAL_TO] while the wordmark is still fully
 // clipped behind the card (see the comment above — the VISIBLE reveal is the
-// clip line following the card's bottom edge, not this ramp). Coupled to the
+// clip line following the card's projected lower edge, not this ramp). Coupled to the
 // (eased) exit, not gp, so it tracks the fly-out at any scroll speed. 0 the
 // whole time until the LAST card starts leaving (cardExit is 0 for every
 // earlier card).
