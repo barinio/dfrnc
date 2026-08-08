@@ -30,7 +30,7 @@ import CardStack from "./CardStack";
 import GalleryCTA from "./GalleryCTA";
 import FigureTooltip from "./FigureTooltip";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
-import { useScrollProgressRef, useGalleryProgressRef } from "../hooks/useScrollProgress";
+import { useScrollTimelineRefs } from "../hooks/useScrollProgress";
 import { figureVisibleFor, videoStateFor } from "../playback";
 import type { Phase } from "../playback";
 import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../constants";
@@ -142,9 +142,7 @@ export default function Scene() {
   const [phase, setPhase] = useState<Phase>("scroll");
   // Scroll progress is a ref (no per-frame React renders); LottiePlane/ArcModel
   // read it inside useFrame. Only discrete transitions below use state.
-  const scrollRef = useScrollProgressRef();
-  // galleryRef is wired here; consumed by gallery components in Task 3+.
-  const galleryRef = useGalleryProgressRef();
+  const { scrollRef, galleryRef } = useScrollTimelineRefs(reducedMotion);
   // Last-card exit progress (0 = front card resting, 1 = last card fully flown
   // up). CardStack writes it each frame; GalleryTitles reads it to fade the
   // title in exact lockstep with the last card rising, and GalleryCTA fades the

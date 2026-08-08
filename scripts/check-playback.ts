@@ -1184,11 +1184,107 @@ for (const f of FIGURES) {
       !/\.currentTime\s*=/.test(videoPlaneSource),
     "VideoPlane scrubs the frame sequence (no <video> element / currentTime seeking)",
   );
-  const scrollHookSrc = readFileSync(new URL("../src/hooks/useScrollProgress.ts", import.meta.url), "utf8");
+  const scrollHookSrc = readFileSync(
+    new URL("../src/hooks/useScrollProgress.ts", import.meta.url),
+    "utf8",
+  );
+  const scrollHookCode = scrollHookSrc
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  const sceneScrollCode = readFileSync(
+    new URL("../src/components/Scene.tsx", import.meta.url),
+    "utf8",
+  )
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
   ok(
-    /galleryProgressFrom\(window\.scrollY,\s*ih\)/.test(scrollHookSrc) &&
-      !/galleryProgressFrom\([^)]*window\.innerHeight/.test(scrollHookSrc),
-    "gallery progress uses a CACHED height (not live innerHeight) so the sp→gp seam stays aligned when the mobile URL bar collapses — no dead-zone freeze on the boundary frame",
+    /export\s+interface\s+ScrollTimelineRefs/.test(scrollHookCode) &&
+      /export\s+function\s+useScrollTimelineRefs\s*\(\s*reducedMotion\s*:\s*boolean/.test(
+        scrollHookCode,
+      ),
+    "one shared hook owns the scroll and gallery timeline refs",
+  );
+  ok(
+    /virtualYRef/.test(scrollHookCode) &&
+      /scrollRef/.test(scrollHookCode) &&
+      /galleryRef/.test(scrollHookCode),
+    "the shared hook publishes sp, gp, and its virtual cursor",
+  );
+  ok(
+    (scrollHookCode.match(/addEventListener\(\s*["']scroll["']/g) ?? [])
+      .length === 1,
+    "one passive scroll listener atomically publishes both timelines",
+  );
+  ok(
+    /let\s+innerHeight\s*=\s*validViewportHeight\(\s*window\.innerHeight/.test(
+      scrollHookCode,
+    ) &&
+      /let\s+lastWidth\s*=\s*window\.innerWidth/.test(scrollHookCode) &&
+      /if\s*\(\s*window\.innerWidth\s*===\s*lastWidth\s*\)\s*return/.test(
+        scrollHookCode,
+      ),
+    "one cached innerHeight changes only with viewport width",
+  );
+  ok(
+    !/export\s+function\s+useScrollProgressRef/.test(scrollHookCode) &&
+      !/export\s+function\s+useGalleryProgressRef/.test(scrollHookCode),
+    "independent raw-scroll hooks are removed",
+  );
+  ok(
+    /useScrollTimelineRefs\s*\(\s*reducedMotion\s*\)/.test(sceneScrollCode) &&
+      (sceneScrollCode.match(/useScrollTimelineRefs\s*\(/g) ?? []).length === 1 &&
+      !/useScrollProgressRef|useGalleryProgressRef/.test(sceneScrollCode),
+    "Scene consumes the shared scroll hook exactly once",
+  );
+  for (const eventName of [
+    "touchstart",
+    "touchend",
+    "touchcancel",
+    "wheel",
+    "keydown",
+    "scrollend",
+    "visibilitychange",
+    "blur",
+    "resize",
+  ]) {
+    ok(
+      scrollHookCode.includes(`addEventListener("${eventName}"`) ||
+        scrollHookCode.includes(`addEventListener('${eventName}'`),
+      `scroll controller listens for ${eventName}`,
+    );
+  }
+  for (const reducerCall of [
+    "createScrollGovernorState",
+    "beginScrollGesture",
+    "applyScrollSample",
+    "endScrollGesture",
+    "releaseScrollSuppression",
+    "syncRawScrollPosition",
+  ]) {
+    ok(
+      new RegExp(`\\b${reducerCall}\\s*\\(`).test(scrollHookCode),
+      `scroll controller uses ${reducerCall}`,
+    );
+  }
+  ok(
+    /bypass\s*:\s*true/.test(scrollHookCode) &&
+      /suppressForward/.test(scrollHookCode) &&
+      /window\.scrollTo\s*\(\s*\{[\s\S]*?behavior\s*:\s*["']auto["']/.test(
+        scrollHookCode,
+      ),
+    "programmatic scroll bypass, residual suppression, and reanchoring are wired",
+  );
+  ok(
+    /import\.meta\.env\.DEV/.test(scrollHookCode) &&
+      /window\.__sg\s*=/.test(scrollHookCode) &&
+      /discardedForwardPx/.test(scrollHookCode) &&
+      /videoTimeForY\s*\(/.test(scrollHookCode),
+    "DEV diagnostics expose governor state and mapped clip time",
+  );
+  ok(
+    !/preventDefault\s*\(/.test(scrollHookCode) &&
+      !/requestAnimationFrame\s*\(/.test(scrollHookCode),
+    "the controller preserves native scrolling without a queued animation loop",
   );
   ok(
     /shader\.uniforms\.uScreenClip\s*=/.test(videoPlaneSource) &&
