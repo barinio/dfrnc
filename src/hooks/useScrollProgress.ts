@@ -109,6 +109,8 @@ export function useScrollTimelineRefs(
   const scrollRef = useRef(0);
   const galleryRef = useRef(0);
   const virtualYRef = useRef(0);
+  const reducedMotionRef = useRef(reducedMotion);
+  reducedMotionRef.current = reducedMotion;
 
   useEffect(() => {
     // Both timelines share this one stable viewport measurement. Mobile browser
@@ -268,7 +270,7 @@ export function useScrollTimelineRefs(
       if (
         hasExplicitAttribution &&
         !state.gestureActive &&
-        !reducedMotion
+        !reducedMotionRef.current
       ) {
         beginExplicitGesture();
       }
@@ -282,7 +284,7 @@ export function useScrollTimelineRefs(
         nowMs: eventTime(),
         innerHeight,
         maxScrollY: documentScrollEnd(),
-        reducedMotion,
+        reducedMotion: reducedMotionRef.current,
         bypass,
       });
       publishStep(step);
@@ -373,7 +375,7 @@ export function useScrollTimelineRefs(
           nowMs: eventTime(),
           innerHeight,
           maxScrollY: documentScrollEnd(),
-          reducedMotion,
+          reducedMotion: reducedMotionRef.current,
           bypass: true,
         }),
       );
@@ -387,7 +389,7 @@ export function useScrollTimelineRefs(
         nowMs: eventTime(),
         innerHeight,
         maxScrollY: documentScrollEnd(),
-        reducedMotion,
+        reducedMotion: reducedMotionRef.current,
         bypass: true,
       }),
     );
@@ -419,7 +421,7 @@ export function useScrollTimelineRefs(
       document.removeEventListener("visibilitychange", onVisibilityChange);
       if (window.__sg === diagnostic) delete window.__sg;
     };
-  }, [reducedMotion]);
+  }, []);
 
   return { scrollRef, galleryRef, virtualYRef };
 }

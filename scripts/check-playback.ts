@@ -126,6 +126,38 @@ function cssRuleBody(css: string, selector: string): string {
   return match[1];
 }
 
+function sourceBlock(
+  source: string,
+  marker: string,
+  label: string,
+  fromEnd = false,
+): string {
+  const markerIndex = fromEnd
+    ? source.lastIndexOf(marker)
+    : source.indexOf(marker);
+  ok(markerIndex >= 0, `${label}: marker exists`);
+  const openingBrace = source.indexOf("{", markerIndex);
+  ok(openingBrace >= 0, `${label}: opening brace exists`);
+
+  let depth = 0;
+  for (let i = openingBrace; i < source.length; i += 1) {
+    if (source[i] === "{") depth += 1;
+    if (source[i] !== "}") continue;
+    depth -= 1;
+    if (depth === 0) return source.slice(openingBrace + 1, i);
+  }
+  throw new Error(`${label}: closing brace exists`);
+}
+
+function ordered(source: string, markers: string[], label: string) {
+  let cursor = -1;
+  for (const marker of markers) {
+    const index = source.indexOf(marker, cursor + 1);
+    ok(index > cursor, `${label}: ${marker} appears in order`);
+    cursor = index;
+  }
+}
+
 const indexCss = readFileSync(
   new URL("../src/index.css", import.meta.url),
   "utf8",
@@ -1211,8 +1243,32 @@ for (const f of FIGURES) {
     "the shared hook publishes sp, gp, and its virtual cursor",
   );
   ok(
+    /const\s+reducedMotionRef\s*=\s*useRef\(reducedMotion\)/.test(
+      scrollHookCode,
+    ) &&
+      /reducedMotionRef\.current\s*=\s*reducedMotion/.test(scrollHookCode) &&
+      /useEffect\(\(\)\s*=>\s*\{[\s\S]*\}\s*,\s*\[\]\s*\);/.test(
+        scrollHookCode,
+      ),
+    "reduced-motion updates use a ref without rebuilding the event lifecycle",
+  );
+  const mainScrollEffect = sourceBlock(
+    scrollHookCode,
+    "useEffect(() => {",
+    "shared scroll effect",
+  );
+  ok(
+    (mainScrollEffect.match(/reducedMotion:\s*reducedMotionRef\.current/g) ?? [])
+      .length === 3 &&
+      /!reducedMotionRef\.current/.test(mainScrollEffect),
+    "every live reducer/gesture path reads the latest reduced-motion ref",
+  );
+  ok(
     (scrollHookCode.match(/addEventListener\(\s*["']scroll["']/g) ?? [])
-      .length === 1,
+      .length === 1 &&
+      /window\.addEventListener\(\s*["']scroll["']\s*,\s*onScroll\s*,\s*\{\s*passive:\s*true\s*\}\s*\)/.test(
+        scrollHookCode,
+      ),
     "one passive scroll listener atomically publishes both timelines",
   );
   ok(
@@ -1236,23 +1292,234 @@ for (const f of FIGURES) {
       !/useScrollProgressRef|useGalleryProgressRef/.test(sceneScrollCode),
     "Scene consumes the shared scroll hook exactly once",
   );
-  for (const eventName of [
-    "touchstart",
-    "touchend",
-    "touchcancel",
-    "wheel",
-    "keydown",
-    "scrollend",
-    "visibilitychange",
-    "blur",
-    "resize",
-  ]) {
+
+  const scrollingKeyBody = sourceBlock(
+    scrollHookCode,
+    "function isScrollingKey",
+    "scrolling-key filter",
+  );
+  const scrollingKeyArray = scrollingKeyBody.match(
+    /return\s*\[([\s\S]*?)\]\.includes\(event\.key\)/,
+  );
+  ok(scrollingKeyArray, "scrolling-key filter has an explicit key list");
+  const scrollingKeys = [
+    ...scrollingKeyArray[1].matchAll(/["']([^"']*)["']/g),
+  ].map((match) => match[1]);
+  ok(
+    JSON.stringify(scrollingKeys) ===
+      JSON.stringify([
+        "ArrowUp",
+        "ArrowDown",
+        "PageUp",
+        "PageDown",
+        " ",
+        "Spacebar",
+        "Home",
+        "End",
+      ]),
+    "scroll controller recognizes exactly the intended scrolling keys",
+  );
+  ok(
+    /event\.defaultPrevented/.test(scrollingKeyBody) &&
+      /event\.metaKey/.test(scrollingKeyBody) &&
+      /event\.ctrlKey/.test(scrollingKeyBody) &&
+      /event\.altKey/.test(scrollingKeyBody) &&
+      /event\.shiftKey/.test(scrollingKeyBody) &&
+      /isEditableTarget\(event\.target\)/.test(scrollingKeyBody) &&
+      /isContentEditable/.test(scrollHookCode) &&
+      /input, textarea, select/.test(scrollHookCode),
+    "scrolling-key attribution rejects modified shortcuts and editable targets",
+  );
+
+  const burstQuietBody = sourceBlock(
+    scrollHookCode,
+    "const endBurstAfterQuiet =",
+    "burst quiet timer",
+  );
+  const wheelBody = sourceBlock(
+    scrollHookCode,
+    "const onWheel =",
+    "wheel burst",
+  );
+  const keyDownBody = sourceBlock(
+    scrollHookCode,
+    "const onKeyDown =",
+    "key burst",
+  );
+  ok(
+    /const\s+INPUT_QUIET_MS\s*=\s*120\s*;/.test(scrollHookCode) &&
+      /window\.setTimeout\([\s\S]*INPUT_QUIET_MS\)/.test(burstQuietBody) &&
+      /endBurstAfterQuiet\(\)/.test(wheelBody) &&
+      /endBurstAfterQuiet\(\)/.test(keyDownBody),
+    "wheel and key bursts finish after exactly 120ms of input quiet",
+  );
+
+  const publishBody = sourceBlock(
+    scrollHookCode,
+    "const publish =",
+    "atomic timeline publish",
+  );
+  const publishStepBody = sourceBlock(
+    scrollHookCode,
+    "const publishStep =",
+    "reducer-step publish",
+  );
+  ok(
+    /scrollRef\.current\s*=\s*progress\.sp/.test(publishBody) &&
+      /galleryRef\.current\s*=\s*progress\.gp/.test(publishBody) &&
+      /virtualYRef\.current\s*=\s*state\.virtualY/.test(publishBody),
+    "one atomic publish path writes sp, gp, and virtualY",
+  );
+  ordered(
+    publishStepBody,
+    ["state = step.state", "publish(step.progress, step.discardedForwardPx)"],
+    "reducer-step publication",
+  );
+
+  const onScrollBody = sourceBlock(
+    scrollHookCode,
+    "const onScroll =",
+    "scroll handler",
+  );
+  ok(
+    /const\s+bypass\s*=\s*!hasExplicitAttribution\s*&&\s*!state\.suppressForward/.test(
+      onScrollBody,
+    ),
+    "only unattributed, unsuppressed scrolls bypass the governor",
+  );
+  ordered(
+    onScrollBody,
+    ["const bypass =", "applyScrollSample(", "publishStep(step)"],
+    "scroll reducer flow",
+  );
+  ok(
+    /if\s*\(\s*!state\.suppressForward\s*\)\s*return\s*;[\s\S]*armSuppressionQuiet\(\)\s*;[\s\S]*if\s*\(\s*step\.needsReanchor\s*\)\s*reanchor\(\)/.test(
+      onScrollBody,
+    ),
+    "suppressed residual scroll rearms quiet and conditionally reanchors",
+  );
+
+  const finishBody = sourceBlock(
+    scrollHookCode,
+    "const finishGesture =",
+    "gesture finish",
+  );
+  ordered(
+    finishBody,
+    [
+      "endScrollGesture(state, innerHeight)",
+      "publishStep(step)",
+      "if (step.needsReanchor) reanchor()",
+      "armSuppressionQuiet()",
+    ],
+    "gesture finish flow",
+  );
+
+  const reanchorBody = sourceBlock(
+    scrollHookCode,
+    "const reanchor =",
+    "reanchor",
+  );
+  ordered(
+    reanchorBody,
+    [
+      "syncRawScrollPosition(state, targetY)",
+      "setExpectedReanchor(targetY)",
+      'window.scrollTo({ top: targetY, behavior: "auto" })',
+    ],
+    "guarded reanchor flow",
+  );
+  ok(
+    /if\s*\(\s*guardExpectedEvent\s*\)\s*setExpectedReanchor\(targetY\)/.test(
+      reanchorBody,
+    ) &&
+      /expectedReanchorY\s*!==\s*null/.test(onScrollBody) &&
+      /Math\.abs\(rawY\s*-\s*expectedY\)\s*<=\s*REANCHOR_TOLERANCE_PX/.test(
+        onScrollBody,
+      ),
+    "the expected reanchor event is ignored only at its guarded target",
+  );
+
+  const registeredEvents = [
+    ["window", "scroll", "onScroll"],
+    ["window", "touchstart", "onTouchStart"],
+    ["window", "touchend", "onTouchEnd"],
+    ["window", "touchcancel", "onTouchEnd"],
+    ["window", "wheel", "onWheel"],
+    ["window", "keydown", "onKeyDown"],
+    ["window", "scrollend", "onScrollEnd"],
+    ["window", "resize", "onResize"],
+    ["window", "blur", "resetInterruptedGesture"],
+    ["document", "visibilitychange", "onVisibilityChange"],
+  ] as const;
+  const cleanupBody = sourceBlock(
+    mainScrollEffect,
+    "return () => {",
+    "scroll-effect cleanup",
+    true,
+  );
+  for (const [target, eventName, handler] of registeredEvents) {
     ok(
-      scrollHookCode.includes(`addEventListener("${eventName}"`) ||
-        scrollHookCode.includes(`addEventListener('${eventName}'`),
-      `scroll controller listens for ${eventName}`,
+      new RegExp(
+        `${target}\\.addEventListener\\(\\s*["']${eventName}["']\\s*,\\s*${handler}`,
+      ).test(mainScrollEffect),
+      `scroll controller registers ${target}.${eventName}`,
+    );
+    ok(
+      new RegExp(
+        `${target}\\.removeEventListener\\(\\s*["']${eventName}["']\\s*,\\s*${handler}\\s*\\)`,
+      ).test(cleanupBody),
+      `scroll controller removes ${target}.${eventName}`,
     );
   }
+  const listenerPattern =
+    /(window|document)\.(add|remove)EventListener\(\s*["']([^"']+)["']\s*,\s*(\w+)/g;
+  const addedListeners: string[] = [];
+  const removedListeners: string[] = [];
+  for (const match of mainScrollEffect.matchAll(listenerPattern)) {
+    const listener = `${match[1]}.${match[3]}:${match[4]}`;
+    (match[2] === "add" ? addedListeners : removedListeners).push(listener);
+  }
+  ok(
+    JSON.stringify([...addedListeners].sort()) ===
+      JSON.stringify([...removedListeners].sort()),
+    "cleanup removes every listener registered by the shared effect",
+  );
+  for (const clearTimer of [
+    "clearBurstEndTimer()",
+    "clearSuppressionQuietTimer()",
+    "clearExpectedReanchor()",
+  ]) {
+    ok(cleanupBody.includes(clearTimer), `cleanup calls ${clearTimer}`);
+  }
+  for (const [clearMarker, timerName] of [
+    ["const clearBurstEndTimer =", "burstEndTimer"],
+    ["const clearSuppressionQuietTimer =", "suppressionQuietTimer"],
+    ["const clearExpectedReanchor =", "expectedReanchorTimer"],
+  ] as const) {
+    const clearBody = sourceBlock(
+      scrollHookCode,
+      clearMarker,
+      `${timerName} cleanup`,
+    );
+    ok(
+      new RegExp(`clearTimeout\\(${timerName}\\)`).test(clearBody) &&
+        new RegExp(`${timerName}\\s*=\\s*null`).test(clearBody),
+      `${timerName} is cancelled and cleared`,
+    );
+  }
+  const expectedGuardCleanup = sourceBlock(
+    scrollHookCode,
+    "const clearExpectedReanchor =",
+    "expected-reanchor cleanup",
+  );
+  ok(
+    /clearTimeout\(expectedReanchorTimer\)/.test(expectedGuardCleanup) &&
+      /expectedReanchorTimer\s*=\s*null/.test(expectedGuardCleanup) &&
+      /expectedReanchorY\s*=\s*null/.test(expectedGuardCleanup),
+    "expected-target timer and guard are both cleared",
+  );
+
   for (const reducerCall of [
     "createScrollGovernorState",
     "beginScrollGesture",
@@ -1266,20 +1533,33 @@ for (const f of FIGURES) {
       `scroll controller uses ${reducerCall}`,
     );
   }
-  ok(
-    /bypass\s*:\s*true/.test(scrollHookCode) &&
-      /suppressForward/.test(scrollHookCode) &&
-      /window\.scrollTo\s*\(\s*\{[\s\S]*?behavior\s*:\s*["']auto["']/.test(
-        scrollHookCode,
-      ),
-    "programmatic scroll bypass, residual suppression, and reanchoring are wired",
+
+  const diagnosticBody = sourceBlock(
+    scrollHookCode,
+    "diagnostic = {",
+    "DEV governor diagnostic",
   );
+  const diagnosticFields = [
+    ...diagnosticBody.matchAll(/^\s*(\w+)\s*(?::|,)\s*/gm),
+  ].map((match) => match[1]);
   ok(
-    /import\.meta\.env\.DEV/.test(scrollHookCode) &&
-      /window\.__sg\s*=/.test(scrollHookCode) &&
-      /discardedForwardPx/.test(scrollHookCode) &&
-      /videoTimeForY\s*\(/.test(scrollHookCode),
-    "DEV diagnostics expose governor state and mapped clip time",
+    /import\.meta\.env\.DEV/.test(publishBody) &&
+      JSON.stringify(diagnosticFields) ===
+        JSON.stringify([
+          "rawY",
+          "virtualY",
+          "sp",
+          "gp",
+          "clipT",
+          "gestureActive",
+          "gestureLocksGallery",
+          "discardedForwardPx",
+        ]) &&
+      /window\.__sg\s*=\s*diagnostic/.test(publishBody) &&
+      /if\s*\(\s*window\.__sg\s*===\s*diagnostic\s*\)\s*delete\s+window\.__sg/.test(
+        cleanupBody,
+      ),
+    "DEV diagnostic has the exact contract and ownership-safe cleanup",
   );
   ok(
     !/preventDefault\s*\(/.test(scrollHookCode) &&
