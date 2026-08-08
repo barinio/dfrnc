@@ -29,9 +29,16 @@ export interface ScrollSample {
   rawY: number;
   nowMs: number;
   innerHeight: number;
+  // Physical browser scroll bound. Raw bookkeeping is clamped here.
   maxScrollY: number;
+  // Stable logical timeline bound. Defaults to maxScrollY for backward
+  // compatibility, but may differ while mobile browser chrome changes height.
+  maxVirtualY?: number;
   reducedMotion?: boolean;
   bypass?: boolean;
+  // Programmatic scroll with a physical/logical coordinate offset should apply
+  // the raw delta to virtualY instead of snapping virtualY to the raw coordinate.
+  preserveVirtualOffset?: boolean;
 }
 
 export interface ScrollGovernorStep {
@@ -145,11 +152,16 @@ function clampDocumentY(value: number, maxScrollY: number, fallback = 0): number
 function normalizedState(
   state: ScrollGovernorState,
   maxScrollY?: number,
+  maxVirtualY?: number,
 ): ScrollGovernorState {
   const hasDocumentEnd = maxScrollY !== undefined;
   const documentEnd = hasDocumentEnd ? validDocumentEnd(maxScrollY) : 0;
+  const virtualEnd =
+    maxVirtualY !== undefined
+      ? validDocumentEnd(maxVirtualY)
+      : documentEnd;
   const virtualY = hasDocumentEnd
-    ? clampDocumentY(state.virtualY, documentEnd)
+    ? clampDocumentY(state.virtualY, virtualEnd)
     : finiteNonNegative(state.virtualY);
   const lastRawY = hasDocumentEnd
     ? clampDocumentY(state.lastRawY, documentEnd, virtualY)
@@ -251,15 +263,29 @@ export function applyScrollSample(
   sample: ScrollSample,
 ): ScrollGovernorStep {
   const maxScrollY = validDocumentEnd(sample.maxScrollY);
-  const current = normalizedState(state, maxScrollY);
+  const maxVirtualY =
+    sample.maxVirtualY === undefined
+      ? maxScrollY
+      : validDocumentEnd(sample.maxVirtualY);
+  const current = normalizedState(state, maxScrollY, maxVirtualY);
   const rawY = clampDocumentY(sample.rawY, maxScrollY, current.lastRawY);
   const rawDelta = rawY - current.lastRawY;
   const nowMs = sampleTime(sample.nowMs, current);
 
   if (sample.bypass || sample.reducedMotion) {
+    const virtualY =
+      sample.bypass &&
+      !sample.reducedMotion &&
+      sample.preserveVirtualOffset
+        ? clampDocumentY(
+            current.virtualY + rawDelta,
+            maxVirtualY,
+            current.virtualY,
+          )
+        : clampDocumentY(rawY, maxVirtualY, current.virtualY);
     const synchronized: ScrollGovernorState = {
       ...current,
-      virtualY: rawY,
+      virtualY,
       lastRawY: rawY,
       lastInputAtMs: null,
       direction: 0,
@@ -290,7 +316,7 @@ export function applyScrollSample(
   if (rawDelta < 0) {
     const virtualY = clampDocumentY(
       current.virtualY + rawDelta,
-      maxScrollY,
+      maxVirtualY,
       current.virtualY,
     );
     return stepFor(
@@ -316,7 +342,7 @@ export function applyScrollSample(
   const activeInputMs = forwardInputMs(current, nowMs);
   const requestedY = clampDocumentY(
     current.virtualY + rawDelta,
-    maxScrollY,
+    maxVirtualY,
     current.virtualY,
   );
   const bounds = videoGovernorBounds(sample.innerHeight);
@@ -358,7 +384,7 @@ export function applyScrollSample(
     }
   }
 
-  virtualY = clampDocumentY(virtualY, maxScrollY, current.virtualY);
+  virtualY = clampDocumentY(virtualY, maxVirtualY, current.virtualY);
   const appliedForwardPx = Math.max(virtualY - current.virtualY, 0);
   const discardedForwardPx = Math.max(rawDelta - appliedForwardPx, 0);
 

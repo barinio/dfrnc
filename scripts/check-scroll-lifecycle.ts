@@ -11,6 +11,7 @@ import type {
   ScrollTimelinePublication,
 } from "../src/scrollTimelineController";
 import {
+  scrollYForTimelineProgress,
   timelineProgressForY,
   videoGovernorBounds,
 } from "../src/scrollGovernor";
@@ -332,6 +333,73 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
+// Touch and wheel/key bursts are independent modalities. Ending one must not
+// terminate or quarantine the other modality's still-live gesture.
+{
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  environment.wheel();
+  environment.touchStart();
+  environment.touchEnd();
+  ok(
+    latest().gestureActive,
+    "touchend does not finish an overlapping wheel burst",
+  );
+  environment.scrollToRaw(150);
+  eq(
+    latest().virtualY,
+    150,
+    "delayed wheel scroll remains attributed after overlapping touchend",
+  );
+  eq(
+    latest().discardedForwardPx,
+    0,
+    "overlapping delayed wheel movement is not residual discard",
+  );
+  environment.timers.advance(120);
+  ok(!latest().gestureActive, "overlapping wheel gesture ends at wheel quiet");
+  controller.dispose();
+}
+
+{
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.wheel();
+  environment.timers.advance(120);
+  ok(
+    latest().gestureActive,
+    "wheel quiet does not finish an overlapping active touch",
+  );
+  environment.scrollToRaw(150);
+  eq(latest().virtualY, 150, "touch remains attributed after wheel quiet");
+  environment.touchEnd();
+  ok(!latest().gestureActive, "final touchend finishes overlapping modalities");
+  controller.dispose();
+}
+
+// Remaining fingers keep the touch modality active, and duplicate terminal
+// events after the gesture ended are idempotent.
+{
+  const harness = createHarness(100);
+  const { environment, latest, publications, controller } = harness;
+  environment.touchStart(2);
+  environment.touchEnd(1);
+  ok(latest().gestureActive, "one remaining touch keeps the gesture active");
+  environment.scrollToRaw(150);
+  eq(latest().virtualY, 150, "remaining-finger scroll stays attributed");
+  environment.touchEnd(0);
+  ok(!latest().gestureActive, "last finger ends the gesture");
+  const publicationCount = publications.length;
+  environment.touchEnd(0);
+  eq(
+    publications.length,
+    publicationCount,
+    "duplicate touchend after completion is a no-op",
+  );
+  controller.dispose();
+}
+
 // Unattributed programmatic movement is exact, while attributed forward input
 // through the FPV range is capped to one initial frame quantum.
 {
@@ -412,8 +480,124 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
-// Mobile URL-bar height changes keep the cached mapping. A width/orientation
-// change refreshes it and directly resynchronizes the current raw coordinate.
+// scrollend only starts a new quiet window. At 119ms it must defer release for
+// a fresh full 120ms, and a residual sample in that window rearms it again.
+{
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.touchEnd();
+  environment.timers.advance(119);
+  environment.windowTarget.dispatch("scrollend");
+  environment.timers.advance(1);
+  environment.scrollToRaw(200);
+  eq(
+    latest().virtualY,
+    100,
+    "scrollend at 119ms cannot release quarantine at the old deadline",
+  );
+  environment.timers.advance(119);
+  ok(environment.timers.size > 0, "residual sample owns a fresh quiet timer");
+  environment.timers.advance(1);
+  environment.scrollToRaw(200);
+  eq(
+    latest().virtualY,
+    200,
+    "quarantine releases only after the fresh 120ms quiet window",
+  );
+  controller.dispose();
+}
+
+// A height-only toolbar change can move the live physical document end while
+// the logical vh timeline stays mounted at its original height. Neither a
+// shorter nor a longer physical end may move the logical gallery endpoint.
+// Raw bookkeeping remains physical so reversing out of longer-end slack has no
+// dead zone.
+{
+  const logicalEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
+  const harness = createHarness(logicalEndY);
+  const { environment, latest, controller } = harness;
+  eq(latest().gp, 1, "logical endpoint begins at gp=1");
+
+  environment.innerHeight = IH + 154;
+  environment.maxScrollY = logicalEndY - 154;
+  environment.scrollY = environment.maxScrollY;
+  environment.resize();
+  environment.windowTarget.dispatch("scroll");
+  eq(
+    latest().virtualY,
+    logicalEndY,
+    "shorter physical end preserves the logical virtual endpoint",
+  );
+  eq(latest().gp, 1, "shorter physical end preserves gp=1");
+  environment.scrollToRaw(environment.maxScrollY - 100);
+  eq(
+    latest().virtualY,
+    logicalEndY - 100,
+    "offset-aware programmatic bypass applies the physical raw delta",
+  );
+  environment.scrollToRaw(environment.maxScrollY);
+  eq(
+    latest().virtualY,
+    logicalEndY,
+    "offset-aware programmatic bypass returns to the logical endpoint",
+  );
+
+  environment.innerHeight = IH - 100;
+  environment.maxScrollY = logicalEndY + 100;
+  environment.scrollY = environment.maxScrollY;
+  environment.resize();
+  environment.windowTarget.dispatch("scroll");
+  eq(
+    latest().virtualY,
+    logicalEndY,
+    "longer physical end preserves the logical virtual endpoint",
+  );
+  eq(latest().gp, 1, "longer physical end preserves gp=1");
+
+  environment.touchStart();
+  environment.scrollToRaw(environment.maxScrollY - 10);
+  eq(
+    latest().virtualY,
+    logicalEndY - 10,
+    "reverse from physical slack moves the logical cursor immediately",
+  );
+  environment.touchEnd();
+  environment.timers.advance(120);
+
+  const programmaticY = logicalEndY - 500;
+  environment.scrollToRaw(programmaticY);
+  eq(
+    latest().virtualY,
+    programmaticY,
+    "programmatic bypass remains exact inside the logical timeline",
+  );
+  controller.dispose();
+}
+
+// Height-only resize during an active touch synchronizes raw bookkeeping but
+// preserves both the logical cursor and the active gesture. The next physical
+// delta is applied from the synchronized raw coordinate, not misread as a jump.
+{
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.scrollY = 80;
+  environment.innerHeight += 100;
+  environment.resize();
+  eq(latest().virtualY, 100, "height-only resize leaves active virtualY unchanged");
+  ok(latest().gestureActive, "height-only resize preserves active touch lifecycle");
+  environment.scrollToRaw(70);
+  eq(
+    latest().virtualY,
+    90,
+    "post-toolbar reverse uses the synchronized physical raw delta",
+  );
+  controller.dispose();
+}
+
+// A width/orientation change refreshes the cached mapping and directly
+// resynchronizes the current raw coordinate.
 {
   const initialY = bounds.startY / 2;
   const harness = createHarness(initialY);
@@ -457,6 +641,167 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
+// If reduced motion flips after a capped sample but before touchend, terminal
+// handling must direct-sync to the current raw position. Reanchoring backward
+// to the stale governed cursor would violate reduced-motion semantics.
+{
+  const harness = createHarness(bounds.startY);
+  const { environment, latest, controller, setReducedMotion } = harness;
+  environment.touchStart();
+  const dirtyRawY = bounds.startY + 1_000;
+  environment.scrollToRaw(dirtyRawY);
+  ok(latest().virtualY < dirtyRawY, "pre-flip touch sample is capped");
+  const scrollToCount = environment.scrollToCalls.length;
+
+  setReducedMotion(true);
+  environment.touchEnd();
+  eq(
+    latest().virtualY,
+    dirtyRawY,
+    "dirty reduced-motion touchend synchronizes directly to raw",
+  );
+  ok(!latest().gestureActive, "dirty reduced-motion touchend clears gesture state");
+  eq(
+    environment.scrollToCalls.length,
+    scrollToCount,
+    "dirty reduced-motion touchend performs no backward reanchor",
+  );
+  eq(environment.timers.size, 0, "dirty reduced-motion finish clears lifecycle timers");
+
+  setReducedMotion(false);
+  environment.touchStart();
+  const recoveredRawY = dirtyRawY + 1_000;
+  environment.scrollToRaw(recoveredRawY);
+  ok(latest().gestureActive, "false mode starts a fresh governed gesture");
+  ok(
+    latest().virtualY < recoveredRawY,
+    "true-to-false recovery restores the forward cap",
+  );
+  controller.dispose();
+}
+
+// Blur and hidden visibility reconcile and cancel both active and suppressed
+// lifecycles, leaving no timer or stale quarantine behind.
+for (const [label, interrupt] of [
+  [
+    "blur",
+    (environment: FakeEnvironment) => {
+      environment.windowTarget.dispatch("blur");
+    },
+  ],
+  [
+    "hidden",
+    (environment: FakeEnvironment) => {
+      environment.visibilityState = "hidden";
+      environment.documentTarget.dispatch("visibilitychange");
+    },
+  ],
+] as const) {
+  const harness = createHarness(bounds.startY);
+  const { environment, latest, controller, setReducedMotion } = harness;
+  environment.touchStart();
+  const dirtyRawY = bounds.startY + 1_000;
+  environment.scrollToRaw(dirtyRawY);
+  ok(latest().virtualY < dirtyRawY, `${label} reduced fixture is capped`);
+  const scrollToCount = environment.scrollToCalls.length;
+
+  setReducedMotion(true);
+  interrupt(environment);
+  eq(
+    latest().virtualY,
+    dirtyRawY,
+    `${label} in reduced motion synchronizes directly to current raw`,
+  );
+  ok(!latest().gestureActive, `${label} reduced terminal clears gesture state`);
+  eq(environment.timers.size, 0, `${label} reduced terminal clears all timers`);
+  eq(
+    environment.scrollToCalls.length,
+    scrollToCount,
+    `${label} reduced terminal performs no backward reanchor`,
+  );
+
+  setReducedMotion(false);
+  environment.visibilityState = "visible";
+  environment.touchStart();
+  const recoveredRawY = dirtyRawY + 1_000;
+  environment.scrollToRaw(recoveredRawY);
+  ok(latest().gestureActive, `${label} false recovery starts a fresh gesture`);
+  ok(
+    latest().virtualY < recoveredRawY,
+    `${label} false recovery restores the forward cap`,
+  );
+  controller.dispose();
+}
+
+{
+  const harness = createHarness(bounds.startY);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.scrollToRaw(bounds.startY + 1_000);
+  environment.windowTarget.dispatch("blur");
+  ok(!latest().gestureActive, "blur ends an active gesture");
+  eq(environment.timers.size, 0, "blur clears active lifecycle timers");
+  const directY = latest().virtualY + 100;
+  environment.scrollToRaw(directY);
+  eq(latest().virtualY, directY, "post-blur programmatic scroll bypasses exactly");
+  controller.dispose();
+}
+
+{
+  const harness = createHarness(bounds.startY);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.scrollToRaw(bounds.startY + 1_000);
+  environment.touchEnd();
+  ok(environment.timers.size > 0, "suppressed lifecycle owns timers before hidden");
+  environment.visibilityState = "hidden";
+  environment.documentTarget.dispatch("visibilitychange");
+  ok(!latest().gestureActive, "hidden visibility leaves no active gesture");
+  eq(environment.timers.size, 0, "hidden visibility clears suppression/guard timers");
+  const directY = latest().virtualY + 100;
+  environment.scrollToRaw(directY);
+  eq(latest().virtualY, directY, "post-hidden programmatic scroll bypasses exactly");
+  controller.dispose();
+}
+
+// Width/orientation resize is a terminal resync even during active or
+// suppressed lifecycles: it clears timers and gesture state.
+for (const [label, prepare] of [
+  [
+    "active",
+    (environment: FakeEnvironment) => {
+      environment.touchStart();
+      environment.wheel();
+    },
+  ],
+  [
+    "suppressed",
+    (environment: FakeEnvironment) => {
+      environment.touchStart();
+      environment.scrollToRaw(bounds.startY + 1_000);
+      environment.touchEnd();
+    },
+  ],
+] as const) {
+  const harness = createHarness(bounds.startY);
+  const { environment, latest, controller } = harness;
+  prepare(environment);
+  ok(environment.timers.size > 0, `${label} resize fixture owns timers`);
+  environment.innerWidth += 1;
+  environment.innerHeight += 50;
+  environment.resize();
+  ok(!latest().gestureActive, `width resize clears ${label} gesture state`);
+  eq(environment.timers.size, 0, `width resize clears ${label} timers`);
+  const directY = environment.scrollY + 100;
+  environment.scrollToRaw(directY);
+  eq(
+    latest().virtualY,
+    directY,
+    `post-width-resize ${label} programmatic scroll bypasses exactly`,
+  );
+  controller.dispose();
+}
+
 // Disposal is a real unmount: capture-compatible listener removals, no timers,
 // and no later event can publish or mutate the timeline.
 {
@@ -482,6 +827,29 @@ for (const [label, begin] of [
     publications.length,
     publicationCount,
     "post-unmount events publish nothing",
+  );
+}
+
+// Disposal also clears the suppression quiet timer and expected-reanchor guard
+// together; advancing fake time afterward cannot publish.
+{
+  const harness = createHarness(bounds.startY);
+  const { environment, publications, controller } = harness;
+  environment.touchStart();
+  environment.scrollToRaw(bounds.startY + 1_000);
+  environment.touchEnd();
+  ok(
+    environment.timers.size >= 2,
+    "suppression and expected-reanchor timers are scheduled before dispose",
+  );
+  const publicationCount = publications.length;
+  controller.dispose();
+  eq(environment.timers.size, 0, "dispose clears suppression and guard timers");
+  environment.timers.advance(1_000);
+  eq(
+    publications.length,
+    publicationCount,
+    "disposed suppression/guard timers publish nothing",
   );
 }
 

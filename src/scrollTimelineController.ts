@@ -4,6 +4,7 @@ import {
   createScrollGovernorState,
   endScrollGesture,
   releaseScrollSuppression,
+  scrollYForTimelineProgress,
   syncRawScrollPosition,
   timelineProgressForY,
   videoTimeForY,
@@ -156,6 +157,10 @@ export function createScrollTimelineController(
 ): ScrollTimelineController {
   const { environment, reducedMotion, onPublish } = options;
   let innerHeight = validViewportHeight(environment.readInnerHeight());
+  let logicalMaxY = scrollYForTimelineProgress(
+    { sp: 1, gp: 1 },
+    innerHeight,
+  );
   let lastWidth = environment.readInnerWidth();
   let state: ScrollGovernorState = createScrollGovernorState(
     environment.readScrollY(),
@@ -274,9 +279,33 @@ export function createScrollTimelineController(
     }, INPUT_QUIET_MS);
   };
 
-  const finishGesture = (quarantineRealGesture: boolean) => {
+  const finishReducedMotionLifecycle = () => {
     clearBurstEndTimer();
+    clearSuppressionQuietTimer();
+    clearExpectedReanchor();
+    touchActive = false;
     burstActive = false;
+    selfReanchorPending = false;
+    discardedForwardPx = 0;
+    publishStep(
+      applyScrollSample(state, {
+        rawY: environment.readScrollY(),
+        nowMs: environment.now(),
+        innerHeight,
+        maxScrollY: safeDocumentEnd(environment),
+        maxVirtualY: logicalMaxY,
+        reducedMotion: true,
+        bypass: true,
+      }),
+    );
+  };
+
+  const finishGesture = (quarantineRealGesture: boolean) => {
+    if (reducedMotion()) {
+      finishReducedMotionLifecycle();
+      return;
+    }
+
     const step = endScrollGesture(state, innerHeight);
     state = step.state;
     if (quarantineRealGesture && !reducedMotion()) {
@@ -287,6 +316,11 @@ export function createScrollTimelineController(
     publish(step.progress, step.discardedForwardPx);
     if (step.needsReanchor) reanchor();
     armSuppressionQuiet();
+  };
+
+  const finishGestureIfIdle = (quarantineRealGesture: boolean) => {
+    if (touchActive || burstActive || !state.gestureActive) return;
+    finishGesture(quarantineRealGesture);
   };
 
   const beginExplicitGesture = () => {
@@ -324,8 +358,10 @@ export function createScrollTimelineController(
       nowMs: environment.now(),
       innerHeight,
       maxScrollY: safeDocumentEnd(environment),
+      maxVirtualY: logicalMaxY,
       reducedMotion: reducedMotion(),
       bypass,
+      preserveVirtualOffset: true,
     });
     publishStep(step);
 
@@ -342,7 +378,7 @@ export function createScrollTimelineController(
   const onTouchEnd: ScrollTimelineEventListener = (event) => {
     if (touchCount(event) > 0) return;
     touchActive = false;
-    finishGesture(true);
+    finishGestureIfIdle(true);
   };
 
   const endBurstAfterQuiet = () => {
@@ -350,7 +386,7 @@ export function createScrollTimelineController(
     burstEndTimer = environment.setTimeout(() => {
       burstEndTimer = null;
       burstActive = false;
-      if (!touchActive) finishGesture(true);
+      finishGestureIfIdle(true);
     }, INPUT_QUIET_MS);
   };
 
@@ -384,6 +420,11 @@ export function createScrollTimelineController(
   };
 
   const resetInterruptedGesture = () => {
+    if (reducedMotion()) {
+      finishReducedMotionLifecycle();
+      return;
+    }
+
     clearBurstEndTimer();
     clearSuppressionQuietTimer();
     clearExpectedReanchor();
@@ -416,10 +457,19 @@ export function createScrollTimelineController(
   };
 
   const onResize: ScrollTimelineEventListener = () => {
-    if (environment.readInnerWidth() === lastWidth) return;
-    lastWidth = environment.readInnerWidth();
+    const currentWidth = environment.readInnerWidth();
+    if (currentWidth === lastWidth) {
+      state = syncRawScrollPosition(state, environment.readScrollY());
+      publishState();
+      return;
+    }
+    lastWidth = currentWidth;
     innerHeight = validViewportHeight(
       environment.readInnerHeight(),
+      innerHeight,
+    );
+    logicalMaxY = scrollYForTimelineProgress(
+      { sp: 1, gp: 1 },
       innerHeight,
     );
     clearBurstEndTimer();
@@ -436,6 +486,7 @@ export function createScrollTimelineController(
         nowMs: environment.now(),
         innerHeight,
         maxScrollY: safeDocumentEnd(environment),
+        maxVirtualY: logicalMaxY,
         reducedMotion: reducedMotion(),
         bypass: true,
       }),
@@ -448,6 +499,7 @@ export function createScrollTimelineController(
       nowMs: environment.now(),
       innerHeight,
       maxScrollY: safeDocumentEnd(environment),
+      maxVirtualY: logicalMaxY,
       reducedMotion: reducedMotion(),
       bypass: true,
     }),

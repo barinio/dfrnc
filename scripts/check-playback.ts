@@ -1289,17 +1289,36 @@ for (const f of FIGURES) {
       ),
     "one passive scroll listener atomically publishes both timelines",
   );
+  const resizeBody = sourceBlock(
+    scrollControllerCode,
+    "const onResize:",
+    "resize handler",
+  );
   ok(
     /let\s+innerHeight\s*=\s*validViewportHeight\(\s*environment\.readInnerHeight\(\)/.test(
       scrollControllerCode,
     ) &&
-      /let\s+lastWidth\s*=\s*environment\.readInnerWidth\(\)/.test(
+      /let\s+logicalMaxY\s*=\s*scrollYForTimelineProgress\(\s*\{\s*sp:\s*1\s*,\s*gp:\s*1\s*\}\s*,\s*innerHeight\s*,?\s*\)/.test(
         scrollControllerCode,
       ) &&
-      /if\s*\(\s*environment\.readInnerWidth\(\)\s*===\s*lastWidth\s*\)\s*return/.test(
+      /let\s+lastWidth\s*=\s*environment\.readInnerWidth\(\)/.test(
         scrollControllerCode,
       ),
-    "one cached innerHeight changes only with viewport width",
+    "one cached logical timeline end follows the width-stable viewport height",
+  );
+  ordered(
+    resizeBody,
+    [
+      "const currentWidth = environment.readInnerWidth()",
+      "if (currentWidth === lastWidth)",
+      "syncRawScrollPosition(state, environment.readScrollY())",
+      "publishState()",
+      "return",
+      "lastWidth = currentWidth",
+      "innerHeight = validViewportHeight(",
+      "logicalMaxY = scrollYForTimelineProgress(",
+    ],
+    "height-only resize syncs physical bookkeeping before width recache",
   );
   ok(
     !/export\s+function\s+useScrollProgressRef/.test(scrollHookCode) &&
@@ -1420,8 +1439,11 @@ for (const f of FIGURES) {
       onScrollBody,
     ) &&
       /innerHeight\s*,/.test(onScrollBody) &&
+      /maxScrollY:\s*safeDocumentEnd\(environment\)/.test(onScrollBody) &&
+      /maxVirtualY:\s*logicalMaxY/.test(onScrollBody) &&
+      /preserveVirtualOffset:\s*true/.test(onScrollBody) &&
       !/innerHeight:\s*environment\.readInnerHeight\(\)/.test(onScrollBody),
-    "only unattributed, unsuppressed scrolls bypass the governor",
+    "unattributed scrolls preserve the logical/physical offset within separate bounds",
   );
   ordered(
     onScrollBody,
@@ -1439,6 +1461,52 @@ for (const f of FIGURES) {
     scrollControllerCode,
     "const finishGesture =",
     "gesture finish",
+  );
+  const finishIfIdleBody = sourceBlock(
+    scrollControllerCode,
+    "const finishGestureIfIdle =",
+    "idle gesture finish",
+  );
+  const reducedFinishBody = sourceBlock(
+    scrollControllerCode,
+    "const finishReducedMotionLifecycle =",
+    "reduced-motion lifecycle finish",
+  );
+  const interruptedFinishBody = sourceBlock(
+    scrollControllerCode,
+    "const resetInterruptedGesture =",
+    "interrupted gesture finish",
+  );
+  ok(
+    /if\s*\(\s*touchActive\s*\|\|\s*burstActive\s*\|\|\s*!state\.gestureActive\s*\)\s*return/.test(
+      finishIfIdleBody,
+    ) &&
+      /finishGesture\(quarantineRealGesture\)/.test(finishIfIdleBody) &&
+      !/touchActive\s*=\s*false/.test(finishBody) &&
+      !/burstActive\s*=\s*false/.test(finishBody),
+    "touch and wheel/key modalities must both be idle before the gesture finishes",
+  );
+  ok(
+    /if\s*\(\s*reducedMotion\(\)\s*\)\s*\{\s*finishReducedMotionLifecycle\(\)\s*;\s*return/.test(
+      finishBody,
+    ) &&
+      /if\s*\(\s*reducedMotion\(\)\s*\)\s*\{\s*finishReducedMotionLifecycle\(\)\s*;\s*return/.test(
+        interruptedFinishBody,
+      ) &&
+      /clearBurstEndTimer\(\)/.test(reducedFinishBody) &&
+      /clearSuppressionQuietTimer\(\)/.test(reducedFinishBody) &&
+      /clearExpectedReanchor\(\)/.test(reducedFinishBody) &&
+      /touchActive\s*=\s*false/.test(reducedFinishBody) &&
+      /burstActive\s*=\s*false/.test(reducedFinishBody) &&
+      /rawY:\s*environment\.readScrollY\(\)/.test(reducedFinishBody) &&
+      /maxScrollY:\s*safeDocumentEnd\(environment\)/.test(
+        reducedFinishBody,
+      ) &&
+      /maxVirtualY:\s*logicalMaxY/.test(reducedFinishBody) &&
+      /reducedMotion:\s*true/.test(reducedFinishBody) &&
+      /bypass:\s*true/.test(reducedFinishBody) &&
+      !/reanchor\(/.test(reducedFinishBody),
+    "all reduced-motion terminals share a timer-free direct current-raw sync",
   );
   ok(
     /quarantineRealGesture\s*&&\s*!reducedMotion\(\)/.test(finishBody) &&
