@@ -137,3 +137,7 @@ export const IMAGE_GALLERY_START = 0.34;
 // 20s / 23.56s ≈ 0.84. The tail [VIDEO_SPLIT, 1] scrubs across the video-card
 // phase, so the frame never freezes. Re-tune if the clip is swapped.
 export const VIDEO_SPLIT = 0.84;
+
+// Authored duration of the FPV source clip. The scroll governor uses this to
+// cap forward playback at native 1x without coupling the mapping to frame count.
+export const VIDEO_DURATION_S = 23.56;

@@ -205,6 +205,36 @@ function animTrackClipTimeFor(sp: number): number {
   return VIDEO_SPLIT;
 }
 
+export interface VideoTimelinePosition {
+  sp: number;
+  gp: number;
+}
+
+// Exact inverse of videoMasterTimeFor's scroll phase. The authored caption
+// dwells are piecewise-linear in clip time, so invert those same knots instead
+// of approximating the position numerically. At VIDEO_SPLIT the canonical
+// position is the sp/gp seam ({ sp: 1, gp: 0 }); the remaining clip tail rides
+// the video-card gallery track through gp = VID_FLY_END.
+export function videoTimelinePositionFor(t: number): VideoTimelinePosition {
+  const time = Number.isNaN(t) ? 0 : clamp01(t);
+
+  if (time <= VIDEO_SPLIT) {
+    for (let i = 1; i < VIDEO_TIME_KNOTS.length; i++) {
+      const [sp1, time1] = VIDEO_TIME_KNOTS[i];
+      if (time <= time1) {
+        const [sp0, time0] = VIDEO_TIME_KNOTS[i - 1];
+        const segment = time1 - time0;
+        const u = segment > 0 ? (time - time0) / segment : 0;
+        return { sp: sp0 + u * (sp1 - sp0), gp: 0 };
+      }
+    }
+    return { sp: 1, gp: 0 };
+  }
+
+  const tail = (time - VIDEO_SPLIT) / (1 - VIDEO_SPLIT);
+  return { sp: 1, gp: tail * VID_FLY_END };
+}
+
 // Video time across the WHOLE life of the clip — extended past sp = 1 into the
 // gallery so the FPV plays continuously while it morphs into slide #1, holds and
 // flies away (never a frozen frame). Monotonic and continuous across the
