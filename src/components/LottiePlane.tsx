@@ -5,8 +5,13 @@ import * as THREE from "three";
 import lottie from "lottie-web";
 import type { AnimationItem } from "lottie-web";
 import animationData from "../assets/animation.json";
-import { LOTTIE_TOTAL_S, DEFT_DROP_S } from "../constants";
-import { lottieTimeFor, lottieBleedFor, lottiePlaneVisibleFor } from "../playback";
+import { DEFT_DROP_S } from "../constants";
+import {
+  lottieFrameForTime,
+  lottieTimeFor,
+  lottieBleedFor,
+  lottiePlaneVisibleFor,
+} from "../playback";
 import type { Phase } from "../playback";
 
 export type IntroStage = "loader" | "drop" | "free";
@@ -237,9 +242,15 @@ export default function LottiePlane({
     }
     lastUploadAtRef.current = state.clock.elapsedTime;
     lastTimeRef.current = tSec;
-    const frac =
-      LOTTIE_TOTAL_S > 0 ? Math.min(Math.max(tSec / LOTTIE_TOTAL_S, 0), 1) : 0;
-    anim.goToAndStop(frac * Math.max(anim.totalFrames - 1, 0), true);
+    // Convert authored seconds with the export's own frame rate. Normalizing by
+    // total duration shifts interior authored keys backward because the final
+    // drawable frame is `totalFrames - 1`; only the terminal time is clamped.
+    const authoredFrame = lottieFrameForTime(
+      tSec,
+      anim.totalFrames,
+      animationData.fr,
+    );
+    anim.goToAndStop(authoredFrame, true);
     if (texRef.current) texRef.current.needsUpdate = true;
   });
 

@@ -31,6 +31,22 @@ function clamp01(x: number): number {
   return Math.min(Math.max(x, 0), 1);
 }
 
+// Lottie keyframe times are authored in comp frames, so seconds must be
+// converted with the export's own frame rate. The export out-point is
+// exclusive: its terminal time maps one frame past the drawable range and is
+// therefore clamped to `totalFrames - 1`.
+export function lottieFrameForTime(
+  tSec: number,
+  totalFrames: number,
+  frameRate: number,
+): number {
+  if (!Number.isFinite(totalFrames) || totalFrames <= 0) return 0;
+  if (!Number.isFinite(tSec) || !Number.isFinite(frameRate) || frameRate <= 0)
+    return 0;
+  const finalFrame = Math.max(totalFrames - 1, 0);
+  return Math.min(Math.max(tSec * frameRate, 0), finalFrame);
+}
+
 // Lottie timeline (seconds). The reveal starts at DEFT_DROP_S — the loader has
 // already auto-played [0, DEFT_DROP_S], and because the mapping never returns
 // less than DEFT_DROP_S, scrolling back to the top can never re-enter the drop.

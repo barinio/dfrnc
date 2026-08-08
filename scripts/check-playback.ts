@@ -3,6 +3,7 @@
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import {
+  lottieFrameForTime,
   lottieTimeFor,
   figureStateFor,
   figureVisibleFor,
@@ -191,6 +192,23 @@ eq(
 const introData = JSON.parse(
   readFileSync(new URL("../src/assets/animation.json", import.meta.url), "utf8"),
 );
+const introFrameRate = valueAtPath(introData, ["fr"]);
+const introInPoint = valueAtPath(introData, ["ip"]);
+const introOutPoint = valueAtPath(introData, ["op"]);
+ok(
+  typeof introFrameRate === "number" && Number.isFinite(introFrameRate),
+  "intro export frame rate is finite",
+);
+ok(
+  typeof introInPoint === "number" && Number.isFinite(introInPoint),
+  "intro export in point is finite",
+);
+ok(
+  typeof introOutPoint === "number" && Number.isFinite(introOutPoint),
+  "intro export out point is finite",
+);
+const introTotalFrames = introOutPoint - introInPoint;
+eq(introTotalFrames, 266, "intro export total frames");
 const undLayer = findNamedObject(introData, "5_UND Outlines");
 const entwickeltLayer = findNamedObject(introData, "6_ENTWICKELT Outlines");
 const ausgezeichnetesLayer = findNamedObject(
@@ -233,11 +251,40 @@ const ausgezeichnetesSettleFrame = Math.max(
     return frame;
   }),
 );
-const introHoldFrame = LOTTIE_INTRO_S * 30;
+const introHoldFrame = lottieFrameForTime(
+  LOTTIE_INTRO_S,
+  introTotalFrames,
+  introFrameRate,
+);
 eq(introHoldFrame, 103, "intro hold frame");
 ok(
   introHoldFrame >= ausgezeichnetesSettleFrame,
   `intro hold covers AUSGEZEICHNETES settle frame ${ausgezeichnetesSettleFrame}`,
+);
+eq(
+  lottieFrameForTime(LOTTIE_TOTAL_S, introTotalFrames, introFrameRate),
+  265,
+  "Lottie total time clamps to the final authored frame",
+);
+eq(
+  lottieFrameForTime(-1, introTotalFrames, introFrameRate),
+  0,
+  "negative Lottie time clamps to frame zero",
+);
+eq(
+  lottieFrameForTime(Number.NaN, introTotalFrames, introFrameRate),
+  0,
+  "invalid Lottie time falls back to frame zero",
+);
+eq(
+  lottieFrameForTime(LOTTIE_INTRO_S, 0, introFrameRate),
+  0,
+  "empty Lottie export falls back to frame zero",
+);
+eq(
+  lottieFrameForTime(LOTTIE_INTRO_S, introTotalFrames, 0),
+  0,
+  "invalid Lottie frame rate falls back to frame zero",
 );
 
 const titleLastFrame = titleData.op - titleData.ip - 1;
