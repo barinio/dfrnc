@@ -193,8 +193,13 @@ const introData = JSON.parse(
 );
 const undLayer = findNamedObject(introData, "5_UND Outlines");
 const entwickeltLayer = findNamedObject(introData, "6_ENTWICKELT Outlines");
+const ausgezeichnetesLayer = findNamedObject(
+  introData,
+  "AUSGEZEICHNETES Outlines",
+);
 ok(Boolean(undLayer), "UND intro layer exists");
 ok(Boolean(entwickeltLayer), "ENTWICKELT intro layer exists");
+ok(Boolean(ausgezeichnetesLayer), "AUSGEZEICHNETES intro layer exists");
 eq(
   valueAtPath(undLayer, ["ks", "p", "k", 0, "s", 0]),
   -260,
@@ -204,6 +209,35 @@ eq(
   valueAtPath(entwickeltLayer, ["ks", "p", "k", 0, "s", 0]),
   1745,
   "ENTWICKELT initial position x",
+);
+const ausgezeichnetesScaleKeys = valueAtPath(ausgezeichnetesLayer, [
+  "ks",
+  "s",
+  "k",
+]);
+ok(
+  Array.isArray(ausgezeichnetesScaleKeys),
+  "AUSGEZEICHNETES scale keys are an array",
+);
+ok(
+  ausgezeichnetesScaleKeys.length > 0,
+  "AUSGEZEICHNETES has authored scale keys",
+);
+const ausgezeichnetesSettleFrame = Math.max(
+  ...ausgezeichnetesScaleKeys.map((key, index) => {
+    const frame = valueAtPath(key, ["t"]);
+    ok(
+      typeof frame === "number" && Number.isFinite(frame),
+      `AUSGEZEICHNETES scale key ${index} has a finite frame`,
+    );
+    return frame;
+  }),
+);
+const introHoldFrame = LOTTIE_INTRO_S * 30;
+eq(introHoldFrame, 103, "intro hold frame");
+ok(
+  introHoldFrame >= ausgezeichnetesSettleFrame,
+  `intro hold covers AUSGEZEICHNETES settle frame ${ausgezeichnetesSettleFrame}`,
 );
 
 const titleLastFrame = titleData.op - titleData.ip - 1;
@@ -277,29 +311,41 @@ ok(!figureVisibleFor(spFor(0.1), win, "scroll"), "unmounted far before");
 ok(!figureVisibleFor(spFor(0.72), win, "scroll"), "unmounted far after");
 ok(!figureVisibleFor(spFor(0.4), win, "done"), "done: never mounted");
 
-// Timing invariant: every flight ends before the video fades in, and the
-// LAST figure (gba) is ≈¾ through its arc when the Lottie scrub / video reveal
-// begins — the background continuation only resumes once the last icon is
-// almost down (supervisor direction).
+// Timing invariant: the intro settles before the figures begin, every flight
+// ends before the video fades in, and the Lottie stays held until the final
+// figure has landed.
+eq(REVEAL_END * SCROLL_TRACK_VH, 136, "reveal ends at 136vh");
+eq(FIGURES_START * SCROLL_TRACK_VH, 144, "figures begin at 144vh");
+eq(
+  (FIGURES_START - REVEAL_END) * SCROLL_TRACK_VH,
+  8,
+  "8vh clean beat before figures",
+);
+ok(FIGURES_START > REVEAL_END, "figures begin after the reveal settles");
 ok(FIGURES_END < VIDEO_START, "figures end before the video starts");
 const last = FIGURES[FIGURES.length - 1].arc.window;
-ok(spFor(last[1]) <= FIGURES_END + 1e-9, "last flight ends within the figures phase");
-ok(spFor(last[1]) < VIDEO_START, "last flight ends before the video starts");
-// The last figure's local t at LOTTIE_SCRUB_START should be between ≈¾ done and
-// just-landed: the supervisor wants the icon nearly/just down when the background
-// continuation resumes — no dead air, no slow lingering tail. (Was pinned at ≈¾;
-// gba's snappier 0.85 end lands it ~95% down at the scrub start.)
-const lastTatScrub =
-  (((LOTTIE_SCRUB_START - FIGURES_START) / (FIGURES_END - FIGURES_START)) -
-    last[0]) /
-  (last[1] - last[0]);
-ok(
-  lastTatScrub >= 0.7 && lastTatScrub <= 1.02,
-  `last figure ≈¾-down…just-landed when scrub starts (got ${lastTatScrub.toFixed(3)})`,
+const lastLandingSp =
+  FIGURES_START + last[1] * (FIGURES_END - FIGURES_START);
+ok(lastLandingSp <= FIGURES_END + 1e-9, "last flight ends within the figures phase");
+ok(lastLandingSp < VIDEO_START, "last flight ends before the video starts");
+eq(
+  lastLandingSp * SCROLL_TRACK_VH,
+  355.2,
+  "last GBA window ends at 355.2vh",
+);
+eq(
+  LOTTIE_SCRUB_START * SCROLL_TRACK_VH,
+  356,
+  "Lottie resumes at 356vh",
 );
 ok(
-  lottieTimeFor(spFor(last[1]), "scroll") > LOTTIE_INTRO_S + 1e-9,
-  "lottie is scrubbing during the last figure's exit",
+  lastLandingSp <= LOTTIE_SCRUB_START,
+  "last figure lands before the Lottie resumes",
+);
+eq(
+  lottieTimeFor(lastLandingSp, "scroll"),
+  LOTTIE_INTRO_S,
+  "Lottie holds the settled intro through the last landing",
 );
 
 // videoStateFor — anchored at VIDEO_START (video fades in behind the typography)
@@ -391,15 +437,6 @@ for (const name of ["tokyo"]) {
     `${name} (text) spins with its travel`,
   );
 }
-// The figures phase begins INSIDE the Lottie reveal: the first figure is
-// already nearly opaque at 124vh of scroll, just before AUSGEZEICHNETES (the
-// last word) settles at ≈126vh (measured ≈0.158 on the old 800vh track; the
-// probe is anchored in physical vh so track growth never retimes it).
-ok(FIGURES_START < REVEAL_END, "figures launch during the reveal");
-ok(
-  figureStateFor(124 / SCROLL_TRACK_VH, FIGURES[0].arc.window, "scroll").opacity > 0.9,
-  "first figure airborne before AUSGEZEICHNETES settles",
-);
 // peaks stay at or below ~half the viewport (0.5 of the upper half) so the
 // figure — whose body extends above its center — never clips off the top edge
 for (const f of FIGURES) {

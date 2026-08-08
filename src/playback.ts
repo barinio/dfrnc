@@ -45,8 +45,9 @@ export function lottieTimeFor(sp: number, phase: Phase): number {
     return sp < VIDEO_START + VIDEO_FADE ? LOTTIE_INTRO_S : LOTTIE_TOTAL_S;
   if (sp <= REVEAL_END)
     return DEFT_DROP_S + (sp / REVEAL_END) * (LOTTIE_INTRO_S - DEFT_DROP_S);
-  // Hold ends at LOTTIE_SCRUB_START (not FIGURES_END): the typography starts
-  // appearing again while the tail of the figure sequence is still exiting.
+  // Hold ends at LOTTIE_SCRUB_START (not FIGURES_END), immediately after the
+  // final GBA window has landed; the 3D sequence never overlaps the resumed
+  // typography motion.
   if (sp <= LOTTIE_SCRUB_START) return LOTTIE_INTRO_S;
   // Two-speed scrub, split at VIDEO_START:
   //  1) [LOTTIE_SCRUB_START, VIDEO_START] → [LOTTIE_INTRO_S, LOTTIE_ZOOM_S]:
@@ -72,10 +73,10 @@ export interface FigureState {
 // Per-figure flight state. `window` is the figure's sub-range of the figures
 // phase, in normalized phase units [0,1]; windows may OVERLAP (up to two
 // figures airborne at once) so the sequence reads as a continuous cascade.
-// The phase itself starts at FIGURES_START — inside the Lottie reveal — so the
-// first figure is flying before the last word settles. The fade is SYMMETRIC
-// within the window (first/last FIGURE_FADE of local t), so each flight reads
-// as a balanced dome and is fully reversible on reverse scroll.
+// The phase starts at FIGURES_START, after the completed title settle and its
+// 8vh clean beat. The fade is SYMMETRIC within the window (first/last
+// FIGURE_FADE of local t), so each flight reads as a balanced dome and is fully
+// reversible on reverse scroll.
 export function figureStateFor(
   sp: number,
   window: readonly [number, number],

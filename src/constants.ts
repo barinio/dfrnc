@@ -5,9 +5,11 @@
 // DEFT_DROP_S = 1.0s — DEFT has landed and settled at its final position;
 // MACHT is not yet visible (first appears at ~1.2s). Confirmed by probe.
 export const DEFT_DROP_S = 1.0;
-// LOTTIE_INTRO_S = 3.0s — full 4-word block (DEFT/MACHT/AUSGEZEICHNETES/DESIGN)
-// fully assembled and settled. The frame held while the figures fly (sp 0.17–0.5).
-export const LOTTIE_INTRO_S = 3.0;
+// LOTTIE_INTRO_S = frame 103 — the full 4-word block
+// (DEFT/MACHT/AUSGEZEICHNETES/DESIGN) has completed its authored settle. This
+// exact frame is held through the 3D sequence so AUSGEZEICHNETES cannot finish
+// moving after the figures have disappeared.
+export const LOTTIE_INTRO_S = 103 / 30;
 export const LOTTIE_TOTAL_S = 266 / 30; // 8.8667s — 30 fps, 266 frames
 
 // Total scrollable track height (vh). Raised 800 → 1000 ("прям дуже повільно"
@@ -22,16 +24,15 @@ export const SCROLL_TRACK_VH = 1240;
 
 // ── Scroll-progress partition (0..1) ─────────────────────────────────────────
 // Nothing autoplays after the loader releases:
-//   [0, REVEAL_END]                    Lottie reveal (DEFT_DROP_S → LOTTIE_INTRO_S)
-//   FIGURES_START (< REVEAL_END)       the FIRST figure launches inside the
-//                                      reveal — airborne before AUSGEZEICHNETES
-//                                      finishes animating in
+//   [0, REVEAL_END]                    Lottie reveal to the completed frame-103
+//                                      settle (DEFT_DROP_S → LOTTIE_INTRO_S)
+//   (REVEAL_END, FIGURES_START)        8vh clean beat on the settled title
 //   [FIGURES_START, FIGURES_END]       figures fly overlapping domes; Lottie
-//                                      held after the reveal completes
+//                                      remains held through the last landing
 //   [LOTTIE_SCRUB_START, VIDEO_START]  the words finish assembling/settling at
 //                                      their reading pace (→ LOTTIE_ZOOM_S, where
-//                                      KONZEPTE has just settled); the LAST
-//                                      figures finish their exits inside here
+//                                      KONZEPTE has just settled); this resumes
+//                                      immediately after GBA has fully exited
 //   VIDEO_START                        video fades in BEHIND the typography; the
 //                                      white letters occlude it; alphaTest gaps reveal it
 //   [VIDEO_START, LOTTIE_END]          the SHORT zoom-through: letters accelerate
@@ -44,19 +45,13 @@ export const SCROLL_TRACK_VH = 1240;
 // 800vh track these were 0.17·800 = 136vh etc.); dividing by SCROLL_TRACK_VH
 // keeps the budgets byte-identical across track growth.
 export const REVEAL_END = 136 / SCROLL_TRACK_VH;
-// Start of the figures phase. Sits INSIDE the Lottie reveal: AUSGEZEICHNETES
-// (the last word to appear) animates in near the end of the reveal (measured),
-// and the first figure must already be flying before it settles.
-export const FIGURES_START = 100 / SCROLL_TRACK_VH;
-// Lottie hold ends and the typography starts appearing again. Decoupled from
-// FIGURES_END so the tail of the figure sequence exits WHILE the text animates.
-// Pulled in from 0.5 → 0.41 when gba's flight was sped up (its window narrowed
-// 0.55 → 0.36, so it lands ~0.09 sp earlier): the scrub now resumes right as gba
-// touches down, keeping the background continuation tight with no dead-air
-// hold. The readable-words assembly [LOTTIE_SCRUB_START, VIDEO_START] is
-// correspondingly a touch slower; its endpoints (LOTTIE_INTRO_S → LOTTIE_ZOOM_S
-// at VIDEO_START) are unchanged, so the zoom-through / caption timing is intact.
-export const LOTTIE_SCRUB_START = 328 / SCROLL_TRACK_VH;
+// Start of the figures phase, after an 8vh clean beat on the fully settled
+// frame-103 title.
+export const FIGURES_START = 144 / SCROLL_TRACK_VH;
+// Lottie hold ends immediately after the final GBA window lands at 355.2vh.
+// The 0.8vh separation guarantees the 3D exit is complete before the background
+// typography continues, without introducing a perceptible dead-air pause.
+export const LOTTIE_SCRUB_START = 356 / SCROLL_TRACK_VH;
 // End of the figures phase. Must stay below VIDEO_START so the last figure's
 // exit completes before the video shows up behind the typography.
 export const FIGURES_END = 464 / SCROLL_TRACK_VH;

@@ -75,9 +75,9 @@ export interface FigureDef {
 
 // Launch order: and → tokyo → gba, alternating entry sides, with OVERLAPPING
 // windows so the sequence reads as one continuous cascade:
-//   • and starts at the very top of the figures phase — already airborne while
-//     AUSGEZEICHNETES is still animating in (the phase begins inside the
-//     Lottie reveal, see FIGURES_START).
+//   • and starts at the very top of the figures phase, after AUSGEZEICHNETES has
+//     completed its frame-103 settle and the title has held for an 8vh clean
+//     beat (see FIGURES_START).
 //   • tokyo launches after `and` has passed its apex. It still overlaps the
 //     tail of the first flight, but it is pushed forward in depth with
 //     perspective-compensated size/spread so the two meshes no longer enter
@@ -89,10 +89,9 @@ export interface FigureDef {
 //     the two paths never collide. (The removed `awwwards` figure used to fill
 //     this slot; when it went, gba was left launching only as tokyo LANDED, which
 //     read as a late, detached final flight.) gba is the LAST figure and lands at
-//     0.85 → sp ≈0.51, just AFTER the Lottie scrub / video reveal begins
-//     (LOTTIE_SCRUB_START 0.5): it is ≈95% down by then (was ¾ at the slower
-//     0.95 end), so the arc is ~13% snappier and the background continuation
-//     resumes right as the last icon finishes — no dead air, no lingering tail.
+//     phase 0.66 → 355.2vh. The Lottie remains on its settled frame until it
+//     resumes at 356vh, so the background continuation follows the completed 3D
+//     exit with no overlap and no lingering pause.
 // Icons (and/gba) spin AGAINST their travel at distinct rates; the text logo
 // (tokyo) spins with it. NO opacity fades (FIGURE_FADE = 0): every figure
 // enters/exits below the frame (rootDepth ≈ 1.4 sinks the entry/exit roots
@@ -176,11 +175,10 @@ export const FIGURES: FigureDef[] = [
       // is **0.36 wide** so gba TRAVELS at roughly the same angular speed as `and`
       // (0.30) and tokyo (0.32): it used to span 0.55 (0.30→0.85), nearly double
       // the others, which read as a slow, floaty final flight (supervisor: "третя
-      // іконка летить довго"). With the shorter window it lands at sp ≈0.425, so
-      // LOTTIE_SCRUB_START was pulled in from 0.5 → 0.41 to keep the background
-      // continuation resuming right as gba touches down (no dead air, no detached
-      // launch). gba is ≈90% down at the (new) scrub start — see check-playback's
-      // lastTatScrub assertion. Launch must stay < tokyo's window end (0.54).
+      // іконка летить довго"). With the shorter window it lands at 355.2vh;
+      // LOTTIE_SCRUB_START at 356vh keeps the settled background frozen through
+      // the full exit, then resumes it without dead air or a detached launch.
+      // Launch must stay < tokyo's window end (0.54).
       window: [0.3, 0.66],
     },
     // gba's chunky, thick body has the longest internal light paths of the set,
