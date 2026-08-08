@@ -270,8 +270,8 @@ function begunAt(y: number, nowMs = 0) {
 }
 
 // Establish an active forward direction, then request far more motion than a
-// 16ms input interval can legitimately play. The source clip may advance by at
-// most those same 16ms.
+// 16ms input interval can legitimately play. Away from the end clamp, the
+// source clip advances by exactly those same 16ms.
 let state = begunAt(bounds.startY);
 let step = applyScrollSample(state, {
   rawY: bounds.startY + 1,
@@ -287,10 +287,55 @@ step = applyScrollSample(step.state, {
   maxScrollY,
 });
 const afterSixteenMsT = videoTimeForY(step.state.virtualY, IH);
-ok(
-  afterSixteenMsT - beforeSixteenMsT <=
-    16 / (VIDEO_DURATION_S * 1000) + 1e-9,
-  "forward clip movement is capped at native speed",
+eq(
+  afterSixteenMsT - beforeSixteenMsT,
+  16 / (VIDEO_DURATION_S * 1000),
+  "forward clip movement matches the active 16ms interval",
+  1e-10,
+);
+
+// 50ms is the final consecutive-input gap that counts in full. Any larger gap
+// is a new burst and receives only one initial frame quantum.
+state = begunAt(bounds.startY);
+step = applyScrollSample(state, {
+  rawY: bounds.startY + 1,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+let beforeBoundaryT = videoTimeForY(step.state.virtualY, IH);
+step = applyScrollSample(step.state, {
+  rawY: bounds.startY + 10_001,
+  nowMs: 50,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(
+  videoTimeForY(step.state.virtualY, IH) - beforeBoundaryT,
+  50 / (VIDEO_DURATION_S * 1000),
+  "50ms active gap is used exactly",
+  1e-10,
+);
+
+state = begunAt(bounds.startY);
+step = applyScrollSample(state, {
+  rawY: bounds.startY + 1,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+beforeBoundaryT = videoTimeForY(step.state.virtualY, IH);
+step = applyScrollSample(step.state, {
+  rawY: bounds.startY + 10_001,
+  nowMs: 50.001,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(
+  videoTimeForY(step.state.virtualY, IH) - beforeBoundaryT,
+  INITIAL_INPUT_QUANTUM_MS / (VIDEO_DURATION_S * 1000),
+  "gap above 50ms resets to the initial quantum",
+  1e-10,
 );
 
 // A first forward input gets one frame-sized quantum regardless of how long
@@ -319,6 +364,21 @@ step = applyScrollSample(state, {
   maxScrollY,
 });
 eq(step.state.virtualY, slowRequestedY, "slow input is preserved exactly", 0);
+
+// Ordinary forward motion wholly before the FPV interval stays one-to-one and
+// does not acquire the same-gesture gallery lock.
+state = begunAt(bounds.startY - 200);
+const preVideoRequestedY = bounds.startY - 100;
+step = applyScrollSample(state, {
+  rawY: preVideoRequestedY,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.virtualY, preVideoRequestedY, "pre-video forward motion is exact", 0);
+eq(step.state.lastRawY, preVideoRequestedY, "pre-video raw bookkeeping is exact", 0);
+eq(step.discardedForwardPx, 0, "pre-video motion is not speed-limited", 0);
+ok(!step.state.gestureLocksGallery, "pre-video motion does not lock the gallery");
 
 // Crossing the start boundary spends no playback budget on the ordinary
 // pre-video pixels: they move one-for-one before the clip-time cap begins.
@@ -559,6 +619,12 @@ step = applyScrollSample(state, {
 ended = endScrollGesture(step.state, IH);
 ok(ended.needsReanchor, "mismatched native and virtual Y requests re-anchor");
 ok(ended.state.suppressForward, "re-anchor enables forward residual suppression");
+eqProgress(
+  ended.progress,
+  timelineProgressForY(ended.state.virtualY, IH),
+  "gesture end reports progress from the virtual cursor",
+  0,
+);
 const suppressedY = ended.state.virtualY;
 state = syncRawScrollPosition(ended.state, suppressedY);
 step = applyScrollSample(state, {
@@ -569,6 +635,20 @@ step = applyScrollSample(state, {
 });
 eq(step.state.virtualY, suppressedY, "positive residual momentum is discarded", 0);
 eq(step.discardedForwardPx, 100, "suppression reports discarded residue", 1e-10);
+eq(
+  step.state.lastRawY,
+  suppressedY + 100,
+  "suppression still consumes the positive raw sample",
+  0,
+);
+step = applyScrollSample(step.state, {
+  rawY: suppressedY + 100,
+  nowMs: 15,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.virtualY, suppressedY, "zero residual delta cannot catch up", 0);
+eq(step.discardedForwardPx, 0, "zero residual delta discards nothing", 0);
 
 step = applyScrollSample(step.state, {
   rawY: step.state.lastRawY - 20,
