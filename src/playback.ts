@@ -183,7 +183,7 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
 // Knot #2 still pins caption 1's ONSET just after LOTTIE_END (544vh) so the
 // Lottie zoom-through clears the frame BEFORE the caption appears.
 // Re-derive if VIDEO_START / VIDEO_SPLIT / LOTTIE_END move or the clip swaps.
-const VIDEO_TIME_KNOTS: readonly (readonly [number, number])[] = [
+export const VIDEO_TIME_KNOTS: readonly (readonly [number, number])[] = [
   [VIDEO_START, 0], // 504vh
   [545.6 / SCROLL_TRACK_VH, 0.11], // caption-1 onset (in clouds) — 1.6vh after the zoom-through clears
   [551.8 / SCROLL_TRACK_VH, 0.139], // out of the clouds → text readable; dwell begins

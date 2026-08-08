@@ -31,7 +31,7 @@ function physicalTracks(innerHeight: number) {
 
 export function animationEndY(innerHeight: number): number {
   if (!validHeight(innerHeight)) return 0;
-  return ((SCROLL_TRACK_VH - 100) / 100) * innerHeight;
+  return physicalTracks(innerHeight).animY;
 }
 
 // Canonical physical scroll position → both logical timelines. Gallery

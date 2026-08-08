@@ -10,6 +10,7 @@ import {
   VID_FLY_END,
 } from "../src/constants";
 import {
+  VIDEO_TIME_KNOTS,
   videoMasterTimeFor,
   videoTimelinePositionFor,
 } from "../src/playback";
@@ -74,6 +75,35 @@ for (const [t, expectedSp] of authoredKnots) {
   const position = videoTimelinePositionFor(t);
   eq(position.sp, expectedSp, `inverse authored knot ${t}: sp`, 1e-12);
   eq(position.gp, 0, `inverse authored knot ${t}: gp`, 1e-12);
+}
+
+// Endpoint-only tests would let a nonlinear inverse such as u² survive. Probe
+// three independently interpolated interiors of EVERY canonical segment: the
+// expected sp below comes from the segment endpoints, not from either mapping
+// function, so easing or another nonlinear mutation is guaranteed to fail.
+for (let segmentIndex = 1; segmentIndex < VIDEO_TIME_KNOTS.length; segmentIndex++) {
+  const [sp0, t0] = VIDEO_TIME_KNOTS[segmentIndex - 1];
+  const [sp1, t1] = VIDEO_TIME_KNOTS[segmentIndex];
+  for (const u of [0.25, 0.5, 0.75]) {
+    const t = t0 + (t1 - t0) * u;
+    const expectedSp = sp0 + (sp1 - sp0) * u;
+    const position = videoTimelinePositionFor(t);
+    const label = `authored segment ${segmentIndex - 1} interior u=${u}`;
+
+    eq(
+      position.sp,
+      expectedSp,
+      `${label}: inverse must remain affine (reject nonlinear easing)`,
+      1e-12,
+    );
+    eq(position.gp, 0, `${label}: remains on the animation track`, 1e-12);
+    eq(
+      videoMasterTimeFor(position.sp, position.gp, "scroll"),
+      t,
+      `${label}: forward round-trip`,
+      1e-12,
+    );
+  }
 }
 
 const sampleTimes = [
