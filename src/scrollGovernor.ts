@@ -2,6 +2,7 @@ import {
   IMAGE_GALLERY_TRACK_VH,
   SCROLL_TRACK_VH,
   VIDEO_CARD_TRACK_VH,
+  VIDEO_DURATION_S,
   VID_FLY_END,
 } from "./constants";
 import { galleryProgressFrom } from "./gallery";
@@ -11,6 +12,37 @@ export interface TimelineProgress {
   sp: number;
   gp: number;
 }
+
+export type ScrollDirection = -1 | 0 | 1;
+
+export interface ScrollGovernorState {
+  virtualY: number;
+  lastRawY: number;
+  lastInputAtMs: number | null;
+  direction: ScrollDirection;
+  gestureActive: boolean;
+  gestureLocksGallery: boolean;
+  suppressForward: boolean;
+}
+
+export interface ScrollSample {
+  rawY: number;
+  nowMs: number;
+  innerHeight: number;
+  maxScrollY: number;
+  reducedMotion?: boolean;
+  bypass?: boolean;
+}
+
+export interface ScrollGovernorStep {
+  state: ScrollGovernorState;
+  progress: TimelineProgress;
+  discardedForwardPx: number;
+  needsReanchor: boolean;
+}
+
+const INITIAL_INPUT_QUANTUM_MS = 1000 / 60;
+const MAX_ACTIVE_GAP_MS = 50;
 
 function validHeight(innerHeight: number): boolean {
   return Number.isFinite(innerHeight) && innerHeight > 0;
@@ -92,5 +124,257 @@ export function videoGovernorBounds(innerHeight: number): {
   return {
     startY: scrollYForVideoTime(0, innerHeight),
     endY: scrollYForVideoTime(1, innerHeight),
+  };
+}
+
+function finiteNonNegative(value: number, fallback = 0): number {
+  return Number.isFinite(value) ? Math.max(value, 0) : Math.max(fallback, 0);
+}
+
+function validDocumentEnd(value: number): number {
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function clampDocumentY(value: number, maxScrollY: number, fallback = 0): number {
+  if (value === Number.POSITIVE_INFINITY) return maxScrollY;
+  if (value === Number.NEGATIVE_INFINITY) return 0;
+  const safeValue = Number.isFinite(value) ? value : fallback;
+  return Math.min(Math.max(safeValue, 0), maxScrollY);
+}
+
+function normalizedState(
+  state: ScrollGovernorState,
+  maxScrollY?: number,
+): ScrollGovernorState {
+  const hasDocumentEnd = maxScrollY !== undefined;
+  const documentEnd = hasDocumentEnd ? validDocumentEnd(maxScrollY) : 0;
+  const virtualY = hasDocumentEnd
+    ? clampDocumentY(state.virtualY, documentEnd)
+    : finiteNonNegative(state.virtualY);
+  const lastRawY = hasDocumentEnd
+    ? clampDocumentY(state.lastRawY, documentEnd, virtualY)
+    : finiteNonNegative(state.lastRawY, virtualY);
+
+  return {
+    virtualY,
+    lastRawY,
+    lastInputAtMs:
+      state.lastInputAtMs !== null && Number.isFinite(state.lastInputAtMs)
+        ? state.lastInputAtMs
+        : null,
+    direction:
+      state.direction === -1 || state.direction === 1 ? state.direction : 0,
+    gestureActive: Boolean(state.gestureActive),
+    gestureLocksGallery: Boolean(state.gestureLocksGallery),
+    suppressForward: Boolean(state.suppressForward),
+  };
+}
+
+function stepFor(
+  state: ScrollGovernorState,
+  innerHeight: number,
+  discardedForwardPx = 0,
+): ScrollGovernorStep {
+  return {
+    state,
+    progress: timelineProgressForY(state.virtualY, innerHeight),
+    discardedForwardPx: finiteNonNegative(discardedForwardPx),
+    needsReanchor: state.lastRawY !== state.virtualY,
+  };
+}
+
+function sampleTime(nowMs: number, state: ScrollGovernorState): number {
+  if (Number.isFinite(nowMs)) return nowMs;
+  return state.lastInputAtMs ?? 0;
+}
+
+function forwardInputMs(state: ScrollGovernorState, nowMs: number): number {
+  if (state.direction !== 1 || state.lastInputAtMs === null) {
+    return INITIAL_INPUT_QUANTUM_MS;
+  }
+
+  const gap = nowMs - state.lastInputAtMs;
+  if (!Number.isFinite(gap) || gap < 0 || gap > MAX_ACTIVE_GAP_MS) {
+    return INITIAL_INPUT_QUANTUM_MS;
+  }
+  return gap;
+}
+
+export function createScrollGovernorState(rawY = 0): ScrollGovernorState {
+  const initialY = finiteNonNegative(rawY);
+  return {
+    virtualY: initialY,
+    lastRawY: initialY,
+    lastInputAtMs: null,
+    direction: 0,
+    gestureActive: false,
+    gestureLocksGallery: false,
+    suppressForward: false,
+  };
+}
+
+export function beginScrollGesture(
+  state: ScrollGovernorState,
+  nowMs: number,
+): ScrollGovernorState {
+  const current = normalizedState(state);
+  return {
+    ...current,
+    lastInputAtMs: Number.isFinite(nowMs) ? nowMs : null,
+    direction: 0,
+    gestureActive: true,
+    gestureLocksGallery: false,
+    // A newly identified input gesture is intentional user motion, not the
+    // positive inertial residue left behind by the previous gesture.
+    suppressForward: false,
+  };
+}
+
+export function applyScrollSample(
+  state: ScrollGovernorState,
+  sample: ScrollSample,
+): ScrollGovernorStep {
+  const maxScrollY = validDocumentEnd(sample.maxScrollY);
+  const current = normalizedState(state, maxScrollY);
+  const rawY = clampDocumentY(sample.rawY, maxScrollY, current.lastRawY);
+  const rawDelta = rawY - current.lastRawY;
+  const nowMs = sampleTime(sample.nowMs, current);
+
+  if (sample.bypass || sample.reducedMotion) {
+    const synchronized: ScrollGovernorState = {
+      ...current,
+      virtualY: rawY,
+      lastRawY: rawY,
+      lastInputAtMs: null,
+      direction: 0,
+      gestureLocksGallery: false,
+      suppressForward: false,
+    };
+    return stepFor(synchronized, sample.innerHeight);
+  }
+
+  if (rawDelta === 0) {
+    return stepFor({ ...current, lastRawY: rawY }, sample.innerHeight);
+  }
+
+  if (rawDelta < 0) {
+    const virtualY = clampDocumentY(
+      current.virtualY + rawDelta,
+      maxScrollY,
+      current.virtualY,
+    );
+    return stepFor(
+      {
+        ...current,
+        virtualY,
+        lastRawY: rawY,
+        lastInputAtMs: nowMs,
+        direction: -1,
+      },
+      sample.innerHeight,
+    );
+  }
+
+  if (current.suppressForward) {
+    return stepFor(
+      { ...current, lastRawY: rawY },
+      sample.innerHeight,
+      rawDelta,
+    );
+  }
+
+  const activeInputMs = forwardInputMs(current, nowMs);
+  const requestedY = clampDocumentY(
+    current.virtualY + rawDelta,
+    maxScrollY,
+    current.virtualY,
+  );
+  const bounds = videoGovernorBounds(sample.innerHeight);
+  const hasGovernor =
+    validHeight(sample.innerHeight) && bounds.endY > bounds.startY;
+  const entersGovernor =
+    hasGovernor &&
+    current.virtualY < bounds.endY &&
+    requestedY > bounds.startY;
+  const gestureLocksGallery =
+    current.gestureLocksGallery ||
+    (current.gestureActive && entersGovernor);
+
+  let virtualY = requestedY;
+  if (hasGovernor && gestureLocksGallery) {
+    virtualY = Math.min(virtualY, bounds.endY);
+  }
+
+  if (entersGovernor) {
+    const governedFromY = Math.max(current.virtualY, bounds.startY);
+    const governedRequestedY = Math.min(requestedY, bounds.endY);
+    const currentClipT = videoTimeForY(governedFromY, sample.innerHeight);
+    const requestedClipT = videoTimeForY(
+      governedRequestedY,
+      sample.innerHeight,
+    );
+    const permittedClipDelta =
+      activeInputMs / (VIDEO_DURATION_S * 1000);
+    const permittedClipT = Math.min(currentClipT + permittedClipDelta, 1);
+
+    if (requestedClipT > permittedClipT) {
+      virtualY = scrollYForVideoTime(permittedClipT, sample.innerHeight);
+    } else if (gestureLocksGallery) {
+      // Preserve the exact requested coordinate for sub-cap movement; the
+      // inverse is only needed when the request actually exceeds the cap.
+      virtualY = governedRequestedY;
+    } else if (requestedY <= bounds.endY) {
+      virtualY = requestedY;
+    }
+  }
+
+  virtualY = clampDocumentY(virtualY, maxScrollY, current.virtualY);
+  const appliedForwardPx = Math.max(virtualY - current.virtualY, 0);
+  const discardedForwardPx = Math.max(rawDelta - appliedForwardPx, 0);
+
+  return stepFor(
+    {
+      ...current,
+      virtualY,
+      lastRawY: rawY,
+      lastInputAtMs: nowMs,
+      direction: 1,
+      gestureLocksGallery,
+    },
+    sample.innerHeight,
+    discardedForwardPx,
+  );
+}
+
+export function endScrollGesture(
+  state: ScrollGovernorState,
+  innerHeight: number,
+): ScrollGovernorStep {
+  const current = normalizedState(state);
+  const needsReanchor = current.lastRawY !== current.virtualY;
+  const ended: ScrollGovernorState = {
+    ...current,
+    lastInputAtMs: null,
+    direction: 0,
+    gestureActive: false,
+    suppressForward: needsReanchor,
+  };
+  return stepFor(ended, innerHeight);
+}
+
+export function releaseScrollSuppression(
+  state: ScrollGovernorState,
+): ScrollGovernorState {
+  return { ...normalizedState(state), suppressForward: false };
+}
+
+export function syncRawScrollPosition(
+  state: ScrollGovernorState,
+  rawY: number,
+): ScrollGovernorState {
+  const current = normalizedState(state);
+  return {
+    ...current,
+    lastRawY: finiteNonNegative(rawY, current.lastRawY),
   };
 }

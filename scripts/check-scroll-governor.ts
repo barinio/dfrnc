@@ -15,9 +15,15 @@ import {
   videoTimelinePositionFor,
 } from "../src/playback";
 import {
+  applyScrollSample,
   animationEndY,
+  beginScrollGesture,
+  createScrollGovernorState,
+  endScrollGesture,
+  releaseScrollSuppression,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
+  syncRawScrollPosition,
   timelineProgressForY,
   videoGovernorBounds,
   videoTimeForY,
@@ -256,4 +262,340 @@ eq(
   "NaN clip time maps to the clip start position",
 );
 
-console.log("✓ invertible video timeline and canonical physical mapping");
+const maxScrollY = animY + videoCardPx + imagePx;
+const INITIAL_INPUT_QUANTUM_MS = 1000 / 60;
+
+function begunAt(y: number, nowMs = 0) {
+  return beginScrollGesture(createScrollGovernorState(y), nowMs);
+}
+
+// Establish an active forward direction, then request far more motion than a
+// 16ms input interval can legitimately play. The source clip may advance by at
+// most those same 16ms.
+let state = begunAt(bounds.startY);
+let step = applyScrollSample(state, {
+  rawY: bounds.startY + 1,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+const beforeSixteenMsT = videoTimeForY(step.state.virtualY, IH);
+step = applyScrollSample(step.state, {
+  rawY: bounds.startY + 10_001,
+  nowMs: 16,
+  innerHeight: IH,
+  maxScrollY,
+});
+const afterSixteenMsT = videoTimeForY(step.state.virtualY, IH);
+ok(
+  afterSixteenMsT - beforeSixteenMsT <=
+    16 / (VIDEO_DURATION_S * 1000) + 1e-9,
+  "forward clip movement is capped at native speed",
+);
+
+// A first forward input gets one frame-sized quantum regardless of how long
+// the gesture existed before its first scroll sample.
+state = begunAt(bounds.startY, 10);
+step = applyScrollSample(state, {
+  rawY: maxScrollY,
+  nowMs: 5_000,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(
+  videoTimeForY(step.state.virtualY, IH),
+  INITIAL_INPUT_QUANTUM_MS / (VIDEO_DURATION_S * 1000),
+  "first forward sample uses the initial quantum",
+  1e-10,
+);
+
+// Requests below the allowance are not rescaled or rounded.
+state = begunAt(bounds.startY);
+const slowRequestedY = bounds.startY + 1;
+step = applyScrollSample(state, {
+  rawY: slowRequestedY,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.virtualY, slowRequestedY, "slow input is preserved exactly", 0);
+
+// Crossing the start boundary spends no playback budget on the ordinary
+// pre-video pixels: they move one-for-one before the clip-time cap begins.
+state = begunAt(bounds.startY - 100);
+step = applyScrollSample(state, {
+  rawY: bounds.startY + 10_000,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+ok(
+  step.state.virtualY - (bounds.startY - 100) >= 100,
+  "pre-video segment is preserved before governed motion",
+);
+eq(
+  videoTimeForY(step.state.virtualY, IH),
+  INITIAL_INPUT_QUANTUM_MS / (VIDEO_DURATION_S * 1000),
+  "segment crossing caps only the in-video portion",
+  1e-10,
+);
+
+// Idle time is never banked: a long gap resets to one initial quantum.
+state = begunAt(bounds.startY);
+step = applyScrollSample(state, {
+  rawY: bounds.startY + 1,
+  nowMs: 100,
+  innerHeight: IH,
+  maxScrollY,
+});
+const beforeIdleT = videoTimeForY(step.state.virtualY, IH);
+step = applyScrollSample(step.state, {
+  rawY: bounds.startY + 10_001,
+  nowMs: 2_100,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(
+  videoTimeForY(step.state.virtualY, IH) - beforeIdleT,
+  INITIAL_INPUT_QUANTUM_MS / (VIDEO_DURATION_S * 1000),
+  "idle time is not banked",
+  1e-10,
+);
+
+// Discarded distance is consumed from raw input and never becomes a target.
+const afterDiscardY = step.state.virtualY;
+const consumedRawY = step.state.lastRawY;
+ok(step.discardedForwardPx > 0, "excess forward distance is reported discarded");
+step = applyScrollSample(step.state, {
+  rawY: consumedRawY,
+  nowMs: 2_116,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.virtualY, afterDiscardY, "zero delta cannot replay discarded distance", 0);
+eq(step.discardedForwardPx, 0, "zero delta discards nothing", 0);
+
+// Reverse motion remains a direct physical delta, even after a capped sample.
+state = begunAt(bounds.startY + 4_000);
+step = applyScrollSample(state, {
+  rawY: bounds.startY + 2_000,
+  nowMs: 10,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(
+  step.state.virtualY,
+  bounds.startY + 2_000,
+  "reverse 2000px remains immediate and exact",
+  0,
+);
+
+// Changing direction resets the forward budget instead of inheriting elapsed
+// time from the earlier forward run.
+state = begunAt(bounds.startY);
+step = applyScrollSample(state, {
+  rawY: bounds.startY + 10_000,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY - 1,
+  nowMs: 10,
+  innerHeight: IH,
+  maxScrollY,
+});
+const beforeDirectionResetT = videoTimeForY(step.state.virtualY, IH);
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY + 10_000,
+  nowMs: 49,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(
+  videoTimeForY(step.state.virtualY, IH) - beforeDirectionResetT,
+  INITIAL_INPUT_QUANTUM_MS / (VIDEO_DURATION_S * 1000),
+  "direction change resets to the initial quantum",
+  1e-10,
+);
+
+// Raw bookkeeping advances for capped, discarded, and zero-distance samples.
+eq(step.state.lastRawY, maxScrollY, "discarded sample still updates lastRawY", 0);
+step = applyScrollSample(step.state, {
+  rawY: maxScrollY - 50,
+  nowMs: 50,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.lastRawY, maxScrollY - 50, "reverse sample updates lastRawY", 0);
+step = applyScrollSample(step.state, {
+  rawY: maxScrollY - 50,
+  nowMs: 51,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.lastRawY, maxScrollY - 50, "zero sample updates lastRawY", 0);
+
+// Entering the FPV range locks this gesture to the video-card seam. Starting
+// only one pixel before the seam makes one quantum sufficient to land exactly.
+state = begunAt(bounds.endY - 1);
+step = applyScrollSample(state, {
+  rawY: maxScrollY,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+ok(step.state.gestureLocksGallery, "forward gesture entering FPV locks the gallery");
+eqProgress(
+  step.progress,
+  { sp: 1, gp: VID_FLY_END },
+  "same gesture lands at video end",
+  1e-10,
+);
+step = applyScrollSample(step.state, {
+  rawY: maxScrollY,
+  nowMs: 16,
+  innerHeight: IH,
+  maxScrollY,
+});
+eqProgress(
+  step.progress,
+  { sp: 1, gp: VID_FLY_END },
+  "same gesture cannot spill into image slides",
+  1e-10,
+);
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY - 1,
+  nowMs: 32,
+  innerHeight: IH,
+  maxScrollY,
+});
+ok(step.state.gestureLocksGallery, "reverse preserves the same-gesture gallery lock");
+step = applyScrollSample(step.state, {
+  rawY: maxScrollY,
+  nowMs: 48,
+  innerHeight: IH,
+  maxScrollY,
+});
+eqProgress(
+  step.progress,
+  { sp: 1, gp: VID_FLY_END },
+  "re-forward motion in the same gesture remains locked",
+  1e-10,
+);
+
+// A newly begun gesture at the seam is allowed onto the ordinary gallery
+// track. Re-anchor raw bookkeeping first, as the browser hook does.
+let ended = endScrollGesture(step.state, IH);
+ok(ended.needsReanchor, "capped gesture requests a re-anchor");
+state = syncRawScrollPosition(ended.state, bounds.endY);
+state = beginScrollGesture(state, 100);
+ok(!state.gestureLocksGallery, "fresh gesture clears the previous gallery lock");
+step = applyScrollSample(state, {
+  rawY: bounds.endY + 100,
+  nowMs: 100,
+  innerHeight: IH,
+  maxScrollY,
+});
+ok(step.progress.gp > VID_FLY_END, "fresh gallery gesture advances normally");
+eq(step.state.virtualY, bounds.endY + 100, "gallery motion remains exact", 0);
+
+// Programmatic scrolling and reduced motion bypass the governor.
+state = begunAt(bounds.startY);
+step = applyScrollSample(state, {
+  rawY: bounds.endY + 123,
+  nowMs: 10,
+  innerHeight: IH,
+  maxScrollY,
+  bypass: true,
+});
+eq(step.state.virtualY, bounds.endY + 123, "bypass synchronizes virtual position", 0);
+eq(step.state.lastRawY, bounds.endY + 123, "bypass synchronizes raw position", 0);
+eq(step.discardedForwardPx, 0, "bypass discards no distance", 0);
+
+step = applyScrollSample(step.state, {
+  rawY: bounds.startY + 321,
+  nowMs: 20,
+  innerHeight: IH,
+  maxScrollY,
+  reducedMotion: true,
+});
+eq(step.state.virtualY, bounds.startY + 321, "reduced motion synchronizes directly", 0);
+eq(step.state.lastRawY, bounds.startY + 321, "reduced motion updates raw position", 0);
+
+// Document bounds and malformed inputs are deterministic and finite.
+state = createScrollGovernorState(-100);
+eq(state.virtualY, 0, "initial virtual position clamps at document start", 0);
+step = applyScrollSample(state, {
+  rawY: Number.POSITIVE_INFINITY,
+  nowMs: Number.NaN,
+  innerHeight: Number.NaN,
+  maxScrollY: Number.POSITIVE_INFINITY,
+  bypass: true,
+});
+eq(step.state.virtualY, 0, "invalid limits fail closed", 0);
+eqProgress(step.progress, { sp: 0, gp: 0 }, "invalid sample cannot create NaN");
+
+state = begunAt(maxScrollY - 10);
+step = applyScrollSample(state, {
+  rawY: maxScrollY + 1_000,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+  bypass: true,
+});
+eq(step.state.virtualY, maxScrollY, "virtual state clamps at document end", 0);
+eq(step.state.lastRawY, maxScrollY, "raw state clamps at document end", 0);
+
+// Gesture end asks the hook to reconcile native and virtual coordinates only
+// when they differ, then blocks positive inertial residue until release.
+state = begunAt(bounds.startY);
+step = applyScrollSample(state, {
+  rawY: maxScrollY,
+  nowMs: 0,
+  innerHeight: IH,
+  maxScrollY,
+});
+ended = endScrollGesture(step.state, IH);
+ok(ended.needsReanchor, "mismatched native and virtual Y requests re-anchor");
+ok(ended.state.suppressForward, "re-anchor enables forward residual suppression");
+const suppressedY = ended.state.virtualY;
+state = syncRawScrollPosition(ended.state, suppressedY);
+step = applyScrollSample(state, {
+  rawY: suppressedY + 100,
+  nowMs: 10,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.virtualY, suppressedY, "positive residual momentum is discarded", 0);
+eq(step.discardedForwardPx, 100, "suppression reports discarded residue", 1e-10);
+
+step = applyScrollSample(step.state, {
+  rawY: step.state.lastRawY - 20,
+  nowMs: 20,
+  innerHeight: IH,
+  maxScrollY,
+});
+eq(step.state.virtualY, suppressedY - 20, "reverse works during suppression", 0);
+state = releaseScrollSuppression(step.state);
+ok(!state.suppressForward, "explicit release clears residual suppression");
+const beforeReleasedForwardY = state.virtualY;
+step = applyScrollSample(state, {
+  rawY: state.lastRawY + 1,
+  nowMs: 30,
+  innerHeight: IH,
+  maxScrollY,
+});
+ok(step.state.virtualY > beforeReleasedForwardY, "forward motion resumes after release");
+
+state = createScrollGovernorState(500);
+ended = endScrollGesture(state, IH);
+ok(!ended.needsReanchor, "aligned state does not request re-anchor");
+ok(!ended.state.suppressForward, "aligned end does not enable suppression");
+
+// Re-anchor bookkeeping must not move the virtual timeline by itself.
+state = syncRawScrollPosition(createScrollGovernorState(500), 700);
+eq(state.virtualY, 500, "raw synchronization invents no virtual movement", 0);
+eq(state.lastRawY, 700, "raw synchronization aligns bookkeeping", 0);
+
+console.log("✓ invertible timeline and native-speed scroll governor");
