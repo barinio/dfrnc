@@ -1,5 +1,5 @@
 import {
-  IMAGE_GALLERY_TRACK_VH,
+  GALLERY_PIN_TRACK_PX,
   SCROLL_TRACK_VH,
   VIDEO_CARD_TRACK_VH,
   VID_FLY_END,
@@ -55,7 +55,7 @@ function physicalTracks(innerHeight: number) {
   return {
     animY: ((SCROLL_TRACK_VH - 100) / 100) * innerHeight,
     videoCardPx: (VIDEO_CARD_TRACK_VH / 100) * innerHeight,
-    imagePx: (IMAGE_GALLERY_TRACK_VH / 100) * innerHeight,
+    imagePx: GALLERY_PIN_TRACK_PX,
   };
 }
 

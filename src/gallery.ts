@@ -1,7 +1,7 @@
 import {
   SCROLL_TRACK_VH,
   VIDEO_CARD_TRACK_VH,
-  IMAGE_GALLERY_TRACK_VH,
+  GALLERY_PIN_TRACK_PX,
   VID_MORPH_END,
   VID_HOLD_END,
   VID_FLY_END,
@@ -163,17 +163,15 @@ export const CARDS_FLY_END = 0.71;
 // scrollY → gp, mapped PIECEWISE across two sub-tracks so each gallery phase gets
 // its own scroll budget. The video-card phase gp ∈ [0, VID_FLY_END] rides the
 // short VIDEO_CARD_TRACK_VH (so the morph is responsive, not sluggish); the image
-// gallery gp ∈ [VID_FLY_END, 1] rides IMAGE_GALLERY_TRACK_VH at its own (slower)
-// cadence. The slope changes at the seam but gp is continuous there (= VID_FLY_END
-// at the boundary), so scroll never jumps. The animation track owns scroll up to
-// its end (sp = 1 there). innerHeight makes the vh-based heights concrete; mirrors
-// useScrollProgress' anim mapping.
+// gallery gp ∈ [VID_FLY_END, 1] uses the short physical pin-release span only
+// for reduced-motion and direct programmatic addressing. Normal interaction is
+// driven by semantic gesture targets while physical scroll remains pinned.
 export function galleryProgressFrom(scrollY: number, innerHeight: number): number {
   const animY = ((SCROLL_TRACK_VH - 100) / 100) * innerHeight;
   const s = scrollY - animY;
   if (s <= 0) return 0;
   const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * innerHeight;
-  const imagePx = (IMAGE_GALLERY_TRACK_VH / 100) * innerHeight;
+  const imagePx = GALLERY_PIN_TRACK_PX;
   if (s <= videoCardPx)
     return videoCardPx > 0 ? (s / videoCardPx) * VID_FLY_END : 0;
   const r = imagePx > 0 ? (s - videoCardPx) / imagePx : 1;

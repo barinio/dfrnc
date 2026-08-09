@@ -33,7 +33,11 @@ import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollTimelineRefs } from "../hooks/useScrollProgress";
 import { figureVisibleFor, videoStateFor } from "../playback";
 import type { Phase } from "../playback";
-import { SCROLL_TRACK_VH, GALLERY_TRACK_VH } from "../constants";
+import {
+  GALLERY_PIN_TRACK_PX,
+  SCROLL_TRACK_VH,
+  VIDEO_CARD_TRACK_VH,
+} from "../constants";
 import { FIGURES } from "../arc";
 import { createRenderProfile } from "../renderProfile";
 
@@ -494,7 +498,7 @@ export default function Scene() {
           Lottie phases. The Canvas itself is pinned via position: fixed above. */}
       <div
         style={{
-          height: `${SCROLL_TRACK_VH + GALLERY_TRACK_VH}vh`,
+          height: `calc(${SCROLL_TRACK_VH + VIDEO_CARD_TRACK_VH}vh + ${GALLERY_PIN_TRACK_PX}px)`,
           width: "100%",
           pointerEvents: "none",
         }}
