@@ -327,19 +327,23 @@ try {
   // The gesture that reaches the end of the video-card track stays locked there
   // no matter how much more forward wheel input arrives.
   await waitForQuiet(page);
-  await seekClipOutsideGesture(page, 0.998);
+  await seekClipOutsideGesture(page, 0.9995);
   const endBurst = await trustedWheelBurst(page, {
     amount: deltaY,
     durationMs: endBurstMs,
   });
   const held = endBurst.after;
   check(
-    held.clipT >= 0.999,
+    held.clipT >= 1 - DIAGNOSTIC_EPSILON,
     `end-lock burst did not reach the clip end (clipT=${held.clipT})`,
   );
   check(
     held.gp <= VID_FLY_END + DIAGNOSTIC_EPSILON,
     `same gesture escaped into the gallery (gp=${held.gp})`,
+  );
+  check(
+    held.discardedForwardPx > 0,
+    "end-lock burst did not exercise discarded forward input",
   );
   check(
     endBurst.maxScheduleGapMs < INPUT_QUIET_MS,
