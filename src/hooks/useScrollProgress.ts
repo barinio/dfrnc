@@ -78,10 +78,6 @@ export function useScrollTimelineRefs(
         readInnerWidth: () => window.innerWidth,
         readDocumentEnd: documentScrollEnd,
         readVisibilityState: () => document.visibilityState,
-        now: () => {
-          const now = window.performance?.now();
-          return Number.isFinite(now) ? now : Date.now();
-        },
         setTimeout: (callback, delayMs) =>
           window.setTimeout(callback, delayMs),
         clearTimeout: (id) => window.clearTimeout(id),

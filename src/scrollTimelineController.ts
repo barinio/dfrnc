@@ -42,7 +42,6 @@ export interface ScrollTimelineControllerEnvironment {
   readInnerWidth(): number;
   readDocumentEnd(): number;
   readVisibilityState(): string;
-  now(): number;
   setTimeout(callback: () => void, delayMs: number): number;
   clearTimeout(id: number): void;
   scrollTo(options: { top: number; behavior: "auto" }): void;
@@ -166,6 +165,8 @@ export function createScrollTimelineController(
     environment.readScrollY(),
   );
   let touchActive = false;
+  let touchMomentumActive = false;
+  let touchMomentumEndTimer: number | null = null;
   let burstActive = false;
   let burstEndTimer: number | null = null;
   let suppressionQuietTimer: number | null = null;
@@ -179,6 +180,12 @@ export function createScrollTimelineController(
     if (burstEndTimer === null) return;
     environment.clearTimeout(burstEndTimer);
     burstEndTimer = null;
+  };
+
+  const clearTouchMomentumEndTimer = () => {
+    if (touchMomentumEndTimer === null) return;
+    environment.clearTimeout(touchMomentumEndTimer);
+    touchMomentumEndTimer = null;
   };
 
   const clearSuppressionQuietTimer = () => {
@@ -280,17 +287,18 @@ export function createScrollTimelineController(
   };
 
   const finishReducedMotionLifecycle = () => {
+    clearTouchMomentumEndTimer();
     clearBurstEndTimer();
     clearSuppressionQuietTimer();
     clearExpectedReanchor();
     touchActive = false;
+    touchMomentumActive = false;
     burstActive = false;
     selfReanchorPending = false;
     discardedForwardPx = 0;
     publishStep(
       applyScrollSample(state, {
         rawY: environment.readScrollY(),
-        nowMs: environment.now(),
         innerHeight,
         maxScrollY: safeDocumentEnd(environment),
         maxVirtualY: logicalMaxY,
@@ -300,7 +308,7 @@ export function createScrollTimelineController(
     );
   };
 
-  const finishGesture = (quarantineRealGesture: boolean) => {
+  const finishGesture = () => {
     if (reducedMotion()) {
       finishReducedMotionLifecycle();
       return;
@@ -308,31 +316,48 @@ export function createScrollTimelineController(
 
     const step = endScrollGesture(state, innerHeight);
     state = step.state;
-    if (quarantineRealGesture && !reducedMotion()) {
-      // A real input gesture owns any following positive native momentum even
-      // when raw and virtual happen to be aligned at lift/quiet time.
-      state = { ...state, suppressForward: true };
-    }
     publish(step.progress, step.discardedForwardPx);
     if (step.needsReanchor) reanchor();
     armSuppressionQuiet();
   };
 
-  const finishGestureIfIdle = (quarantineRealGesture: boolean) => {
-    if (touchActive || burstActive || !state.gestureActive) return;
-    finishGesture(quarantineRealGesture);
+  const finishGestureIfIdle = () => {
+    if (
+      touchActive ||
+      touchMomentumActive ||
+      burstActive ||
+      !state.gestureActive
+    ) {
+      return;
+    }
+    finishGesture();
+  };
+
+  const endTouchMomentumAfterQuiet = () => {
+    clearTouchMomentumEndTimer();
+    touchMomentumEndTimer = environment.setTimeout(() => {
+      touchMomentumEndTimer = null;
+      touchMomentumActive = false;
+      finishGestureIfIdle();
+    }, INPUT_QUIET_MS);
   };
 
   const beginExplicitGesture = () => {
     if (state.gestureActive) return;
     clearSuppressionQuietTimer();
+    clearExpectedReanchor();
+    selfReanchorPending = false;
     discardedForwardPx = 0;
-    state = beginScrollGesture(state, environment.now());
+    state = beginScrollGesture(state);
     publishState();
   };
 
   const onScroll: ScrollTimelineEventListener = () => {
     const rawY = environment.readScrollY();
+    if (reducedMotion()) {
+      finishReducedMotionLifecycle();
+      return;
+    }
     if (expectedReanchorY !== null) {
       const expectedY = expectedReanchorY;
       clearExpectedReanchor();
@@ -343,7 +368,8 @@ export function createScrollTimelineController(
       }
     }
 
-    const hasExplicitAttribution = touchActive || burstActive;
+    const hasExplicitAttribution =
+      touchActive || touchMomentumActive || burstActive;
     if (
       hasExplicitAttribution &&
       !state.gestureActive &&
@@ -355,7 +381,6 @@ export function createScrollTimelineController(
     const bypass = !hasExplicitAttribution && !state.suppressForward;
     const step = applyScrollSample(state, {
       rawY,
-      nowMs: environment.now(),
       innerHeight,
       maxScrollY: safeDocumentEnd(environment),
       maxVirtualY: logicalMaxY,
@@ -365,20 +390,38 @@ export function createScrollTimelineController(
     });
     publishStep(step);
 
+    if (touchMomentumActive) endTouchMomentumAfterQuiet();
     if (!state.suppressForward) return;
     armSuppressionQuiet();
     if (step.needsReanchor) reanchor();
   };
 
   const onTouchStart: ScrollTimelineEventListener = (event) => {
-    touchActive = touchCount(event) > 0;
-    if (touchActive) beginExplicitGesture();
+    if (touchCount(event) <= 0 || touchActive) return;
+
+    if (touchMomentumActive) {
+      clearTouchMomentumEndTimer();
+      touchMomentumActive = false;
+      if (state.gestureActive) finishGesture();
+      clearSuppressionQuietTimer();
+      clearExpectedReanchor();
+      selfReanchorPending = false;
+    }
+
+    touchActive = true;
+    beginExplicitGesture();
   };
 
   const onTouchEnd: ScrollTimelineEventListener = (event) => {
+    if (!touchActive) return;
     if (touchCount(event) > 0) return;
     touchActive = false;
-    finishGestureIfIdle(true);
+    if (reducedMotion()) {
+      finishReducedMotionLifecycle();
+      return;
+    }
+    touchMomentumActive = true;
+    endTouchMomentumAfterQuiet();
   };
 
   const endBurstAfterQuiet = () => {
@@ -386,7 +429,7 @@ export function createScrollTimelineController(
     burstEndTimer = environment.setTimeout(() => {
       burstEndTimer = null;
       burstActive = false;
-      finishGestureIfIdle(true);
+      finishGestureIfIdle();
     }, INPUT_QUIET_MS);
   };
 
@@ -425,10 +468,12 @@ export function createScrollTimelineController(
       return;
     }
 
+    clearTouchMomentumEndTimer();
     clearBurstEndTimer();
     clearSuppressionQuietTimer();
     clearExpectedReanchor();
     touchActive = false;
+    touchMomentumActive = false;
     burstActive = false;
     selfReanchorPending = false;
 
@@ -472,10 +517,12 @@ export function createScrollTimelineController(
       { sp: 1, gp: 1 },
       innerHeight,
     );
+    clearTouchMomentumEndTimer();
     clearBurstEndTimer();
     clearSuppressionQuietTimer();
     clearExpectedReanchor();
     touchActive = false;
+    touchMomentumActive = false;
     burstActive = false;
     selfReanchorPending = false;
     discardedForwardPx = 0;
@@ -483,7 +530,6 @@ export function createScrollTimelineController(
     publishStep(
       applyScrollSample(state, {
         rawY: environment.readScrollY(),
-        nowMs: environment.now(),
         innerHeight,
         maxScrollY: safeDocumentEnd(environment),
         maxVirtualY: logicalMaxY,
@@ -496,7 +542,6 @@ export function createScrollTimelineController(
   publishStep(
     applyScrollSample(state, {
       rawY: environment.readScrollY(),
-      nowMs: environment.now(),
       innerHeight,
       maxScrollY: safeDocumentEnd(environment),
       maxVirtualY: logicalMaxY,
@@ -543,9 +588,14 @@ export function createScrollTimelineController(
     dispose() {
       if (disposed) return;
       disposed = true;
+      clearTouchMomentumEndTimer();
       clearBurstEndTimer();
       clearSuppressionQuietTimer();
       clearExpectedReanchor();
+      touchActive = false;
+      touchMomentumActive = false;
+      burstActive = false;
+      selfReanchorPending = false;
       environment.windowTarget.removeEventListener(
         "scroll",
         onScroll,

@@ -15,7 +15,7 @@ import {
   timelineProgressForY,
   videoGovernorBounds,
 } from "../src/scrollGovernor";
-import { VID_FLY_END, VIDEO_DURATION_S } from "../src/constants";
+import { VID_FLY_END } from "../src/constants";
 
 function ok(condition: unknown, label: string): asserts condition {
   if (!condition) throw new Error(label);
@@ -163,7 +163,6 @@ class FakeEnvironment implements ScrollTimelineControllerEnvironment {
   readInnerWidth = () => this.innerWidth;
   readDocumentEnd = () => this.maxScrollY;
   readVisibilityState = () => this.visibilityState;
-  now = () => this.timers.now;
   setTimeout = this.timers.setTimeout;
   clearTimeout = this.timers.clearTimeout;
 
@@ -265,143 +264,308 @@ const bounds = videoGovernorBounds(IH);
   eq(refs.virtualYRef.current, 321, "virtualYRef receives the virtual cursor");
 }
 
-// One touch gesture may finish the video but cannot carry inertia into images.
+// Ordinary touch inertia belongs to the originating gesture until 120ms of
+// quiet. Each post-lift sample replaces (rather than stacks) that one timer.
 {
-  const harness = createHarness(bounds.endY - 1);
-  const { environment, latest, controller } = harness;
+  const initialY = bounds.startY + 500;
+  const harness = createHarness(initialY);
+  const { environment, latest, publications, controller } = harness;
   environment.touchStart();
-  environment.scrollToRaw(bounds.endY + 100);
-  eq(latest().gp, VID_FLY_END, "governed touch lands at the video-card seam");
+  environment.scrollToRaw(initialY + 333);
+  eq(
+    latest().virtualY,
+    initialY + 333,
+    "direct touch applies the exact interior raw distance",
+  );
+  const publicationsBeforeLift = publications.length;
   environment.touchEnd();
-  const heldY = latest().virtualY;
-
-  environment.scrollToRaw(heldY + 200);
-  eq(latest().virtualY, heldY, "post-touch forward inertia is quarantined");
-  ok(latest().discardedForwardPx > 0, "quarantined inertia is discarded");
+  eq(
+    Number(latest().gestureActive),
+    1,
+    "touchend keeps the momentum gesture active",
+  );
+  eq(
+    publications.length,
+    publicationsBeforeLift,
+    "touchend publishes nothing while momentum remains live",
+  );
+  eq(environment.timers.size, 1, "touchend owns one momentum quiet timer");
 
   environment.timers.advance(119);
-  environment.scrollToRaw(heldY + 50);
-  eq(latest().virtualY, heldY, "each residual sample extends quarantine");
-  environment.timers.advance(120);
+  environment.scrollToRaw(initialY + 444);
+  eq(
+    latest().virtualY,
+    initialY + 444,
+    "post-touch interior momentum remains exact",
+  );
+  eq(environment.timers.size, 1, "momentum sample replaces its quiet timer");
+  environment.timers.advance(1);
+  ok(latest().gestureActive, "the replaced old deadline cannot finish momentum");
+  environment.timers.advance(118);
+  ok(latest().gestureActive, "renewed momentum remains active through 119ms quiet");
+  const publicationsBeforeQuiet = publications.length;
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, "momentum ends at exactly 120ms renewed quiet");
+  eq(
+    publications.length,
+    publicationsBeforeQuiet + 1,
+    "aligned interior momentum publishes its finish once",
+  );
+  eq(environment.timers.size, 0, "aligned interior finish owns no suppression timer");
 
-  environment.touchStart();
-  environment.scrollToRaw(heldY + 100);
-  ok(latest().gp > VID_FLY_END, "a fresh gesture enters the image gallery");
+  environment.scrollToRaw(initialY + 517);
+  eq(
+    latest().virtualY,
+    initialY + 517,
+    "later unattributed movement bypasses exactly",
+  );
   controller.dispose();
 }
 
-// Even an aligned end needs quarantine: otherwise no reanchor mismatch exists
-// to make the reducer set suppressForward.
-for (const [label, alignedY] of [
-  ["at video end", bounds.endY],
-  ["before video", bounds.startY - 100],
-] as const) {
-  const harness = createHarness(alignedY);
+// Post-touch native inertia may finish the video, but the same gesture cannot
+// spill into gallery cards. Reanchor waits for momentum quiet.
+{
+  const initialY = bounds.endY - 100;
+  const harness = createHarness(initialY);
   const { environment, latest, controller } = harness;
   environment.touchStart();
   environment.touchEnd();
-  environment.scrollToRaw(alignedY + 100);
+  environment.scrollToRaw(bounds.endY + 300);
+  eq(latest().gp, VID_FLY_END, "touch inertia lands at the video-card seam");
+  eq(latest().virtualY, bounds.endY, "touch inertia holds the seam coordinate");
+  ok(latest().gestureActive, "boundary momentum remains gesture-owned");
+  ok(latest().discardedForwardPx > 0, "boundary momentum records discarded residue");
   eq(
-    latest().virtualY,
-    alignedY,
-    `aligned touch end ${label} quarantines forward inertia`,
+    environment.scrollToCalls.length,
+    0,
+    "live touch momentum performs no reanchor",
   );
-  environment.scrollToRaw(alignedY - 20);
+  eq(environment.timers.size, 1, "boundary momentum owns one quiet timer");
+
+  environment.timers.advance(119);
+  const discardedBeforeResidual = latest().discardedForwardPx;
+  environment.scrollToRaw(bounds.endY + 450);
+  eq(latest().virtualY, bounds.endY, "further live inertia remains burned");
+  ok(
+    latest().discardedForwardPx > discardedBeforeResidual,
+    "further live inertia adds discard accounting",
+  );
+  eq(environment.scrollToCalls.length, 0, "renewed live inertia still does not reanchor");
+  eq(environment.timers.size, 1, "renewed live inertia replaces its quiet timer");
+  environment.timers.advance(1);
+  ok(latest().gestureActive, "old boundary momentum deadline is replaced");
+  environment.timers.advance(119);
+
+  ok(!latest().gestureActive, "boundary momentum ends after renewed quiet");
+  eq(environment.scrollToCalls.length, 1, "dirty boundary finish reanchors once");
+  eq(environment.scrollY, bounds.endY, "physical scroll reanchors to the seam");
+  eq(latest().virtualY, bounds.endY, "virtual cursor remains at the seam");
   eq(
-    latest().virtualY,
-    alignedY - 20,
-    `reverse remains immediate during aligned quarantine ${label}`,
+    environment.timers.size,
+    2,
+    "boundary finish owns suppression and expected-reanchor guards",
   );
   controller.dispose();
 }
 
-// Wheel and scrolling-key bursts end at the exact 120ms boundary.
+// A fresh touch supersedes old touch momentum: finalize/reanchor the old
+// boundary gesture, clear its timers and metrics, then begin cleanly at seam.
+{
+  const harness = createHarness(bounds.endY - 100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.touchEnd();
+  environment.scrollToRaw(bounds.endY + 200);
+  ok(latest().discardedForwardPx > 0, "old boundary momentum has discard state");
+  ok(latest().gestureLocksGallery, "old boundary momentum owns the gallery lock");
+  eq(environment.timers.size, 1, "old boundary momentum owns one timer");
+
+  environment.touchStart();
+  ok(latest().gestureActive, "fresh touch begins a clean gesture immediately");
+  ok(!latest().gestureLocksGallery, "fresh touch clears the old gallery lock");
+  eq(latest().discardedForwardPx, 0, "fresh touch resets discarded metrics");
+  eq(environment.scrollToCalls.length, 1, "fresh touch reanchors old dirty momentum once");
+  eq(environment.timers.size, 0, "fresh touch clears old momentum and suppression guards");
+
+  environment.scrollToRaw(bounds.endY + 100);
+  ok(latest().gp > VID_FLY_END, "fresh touch moves from seam into the gallery");
+  eq(
+    latest().virtualY,
+    bounds.endY + 100,
+    "fresh gallery touch applies exact raw distance",
+  );
+  controller.dispose();
+}
+
+// Fresh touch finalization must leave a simultaneous wheel/key burst and its
+// original deadline intact.
+{
+  const harness = createHarness(bounds.endY - 100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.touchEnd();
+  environment.scrollToRaw(bounds.endY + 200);
+  environment.timers.advance(20);
+  environment.wheel();
+  environment.timers.advance(40);
+  eq(environment.timers.size, 2, "wheel and old touch momentum own two timers");
+
+  environment.touchStart();
+  eq(
+    environment.timers.size,
+    1,
+    "fresh touch clears only the old touch-momentum lifecycle timers",
+  );
+  environment.scrollToRaw(bounds.endY + 100);
+  eq(latest().virtualY, bounds.endY + 100, "fresh touch remains exact with live wheel");
+  environment.timers.advance(79);
+  ok(latest().gestureActive, "wheel deadline was not shortened by fresh touch");
+  environment.timers.advance(1);
+  eq(environment.timers.size, 0, "wheel clears at its original 120ms deadline");
+  ok(latest().gestureActive, "wheel quiet cannot end the active fresh touch");
+
+  environment.touchEnd();
+  eq(environment.timers.size, 1, "fresh lift starts its own momentum timer");
+  environment.timers.advance(120);
+  ok(!latest().gestureActive, "fresh gesture ends after its own momentum quiet");
+  controller.dispose();
+}
+
+// Wheel and scrolling-key bursts end at 120ms, and an aligned interior finish
+// does not quarantine later forward movement.
 for (const [label, begin] of [
   ["wheel", (environment: FakeEnvironment) => environment.wheel()],
   ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
 ] as const) {
-  const harness = createHarness(100);
+  const initialY = bounds.startY + 500;
+  const harness = createHarness(initialY);
   const { environment, latest, controller } = harness;
   begin(environment);
-  ok(latest().gestureActive, `${label} begins an explicit gesture`);
+  environment.scrollToRaw(initialY + 100);
+  eq(latest().virtualY, initialY + 100, `${label} applies exact interior distance`);
   environment.timers.advance(119);
   ok(latest().gestureActive, `${label} remains active before 120ms`);
   environment.timers.advance(1);
   ok(!latest().gestureActive, `${label} ends at exactly 120ms`);
-  environment.scrollToRaw(200);
-  eq(latest().virtualY, 100, `${label} end quarantines forward residue`);
+  eq(environment.timers.size, 0, `${label} aligned interior finish has no quarantine`);
+  environment.scrollToRaw(initialY + 200);
+  eq(latest().virtualY, initialY + 200, `${label} later forward movement is exact`);
   controller.dispose();
 }
 
-// Touch and wheel/key bursts are independent modalities. Ending one must not
-// terminate or quarantine the other modality's still-live gesture.
+// Independent modality deadlines clear only their own ownership. The last live
+// modality publishes the one shared gesture finish.
+{
+  const harness = createHarness(100);
+  const { environment, latest, publications, controller } = harness;
+  environment.wheel();
+  environment.timers.advance(60);
+  environment.touchStart();
+  const publicationsBeforeLift = publications.length;
+  environment.touchEnd();
+  eq(publications.length, publicationsBeforeLift, "overlap touchend publishes nothing");
+  eq(environment.timers.size, 2, "wheel then touch owns two independent timers");
+  const publicationsBeforeWheelQuiet = publications.length;
+  environment.timers.advance(60);
+  eq(environment.timers.size, 1, "wheel quiet clears only the wheel timer");
+  ok(latest().gestureActive, "wheel quiet cannot finish live touch momentum");
+  eq(
+    publications.length,
+    publicationsBeforeWheelQuiet,
+    "non-final wheel quiet publishes no finish",
+  );
+  environment.timers.advance(60);
+  ok(!latest().gestureActive, "touch quiet finishes after wheel ownership clears");
+  eq(
+    publications.length,
+    publicationsBeforeWheelQuiet + 1,
+    "final touch modality publishes one finish",
+  );
+  controller.dispose();
+}
+
+{
+  const harness = createHarness(100);
+  const { environment, latest, publications, controller } = harness;
+  environment.touchStart();
+  environment.touchEnd();
+  environment.timers.advance(60);
+  environment.wheel();
+  eq(environment.timers.size, 2, "touch then wheel owns two independent timers");
+  const publicationsBeforeTouchQuiet = publications.length;
+  environment.timers.advance(60);
+  eq(environment.timers.size, 1, "touch quiet clears only the touch timer");
+  ok(latest().gestureActive, "touch quiet cannot finish a live wheel burst");
+  eq(
+    publications.length,
+    publicationsBeforeTouchQuiet,
+    "non-final touch quiet publishes no finish",
+  );
+  environment.timers.advance(60);
+  ok(!latest().gestureActive, "wheel quiet finishes after touch ownership clears");
+  eq(
+    publications.length,
+    publicationsBeforeTouchQuiet + 1,
+    "final wheel modality publishes one finish",
+  );
+  controller.dispose();
+}
+
+// Direct touch also remains authoritative across an unrelated wheel timeout.
 {
   const harness = createHarness(100);
   const { environment, latest, controller } = harness;
-  environment.wheel();
-  environment.touchStart();
-  environment.touchEnd();
-  ok(
-    latest().gestureActive,
-    "touchend does not finish an overlapping wheel burst",
-  );
-  environment.scrollToRaw(150);
-  eq(
-    latest().virtualY,
-    150,
-    "delayed wheel scroll remains attributed after overlapping touchend",
-  );
-  eq(
-    latest().discardedForwardPx,
-    0,
-    "overlapping delayed wheel movement is not residual discard",
-  );
-  environment.timers.advance(120);
-  ok(!latest().gestureActive, "overlapping wheel gesture ends at wheel quiet");
-  controller.dispose();
-}
-
-{
-  const harness = createHarness(100);
-  const { environment, latest, controller } = harness;
   environment.touchStart();
   environment.wheel();
   environment.timers.advance(120);
-  ok(
-    latest().gestureActive,
-    "wheel quiet does not finish an overlapping active touch",
-  );
+  ok(latest().gestureActive, "wheel quiet does not finish active direct touch");
   environment.scrollToRaw(150);
-  eq(latest().virtualY, 150, "touch remains attributed after wheel quiet");
+  eq(latest().virtualY, 150, "direct touch remains attributed after wheel quiet");
   environment.touchEnd();
-  ok(!latest().gestureActive, "final touchend finishes overlapping modalities");
+  ok(latest().gestureActive, "terminal lift transitions direct touch to momentum");
+  environment.timers.advance(120);
+  ok(!latest().gestureActive, "touch momentum quiet finishes the gesture");
   controller.dispose();
 }
 
-// Remaining fingers keep the touch modality active, and duplicate terminal
-// events after the gesture ended are idempotent.
+// Remaining fingers retain direct ownership. A duplicate terminal event is a
+// complete no-op and cannot extend the original momentum deadline.
 {
   const harness = createHarness(100);
   const { environment, latest, publications, controller } = harness;
   environment.touchStart(2);
   environment.touchEnd(1);
-  ok(latest().gestureActive, "one remaining touch keeps the gesture active");
+  ok(latest().gestureActive, "one remaining touch keeps direct ownership");
+  eq(environment.timers.size, 0, "remaining touch starts no momentum timer");
   environment.scrollToRaw(150);
   eq(latest().virtualY, 150, "remaining-finger scroll stays attributed");
+  const publicationsBeforeTerminal = publications.length;
   environment.touchEnd(0);
-  ok(!latest().gestureActive, "last finger ends the gesture");
-  const publicationCount = publications.length;
+  ok(latest().gestureActive, "terminal touchend retains momentum ownership");
+  eq(
+    publications.length,
+    publicationsBeforeTerminal,
+    "terminal touchend publishes nothing",
+  );
+  eq(environment.timers.size, 1, "terminal touchend owns one momentum timer");
+  environment.timers.advance(60);
+  const publicationsBeforeDuplicate = publications.length;
   environment.touchEnd(0);
   eq(
     publications.length,
-    publicationCount,
-    "duplicate touchend after completion is a no-op",
+    publicationsBeforeDuplicate,
+    "duplicate terminal touchend publishes nothing",
   );
+  eq(environment.timers.size, 1, "duplicate terminal touchend adds no timer");
+  environment.timers.advance(59);
+  ok(latest().gestureActive, "duplicate terminal does not shorten the deadline");
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, "duplicate terminal does not extend the deadline");
   controller.dispose();
 }
 
-// Unattributed programmatic movement is exact, while attributed forward input
-// through the FPV range is capped to one initial frame quantum.
+// Unattributed movement and attributed interior movement both preserve exact
+// distance; only a gesture that intersects the video/gallery seam is clamped.
 {
   const harness = createHarness(bounds.startY);
   const { environment, latest, controller } = harness;
@@ -409,32 +573,71 @@ for (const [label, begin] of [
   environment.scrollToRaw(programmaticY);
   eq(latest().virtualY, programmaticY, "unattributed programmatic scroll bypasses");
   environment.scrollToRaw(bounds.startY);
-  eq(latest().virtualY, bounds.startY, "programmatic setup can seek backward exactly");
+  eq(latest().virtualY, bounds.startY, "programmatic setup seeks backward exactly");
 
   environment.touchStart();
   environment.scrollToRaw(bounds.startY + 2_000);
-  ok(
-    latest().clipT <= (1000 / 60) / (VIDEO_DURATION_S * 1000) + 1e-10,
-    "attributed first forward sample obeys the native-speed quantum",
-  );
-  ok(
-    latest().virtualY < bounds.startY + 2_000,
-    "attributed forward distance is not accidentally bypassed",
+  eq(
+    latest().virtualY,
+    bounds.startY + 2_000,
+    "attributed interior sample applies exact raw distance",
   );
   controller.dispose();
 }
 
-// A guarded self-reanchor event is accepted only at its exact target. A
-// mismatched event is a real residual sample and is processed/reanchored again.
 {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller } = harness;
   environment.touchStart();
-  environment.scrollToRaw(bounds.startY + 2_000);
+  environment.scrollToRaw(bounds.endY + 200);
+  eq(latest().virtualY, bounds.endY, "boundary-crossing sample clamps at seam");
+  eq(latest().gp, VID_FLY_END, "boundary-crossing sample clamps at gp=VID_FLY_END");
+  ok(latest().discardedForwardPx > 0, "boundary-crossing excess is discarded");
+  controller.dispose();
+}
+
+// Aligned gesture ends suppress only at the locked video boundary. A before-
+// video aligned end has no quarantine.
+{
+  const harness = createHarness(bounds.endY - 100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.scrollToRaw(bounds.endY);
   environment.touchEnd();
+  environment.timers.advance(120);
+  environment.scrollToRaw(bounds.endY + 100);
+  eq(latest().virtualY, bounds.endY, "aligned seam end suppresses forward residue");
+  environment.scrollToRaw(bounds.endY - 20);
+  eq(latest().virtualY, bounds.endY - 20, "reverse remains immediate at seam suppression");
+  controller.dispose();
+}
+
+{
+  const alignedY = bounds.startY - 100;
+  const harness = createHarness(alignedY);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.touchEnd();
+  environment.timers.advance(120);
+  eq(environment.timers.size, 0, "before-video aligned finish owns no suppression timer");
+  environment.scrollToRaw(alignedY + 100);
+  eq(latest().virtualY, alignedY + 100, "before-video aligned end does not suppress");
+  controller.dispose();
+}
+
+// A guarded self-reanchor event is accepted only at its exact target. Wait for
+// touch-momentum quiet before probing the resulting suppression guard.
+{
+  const harness = createHarness(bounds.endY - 100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.scrollToRaw(bounds.endY + 200);
+  environment.touchEnd();
+  eq(environment.scrollToCalls.length, 0, "live momentum defers guarded reanchor");
+  environment.timers.advance(120);
   const targetY = latest().virtualY;
   const callsAfterEnd = environment.scrollToCalls.length;
-  ok(callsAfterEnd > 0, "capped end requests a guarded reanchor");
+  eq(callsAfterEnd, 1, "quiet boundary finish requests one guarded reanchor");
 
   environment.scrollToRaw(targetY + 50);
   eq(latest().virtualY, targetY, "mismatched expected event is processed");
@@ -446,21 +649,22 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
-// scrollend generated synchronously by our own scrollTo must never release the
-// quarantine before later native inertia arrives.
+// scrollend generated synchronously by our own reanchor never releases the
+// boundary suppression before later native residue arrives.
 {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller } = harness;
   environment.emitScrollFromScrollTo = true;
   environment.emitScrollEndFromScrollTo = true;
   environment.touchStart();
-  environment.scrollToRaw(bounds.startY + 2_000);
+  environment.scrollToRaw(bounds.endY + 200);
   const governedY = latest().virtualY;
   environment.touchEnd();
+  environment.timers.advance(120);
   eq(
     latest().virtualY,
     governedY,
-    "the exact expected reanchor target event is ignored",
+    "quiet reanchor accepts its exact expected scroll event",
   );
   const heldY = latest().virtualY;
 
@@ -480,30 +684,32 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
-// scrollend only starts a new quiet window. At 119ms it must defer release for
-// a fresh full 120ms, and a residual sample in that window rearms it again.
+// scrollend only starts a new suppression quiet window. It cannot release at
+// an older deadline, and residual movement rearms the new window again.
 {
-  const harness = createHarness(100);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller } = harness;
   environment.touchStart();
+  environment.scrollToRaw(bounds.endY);
   environment.touchEnd();
+  environment.timers.advance(120);
   environment.timers.advance(119);
   environment.windowTarget.dispatch("scrollend");
   environment.timers.advance(1);
-  environment.scrollToRaw(200);
+  environment.scrollToRaw(bounds.endY + 100);
   eq(
     latest().virtualY,
-    100,
-    "scrollend at 119ms cannot release quarantine at the old deadline",
+    bounds.endY,
+    "scrollend at 119ms cannot release suppression at the old deadline",
   );
   environment.timers.advance(119);
   ok(environment.timers.size > 0, "residual sample owns a fresh quiet timer");
   environment.timers.advance(1);
-  environment.scrollToRaw(200);
+  environment.scrollToRaw(bounds.endY + 100);
   eq(
     latest().virtualY,
-    200,
-    "quarantine releases only after the fresh 120ms quiet window",
+    bounds.endY + 100,
+    "suppression releases only after the fresh 120ms quiet window",
   );
   controller.dispose();
 }
@@ -596,6 +802,26 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
+// Height-only resize also preserves post-lift touch momentum and its original
+// quiet deadline.
+{
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  environment.touchStart();
+  environment.touchEnd();
+  eq(environment.timers.size, 1, "touch momentum owns one timer before toolbar resize");
+  environment.innerHeight += 100;
+  environment.resize();
+  ok(latest().gestureActive, "height-only resize preserves touch momentum lifecycle");
+  eq(environment.timers.size, 1, "height-only resize preserves momentum timer ownership");
+  environment.timers.advance(119);
+  ok(latest().gestureActive, "toolbar resize does not shorten momentum quiet");
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, "momentum ends at its original post-resize deadline");
+  eq(environment.timers.size, 0, "aligned momentum finish remains timer-free");
+  controller.dispose();
+}
+
 // A width/orientation change refreshes the cached mapping and directly
 // resynchronizes the current raw coordinate.
 {
@@ -618,21 +844,56 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
+// A reduced-motion scroll immediately direct-syncs and clears any live touch
+// momentum or wheel/key ownership.
+{
+  const harness = createHarness(100);
+  const { environment, latest, controller, setReducedMotion } = harness;
+  environment.touchStart();
+  environment.touchEnd();
+  environment.wheel();
+  eq(
+    environment.timers.size,
+    2,
+    "pre-reduced fixture owns touch-momentum and wheel timers",
+  );
+
+  setReducedMotion(true);
+  const directY = 250;
+  const scrollToCount = environment.scrollToCalls.length;
+  environment.scrollToRaw(directY);
+  eq(latest().virtualY, directY, "reduced scroll direct-syncs live momentum");
+  ok(!latest().gestureActive, "reduced scroll clears the shared gesture");
+  eq(environment.timers.size, 0, "reduced scroll clears every modality timer");
+  eq(
+    environment.scrollToCalls.length,
+    scrollToCount,
+    "reduced scroll performs no backward reanchor",
+  );
+
+  setReducedMotion(false);
+  environment.scrollToRaw(300);
+  eq(latest().virtualY, 300, "post-reduced unattributed movement remains exact");
+  ok(!latest().gestureActive, "post-reduced movement has no stale modality ownership");
+  controller.dispose();
+}
+
 // A reduced-motion rerender changes live semantics through the getter without
 // reinstalling listeners or recaching the viewport.
 {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller, setReducedMotion } = harness;
   const addCount =
     environment.windowTarget.addCount + environment.documentTarget.addCount;
   environment.touchStart();
-  environment.scrollToRaw(bounds.startY + 1_000);
-  ok(latest().virtualY < bounds.startY + 1_000, "normal mode is governed");
+  environment.scrollToRaw(bounds.endY + 200);
+  eq(latest().virtualY, bounds.endY, "normal mode enforces only the video boundary");
 
   setReducedMotion(true);
-  const directY = bounds.startY + 2_000;
+  const directY = bounds.endY + 400;
   environment.scrollToRaw(directY);
   eq(latest().virtualY, directY, "updated reduced-motion mode bypasses directly");
+  eq(environment.timers.size, 0, "reduced-motion direct sync stays timer-free");
   eq(
     environment.windowTarget.addCount + environment.documentTarget.addCount,
     addCount,
@@ -645,12 +906,12 @@ for (const [label, begin] of [
 // handling must direct-sync to the current raw position. Reanchoring backward
 // to the stale governed cursor would violate reduced-motion semantics.
 {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller, setReducedMotion } = harness;
   environment.touchStart();
-  const dirtyRawY = bounds.startY + 1_000;
+  const dirtyRawY = bounds.endY + 200;
   environment.scrollToRaw(dirtyRawY);
-  ok(latest().virtualY < dirtyRawY, "pre-flip touch sample is capped");
+  eq(latest().virtualY, bounds.endY, "pre-flip touch is clamped only at the seam");
   const scrollToCount = environment.scrollToCalls.length;
 
   setReducedMotion(true);
@@ -669,14 +930,17 @@ for (const [label, begin] of [
   eq(environment.timers.size, 0, "dirty reduced-motion finish clears lifecycle timers");
 
   setReducedMotion(false);
+  environment.scrollToRaw(bounds.endY - 100);
+  eq(
+    latest().virtualY,
+    bounds.endY - 100,
+    "post-reduced programmatic setup remains exact",
+  );
   environment.touchStart();
-  const recoveredRawY = dirtyRawY + 1_000;
+  const recoveredRawY = bounds.endY + 200;
   environment.scrollToRaw(recoveredRawY);
   ok(latest().gestureActive, "false mode starts a fresh governed gesture");
-  ok(
-    latest().virtualY < recoveredRawY,
-    "true-to-false recovery restores the forward cap",
-  );
+  eq(latest().virtualY, bounds.endY, "true-to-false recovery restores boundary-only clamping");
   controller.dispose();
 }
 
@@ -697,12 +961,12 @@ for (const [label, interrupt] of [
     },
   ],
 ] as const) {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller, setReducedMotion } = harness;
   environment.touchStart();
-  const dirtyRawY = bounds.startY + 1_000;
+  const dirtyRawY = bounds.endY + 200;
   environment.scrollToRaw(dirtyRawY);
-  ok(latest().virtualY < dirtyRawY, `${label} reduced fixture is capped`);
+  eq(latest().virtualY, bounds.endY, `${label} reduced fixture reaches the seam`);
   const scrollToCount = environment.scrollToCalls.length;
 
   setReducedMotion(true);
@@ -722,25 +986,30 @@ for (const [label, interrupt] of [
 
   setReducedMotion(false);
   environment.visibilityState = "visible";
+  environment.scrollToRaw(bounds.endY - 100);
   environment.touchStart();
-  const recoveredRawY = dirtyRawY + 1_000;
+  const recoveredRawY = bounds.endY + 200;
   environment.scrollToRaw(recoveredRawY);
   ok(latest().gestureActive, `${label} false recovery starts a fresh gesture`);
-  ok(
-    latest().virtualY < recoveredRawY,
-    `${label} false recovery restores the forward cap`,
+  eq(
+    latest().virtualY,
+    bounds.endY,
+    `${label} false recovery restores boundary-only behavior`,
   );
   controller.dispose();
 }
 
 {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller } = harness;
   environment.touchStart();
-  environment.scrollToRaw(bounds.startY + 1_000);
+  environment.scrollToRaw(bounds.endY + 200);
+  environment.touchEnd();
+  environment.wheel();
+  eq(environment.timers.size, 2, "blur fixture owns touch and wheel timers");
   environment.windowTarget.dispatch("blur");
-  ok(!latest().gestureActive, "blur ends an active gesture");
-  eq(environment.timers.size, 0, "blur clears active lifecycle timers");
+  ok(!latest().gestureActive, "blur ends live momentum and burst ownership");
+  eq(environment.timers.size, 0, "blur clears all modality and guard timers");
   const directY = latest().virtualY + 100;
   environment.scrollToRaw(directY);
   eq(latest().virtualY, directY, "post-blur programmatic scroll bypasses exactly");
@@ -748,12 +1017,13 @@ for (const [label, interrupt] of [
 }
 
 {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller } = harness;
   environment.touchStart();
-  environment.scrollToRaw(bounds.startY + 1_000);
+  environment.scrollToRaw(bounds.endY + 200);
   environment.touchEnd();
-  ok(environment.timers.size > 0, "suppressed lifecycle owns timers before hidden");
+  environment.timers.advance(120);
+  ok(environment.timers.size >= 2, "suppressed lifecycle owns timers before hidden");
   environment.visibilityState = "hidden";
   environment.documentTarget.dispatch("visibilitychange");
   ok(!latest().gestureActive, "hidden visibility leaves no active gesture");
@@ -764,8 +1034,8 @@ for (const [label, interrupt] of [
   controller.dispose();
 }
 
-// Width/orientation resize is a terminal resync even during active or
-// suppressed lifecycles: it clears timers and gesture state.
+// Width/orientation resize is terminal during active touch, live momentum, or
+// boundary suppression: it clears every timer and gesture state.
 for (const [label, prepare] of [
   [
     "active",
@@ -775,15 +1045,23 @@ for (const [label, prepare] of [
     },
   ],
   [
-    "suppressed",
+    "momentum",
     (environment: FakeEnvironment) => {
       environment.touchStart();
-      environment.scrollToRaw(bounds.startY + 1_000);
       environment.touchEnd();
     },
   ],
+  [
+    "suppressed",
+    (environment: FakeEnvironment) => {
+      environment.touchStart();
+      environment.scrollToRaw(bounds.endY + 200);
+      environment.touchEnd();
+      environment.timers.advance(120);
+    },
+  ],
 ] as const) {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller } = harness;
   prepare(environment);
   ok(environment.timers.size > 0, `${label} resize fixture owns timers`);
@@ -808,7 +1086,9 @@ for (const [label, prepare] of [
   const harness = createHarness(100);
   const { environment, publications, controller } = harness;
   environment.wheel();
-  ok(environment.timers.size > 0, "active burst owns a timer before unmount");
+  environment.touchStart();
+  environment.touchEnd();
+  eq(environment.timers.size, 2, "active touch momentum and burst own timers before unmount");
   controller.dispose();
   eq(environment.windowTarget.listenerCount(), 0, "window listeners removed");
   eq(environment.documentTarget.listenerCount(), 0, "document listeners removed");
@@ -833,11 +1113,12 @@ for (const [label, prepare] of [
 // Disposal also clears the suppression quiet timer and expected-reanchor guard
 // together; advancing fake time afterward cannot publish.
 {
-  const harness = createHarness(bounds.startY);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, publications, controller } = harness;
   environment.touchStart();
-  environment.scrollToRaw(bounds.startY + 1_000);
+  environment.scrollToRaw(bounds.endY + 200);
   environment.touchEnd();
+  environment.timers.advance(120);
   ok(
     environment.timers.size >= 2,
     "suppression and expected-reanchor timers are scheduled before dispose",
