@@ -140,6 +140,19 @@ class FakeTimers {
     this.now = target;
   }
 
+  // Model one browser task: run only the oldest timer that was already due at
+  // the target time, leaving timers scheduled by its callback for a later task.
+  advanceOneTask(ms: number) {
+    const target = this.now + ms;
+    const next = [...this.timers.values()]
+      .filter((timer) => timer.at <= target)
+      .sort((a, b) => a.at - b.at || a.id - b.id)[0];
+    this.now = target;
+    if (!next) return;
+    this.timers.delete(next.id);
+    next.callback();
+  }
+
   get size(): number {
     return this.timers.size;
   }
@@ -478,6 +491,63 @@ for (const [label, beginBurst] of [
   eq(environment.timers.size, 1, `terminal touch after ${label} owns momentum quiet`);
   environment.timers.advance(120);
   ok(!latest().gestureActive, `touch after ${label} ends at momentum quiet`);
+  controller.dispose();
+}
+
+// A delayed default scroll remains burst-attributed when the 120ms quiet task
+// becomes runnable first. The settle task yields one browser task so queued
+// native scroll can replace it with a fresh 120ms quiet window.
+for (const [label, beginBurst] of [
+  ["wheel", (environment: FakeEnvironment) => environment.wheel()],
+  ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
+] as const) {
+  const harness = createHarness(bounds.endY - 100);
+  const { environment, latest, controller } = harness;
+  beginBurst(environment);
+  eq(environment.timers.size, 1, `${label} begins with one quiet timer`);
+
+  environment.timers.advanceOneTask(120);
+  eq(
+    Number(latest().gestureActive),
+    1,
+    `${label} quiet callback retains ownership for the settle task`,
+  );
+  eq(environment.timers.size, 1, `${label} quiet callback leaves one settle task`);
+
+  environment.scrollToRaw(bounds.endY + 200);
+  eq(latest().virtualY, bounds.endY, `delayed ${label} scroll clamps at the seam`);
+  eq(latest().gp, VID_FLY_END, `delayed ${label} scroll stays at gp=VID_FLY_END`);
+  ok(latest().discardedForwardPx > 0, `delayed ${label} scroll records discard`);
+  ok(latest().gestureActive, `delayed ${label} scroll remains gesture-owned`);
+  eq(
+    environment.timers.size,
+    1,
+    `delayed ${label} scroll replaces settle with fresh quiet`,
+  );
+
+  environment.timers.advanceOneTask(120);
+  ok(latest().gestureActive, `${label} fresh quiet yields to one settle task`);
+  eq(environment.timers.size, 1, `${label} fresh quiet owns one settle task`);
+  environment.timers.advanceOneTask(0);
+  ok(!latest().gestureActive, `${label} settles in the bounded next task`);
+  eq(environment.scrollToCalls.length, 1, `${label} dirty finish reanchors once`);
+  eq(environment.scrollY, bounds.endY, `${label} physical scroll reanchors to seam`);
+  eq(latest().virtualY, bounds.endY, `${label} virtual scroll remains at seam`);
+  controller.dispose();
+}
+
+// With no native scroll queued, two-phase burst completion still finishes in
+// the immediately following task rather than leaving ownership active.
+{
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  environment.wheel();
+  environment.timers.advanceOneTask(120);
+  ok(latest().gestureActive, "no-scroll burst remains active for its settle task");
+  eq(environment.timers.size, 1, "no-scroll burst owns one settle task");
+  environment.timers.advanceOneTask(0);
+  ok(!latest().gestureActive, "no-scroll burst finishes in the next task");
+  eq(environment.timers.size, 0, "no-scroll burst leaves no timer");
   controller.dispose();
 }
 

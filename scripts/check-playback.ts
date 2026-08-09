@@ -1500,6 +1500,11 @@ for (const f of FIGURES) {
     "const endBurstAfterQuiet =",
     "burst quiet timer",
   );
+  const burstSettleBody = sourceBlock(
+    scrollControllerCode,
+    "const settleBurstAfterQuiet =",
+    "burst settle timer",
+  );
   const touchMomentumQuietBody = sourceBlock(
     scrollControllerCode,
     "const endTouchMomentumAfterQuiet =",
@@ -1562,9 +1567,15 @@ for (const f of FIGURES) {
       /environment\.setTimeout\([\s\S]*INPUT_QUIET_MS\)/.test(
         burstQuietBody,
       ) &&
+      /settleBurstAfterQuiet\(\)/.test(burstQuietBody) &&
+      !/burstActive\s*=\s*false/.test(burstQuietBody) &&
+      /burstEndTimer\s*=\s*environment\.setTimeout/.test(burstSettleBody) &&
+      /\},\s*0\s*\)/.test(burstSettleBody) &&
+      /burstActive\s*=\s*false/.test(burstSettleBody) &&
+      /finishGestureIfIdle\(\)/.test(burstSettleBody) &&
       /endBurstAfterQuiet\(\)/.test(wheelBody) &&
       /endBurstAfterQuiet\(\)/.test(keyDownBody),
-    "wheel and key bursts finish after exactly 120ms of input quiet",
+    "wheel and key bursts yield one settle task after exactly 120ms quiet",
   );
   ok(
     /let\s+touchActive\s*=\s*false/.test(scrollControllerCode) &&
@@ -1697,12 +1708,20 @@ for (const f of FIGURES) {
     ),
     "reduced-motion scroll clears live modality ownership before direct sync",
   );
+  ok(
+    /if\s*\(\s*burstActive\s*&&\s*!touchActive\s*&&\s*!touchMomentumActive\s*\)\s*\{\s*endBurstAfterQuiet\(\)/.test(
+      onScrollBody,
+    ),
+    "burst-only scroll publication replaces pending settle with fresh quiet",
+  );
   ordered(
     onScrollBody,
     [
       "const bypass =",
       "applyScrollSample(",
       "publishStep(step)",
+      "if (burstActive && !touchActive && !touchMomentumActive)",
+      "endBurstAfterQuiet()",
       "if (touchMomentumActive) endTouchMomentumAfterQuiet()",
       "if (!state.suppressForward) return",
     ],

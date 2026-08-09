@@ -391,6 +391,9 @@ export function createScrollTimelineController(
     });
     publishStep(step);
 
+    if (burstActive && !touchActive && !touchMomentumActive) {
+      endBurstAfterQuiet();
+    }
     if (touchMomentumActive) endTouchMomentumAfterQuiet();
     if (!state.suppressForward) return;
     armSuppressionQuiet();
@@ -432,12 +435,21 @@ export function createScrollTimelineController(
     endTouchMomentumAfterQuiet();
   };
 
-  const endBurstAfterQuiet = () => {
-    clearBurstEndTimer();
+  const settleBurstAfterQuiet = () => {
     burstEndTimer = environment.setTimeout(() => {
       burstEndTimer = null;
       burstActive = false;
       finishGestureIfIdle();
+    }, 0);
+  };
+
+  const endBurstAfterQuiet = () => {
+    clearBurstEndTimer();
+    burstEndTimer = environment.setTimeout(() => {
+      // Yield ownership release for one browser task. Under render starvation,
+      // the default native scroll task may already be queued behind this quiet
+      // callback; it must remain attributed and rearm quiet from publication.
+      settleBurstAfterQuiet();
     }, INPUT_QUIET_MS);
   };
 
