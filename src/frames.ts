@@ -195,6 +195,17 @@ function defaultIdleScheduler(callback: () => void): () => void {
   return () => globalThis.clearTimeout(id);
 }
 
+function reportLoaderCallbackError(error: unknown): void {
+  const reporter = (globalThis as typeof globalThis & {
+    reportError?: (reason: unknown) => void;
+  }).reportError;
+  if (typeof reporter === "function") {
+    reporter(error);
+    return;
+  }
+  console.error("FrameSequenceLoader readiness callback failed", error);
+}
+
 // A demand-aware scheduler: nine coarse anchors establish whole-clip coverage,
 // the latest visible neighbourhood owns foreground capacity, and the remaining
 // sequence fills in small yielded background batches. get() never blocks.
@@ -299,8 +310,10 @@ export class FrameSequenceLoader {
     this.onFirst = opts.onFirstReady;
     this.onStartup = opts.onStartupReady;
 
-    if (this.startupOrder.length === 0) this.markStartupReady();
+    const notifyEmptyStartup =
+      this.startupOrder.length === 0 && this.markStartupReady();
     this.pump();
+    if (notifyEmptyStartup) this.invokeReadyCallback(this.onStartup);
   }
 
   private pump(): void {
@@ -329,9 +342,11 @@ export class FrameSequenceLoader {
         this.backgroundAllowance = 0;
         break;
       }
-      if (this.load(background, "background")) {
-        this.backgroundAllowance--;
-      }
+      // Spend the grant before assigning src. Injected image factories may
+      // settle synchronously and re-enter pump(); pre-decrementing keeps that
+      // re-entrant path inside the same idle batch budget.
+      this.backgroundAllowance--;
+      this.load(background, "background");
     }
 
     this.maybeScheduleBackground();
@@ -435,23 +450,27 @@ export class FrameSequenceLoader {
       }
       this.activePriorities[i] = null;
 
+      let notifyFirst = false;
+      let notifyStartup = false;
       if (ok) {
         this.loaded[i] = true;
         this.loadedCount++;
         if (i === 0 && !this.firstFired) {
           this.firstFired = true;
-          this.onFirst?.();
+          notifyFirst = true;
         }
-        this.settleStartup(i, true);
+        notifyStartup = this.settleStartup(i, true);
       } else {
         if (this.images[i] === img) this.images[i] = null;
         if (this.attempts[i] < MAX_ATTEMPTS) {
           this.enqueueRetry(i, priority);
         } else {
           this.terminal[i] = true;
-          this.settleStartup(i, false);
+          notifyStartup = this.settleStartup(i, false);
         }
       }
+      if (notifyFirst) this.invokeReadyCallback(this.onFirst);
+      if (notifyStartup) this.invokeReadyCallback(this.onStartup);
       this.pump();
     };
 
@@ -482,7 +501,8 @@ export class FrameSequenceLoader {
       this.enqueueRetry(i, priority);
     } else {
       this.terminal[i] = true;
-      this.settleStartup(i, false);
+      const notifyStartup = this.settleStartup(i, false);
+      if (notifyStartup) this.invokeReadyCallback(this.onStartup);
     }
   }
 
@@ -513,21 +533,31 @@ export class FrameSequenceLoader {
     }
   }
 
-  private settleStartup(i: number, loaded: boolean): void {
-    if (!this.startupSet[i] || this.startupSettled[i]) return;
+  private settleStartup(i: number, loaded: boolean): boolean {
+    if (!this.startupSet[i] || this.startupSettled[i]) return false;
     this.startupSettled[i] = 1;
     this.startupSettledCount++;
     if (loaded) this._startupLoadedCount++;
     if (this.startupSettledCount === this.startupOrder.length) {
-      this.markStartupReady();
+      return this.markStartupReady();
     }
+    return false;
   }
 
-  private markStartupReady(): void {
-    if (this._startupReady || this.disposed) return;
+  private markStartupReady(): boolean {
+    if (this._startupReady || this.disposed) return false;
     this._startupReady = true;
-    this.onStartup?.();
     this.maybeScheduleBackground();
+    return true;
+  }
+
+  private invokeReadyCallback(callback: (() => void) | undefined): void {
+    if (!callback) return;
+    try {
+      callback();
+    } catch (error) {
+      reportLoaderCallbackError(error);
+    }
   }
 
   private hasBackgroundWork(): boolean {
@@ -558,12 +588,44 @@ export class FrameSequenceLoader {
     ) {
       return;
     }
-    this.cancelIdle = this.scheduleIdle(() => {
-      this.cancelIdle = null;
-      if (this.disposed) return;
-      this.backgroundAllowance = this.backgroundBatchSize;
-      this.pump();
-    });
+    // Install a sentinel before invoking the injected scheduler. This makes a
+    // scheduler that calls back synchronously observable as already consumed,
+    // instead of overwriting `null` with a stale cancel handle on return.
+    const scheduling = () => {};
+    this.cancelIdle = scheduling;
+    let callbackRan = false;
+    let cancel: () => void;
+    try {
+      cancel = this.scheduleIdle(() => {
+        callbackRan = true;
+        // Keep the sentinel through pump() so a synchronous scheduler cannot
+        // recursively authorize several nominally separate idle batches.
+        this.cancelIdle = scheduling;
+        if (!this.disposed) {
+          this.backgroundAllowance = this.backgroundBatchSize;
+          this.pump();
+        }
+        if (this.cancelIdle === scheduling) this.cancelIdle = null;
+        // A custom image factory can settle the entire granted batch inside
+        // src assignment, leaving no later load event to request the next idle
+        // turn. Queue only the scheduling decision (never the requests).
+        if (
+          !this.disposed &&
+          this.backgroundAllowance === 0 &&
+          this.backgroundInFlight < this.backgroundConcurrency &&
+          this.hasBackgroundWork()
+        ) {
+          globalThis.queueMicrotask(() => this.maybeScheduleBackground());
+        }
+      });
+    } catch (error) {
+      if (this.cancelIdle === scheduling) this.cancelIdle = null;
+      reportLoaderCallbackError(error);
+      return;
+    }
+    if (!callbackRan && this.cancelIdle === scheduling) {
+      this.cancelIdle = cancel;
+    }
   }
 
   // The decoded <img> for `index` if loaded; else the nearest loaded frame within

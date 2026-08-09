@@ -79,7 +79,10 @@ class FakeImage {
     }
     const match = value.match(/\/(\d+)\.[^.]+$/);
     if (!match) throw new Error(`unparseable frame URL: ${value}`);
-    this.owner.requests.push({ index: Number(match[1]) - 1, image: this });
+    const index = Number(match[1]) - 1;
+    this.owner.requests.push({ index, image: this });
+    if (this.owner.synchronousResult === "load") this.fireLoad();
+    if (this.owner.synchronousResult === "error") this.fireError();
   }
 
   decode(): Promise<void> {
@@ -98,6 +101,7 @@ class FakeImage {
 
 class FakeImages {
   readonly requests: FakeRequest[] = [];
+  synchronousResult: "load" | "error" | null = null;
 
   factory = (): HTMLImageElement =>
     new FakeImage(this) as unknown as HTMLImageElement;
@@ -169,6 +173,19 @@ class ManualIdle {
   flushAll(): void {
     while (this.pending > 0) this.flushOne();
   }
+}
+
+class SynchronousIdle {
+  callCount = 0;
+  cancelCount = 0;
+
+  schedule: FrameIdleScheduler = (callback) => {
+    this.callCount++;
+    callback();
+    return () => {
+      this.cancelCount++;
+    };
+  };
 }
 
 async function settleStartup(
@@ -470,6 +487,93 @@ same(
   idle.flushOne();
   ok(images.requests.length - before <= 2, "second idle flush is independently capped");
   loader.dispose();
+}
+
+// The exported scheduler seam may invoke synchronously. A completed callback
+// must not be written back as a stale pending cancel handle that blocks batch 2.
+{
+  const images = new FakeImages();
+  const idle = new SynchronousIdle();
+  const loader = new FrameSequenceLoader(1280, 12, {
+    startupAnchorCount: 1,
+    imageFactory: images.factory,
+    scheduleIdle: idle.schedule,
+  });
+  await images.succeed(0);
+  eq(images.requests.length, 3, "sync idle starts exactly one mobile batch");
+  const firstBatch = images.requests.slice(1);
+  await images.succeed(firstBatch[0].index);
+  await images.succeed(firstBatch[1].index);
+  ok(images.requests.length > 3, "sync idle can schedule a later batch");
+  ok(idle.callCount >= 2, "sync scheduler is invoked again after completion");
+  loader.dispose();
+}
+
+// Synchronous custom image events may re-enter pump() from src assignment, but
+// they still consume only one idle batch and arrange a later yielded batch.
+{
+  const images = new FakeImages();
+  const idle = new ManualIdle();
+  const loader = new FrameSequenceLoader(1280, 12, {
+    startupAnchorCount: 1,
+    imageFactory: images.factory,
+    scheduleIdle: idle.schedule,
+  });
+  await images.succeed(0);
+  images.synchronousResult = "load";
+  const before = images.requests.length;
+  idle.flushOne();
+  eq(images.requests.length - before, 2, "sync src events stay inside one batch");
+  await flushPromises();
+  ok(idle.pending > 0, "sync src completion yields before the next batch");
+  loader.dispose();
+}
+
+// External readiness callbacks cannot interrupt committed loader state. Errors
+// are reported, while startup, pumping, and background scheduling continue.
+{
+  const images = new FakeImages();
+  const idle = new ManualIdle();
+  let firstCalls = 0;
+  let startupCalls = 0;
+  let reportedErrors = 0;
+  const originalConsoleError = console.error;
+  console.error = () => {
+    reportedErrors++;
+  };
+  try {
+    const loader = new FrameSequenceLoader(1280, 3, {
+      concurrency: 2,
+      startupAnchorCount: 2,
+      imageFactory: images.factory,
+      scheduleIdle: idle.schedule,
+      onFirstReady: () => {
+        firstCalls++;
+        throw new Error("first callback failed");
+      },
+      onStartupReady: () => {
+        startupCalls++;
+        throw new Error("startup callback failed");
+      },
+    });
+    await images.succeed(0);
+    let escaped = false;
+    try {
+      await images.succeed(2);
+    } catch {
+      escaped = true;
+    }
+    ok(!escaped, "readiness callback errors are isolated from image events");
+    ok(loader.firstReady && loader.startupReady, "throwing callbacks cannot stall readiness");
+    eq(loader.startupLoadedCount, 2, "throwing callbacks preserve settled coverage");
+    eq(firstCalls, 1, "throwing first callback remains one-shot");
+    eq(startupCalls, 1, "throwing startup callback remains one-shot");
+    eq(reportedErrors, 2, "both callback errors are reported");
+    eq(idle.pending, 1, "background scheduling survives callback errors");
+    loader.dispose();
+  } finally {
+    console.error = originalConsoleError;
+  }
 }
 
 // Nearest fallback is limited to the requested window and keeps the existing
