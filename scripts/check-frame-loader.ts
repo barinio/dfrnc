@@ -81,8 +81,10 @@ class FakeImage {
     if (!match) throw new Error(`unparseable frame URL: ${value}`);
     const index = Number(match[1]) - 1;
     this.owner.requests.push({ index, image: this });
-    if (this.owner.synchronousResult === "load") this.fireLoad();
-    if (this.owner.synchronousResult === "error") this.fireError();
+    // Frame zero intentionally stays controllable so its async decode barrier
+    // can be resolved by the harness; later frames may settle re-entrantly.
+    if (index !== 0 && this.owner.synchronousResult === "load") this.fireLoad();
+    if (index !== 0 && this.owner.synchronousResult === "error") this.fireError();
   }
 
   decode(): Promise<void> {
@@ -524,8 +526,33 @@ same(
   const before = images.requests.length;
   idle.flushOne();
   eq(images.requests.length - before, 2, "sync src events stay inside one batch");
-  await flushPromises();
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
   ok(idle.pending > 0, "sync src completion yields before the next batch");
+  loader.dispose();
+}
+
+// Combining a synchronous idle seam with synchronous image completion must
+// still stop after one batch until a real task boundary (not just microtasks).
+{
+  const images = new FakeImages();
+  images.synchronousResult = "load";
+  const idle = new SynchronousIdle();
+  const loader = new FrameSequenceLoader(1280, 20, {
+    startupAnchorCount: 1,
+    imageFactory: images.factory,
+    scheduleIdle: idle.schedule,
+  });
+  await images.succeed(0);
+  eq(images.requests.length, 3, "combined synchronous seams stop after batch one");
+  const afterFirstBatch = images.requests.length;
+  await flushPromises();
+  eq(
+    images.requests.length,
+    afterFirstBatch,
+    "combined seams do not drain through a microtask chain",
+  );
+  await new Promise((resolve) => globalThis.setTimeout(resolve, 20));
+  ok(images.requests.length > afterFirstBatch, "a later task authorizes batch two");
   loader.dispose();
 }
 

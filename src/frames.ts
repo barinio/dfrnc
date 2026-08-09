@@ -605,17 +605,27 @@ export class FrameSequenceLoader {
           this.backgroundAllowance = this.backgroundBatchSize;
           this.pump();
         }
-        if (this.cancelIdle === scheduling) this.cancelIdle = null;
         // A custom image factory can settle the entire granted batch inside
         // src assignment, leaving no later load event to request the next idle
-        // turn. Queue only the scheduling decision (never the requests).
-        if (
+        // turn. Keep a cancellable sentinel through a real task boundary; a
+        // microtask would still drain sync scheduler + sync image seams before
+        // rendering gets an opportunity.
+        const needsDeferredTurn =
           !this.disposed &&
           this.backgroundAllowance === 0 &&
           this.backgroundInFlight < this.backgroundConcurrency &&
-          this.hasBackgroundWork()
-        ) {
-          globalThis.queueMicrotask(() => this.maybeScheduleBackground());
+          this.hasBackgroundWork();
+        if (needsDeferredTurn) {
+          let cancelDeferred = () => {};
+          const timer = globalThis.setTimeout(() => {
+            if (this.cancelIdle !== cancelDeferred) return;
+            this.cancelIdle = null;
+            this.maybeScheduleBackground();
+          }, 16);
+          cancelDeferred = () => globalThis.clearTimeout(timer);
+          this.cancelIdle = cancelDeferred;
+        } else if (this.cancelIdle === scheduling) {
+          this.cancelIdle = null;
         }
       });
     } catch (error) {
