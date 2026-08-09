@@ -1,5 +1,6 @@
 // Render-profile assertions for browser-specific performance budgets.
 // Run manually with: npx tsx scripts/check-render-profile.ts
+import { readFileSync } from "node:fs";
 import {
   browserNeedsConservativeRenderProfile,
   createRenderProfile,
@@ -67,5 +68,31 @@ eq(chromeWide.figureMaterialMode, "full", "desktop Chrome keeps full figure mate
 eq(chromeWide.enableEnvironment, true, "desktop Chrome keeps PMREM environment");
 eq(chromeWide.maxCanvasTextureDpr, 1.5, "desktop Chrome caps Lottie upload DPR");
 eq(chromeWide.textureFrameRate, 30, "desktop Chrome caps canvas-texture upload rate");
+
+const sceneSource = readFileSync(
+  new URL("../src/components/Scene.tsx", import.meta.url),
+  "utf8",
+);
+const videoPlaneSource = readFileSync(
+  new URL("../src/components/VideoPlane.tsx", import.meta.url),
+  "utf8",
+);
+ok(/<AdaptiveDpr\s*\/>/.test(sceneSource), "R3F performance regression drives DPR");
+ok(
+  !/<AdaptiveDpr[^>]*\bpixelated\b/.test(sceneSource),
+  "adaptive DPR keeps temporary reduced resolution filtered",
+);
+ok(
+  /const tier\s*=\s*frameTierForScreen\(\)/.test(videoPlaneSource) &&
+    /frameLoaderBudgetFor\(tier\)/.test(videoPlaneSource) &&
+    /onStartupReady\s*:/.test(videoPlaneSource),
+  "video readiness uses staged decoded startup coverage and tier budgets",
+);
+ok(
+  /startupReady\s*:\s*loader\.startupReady/.test(videoPlaneSource) &&
+    /startupLoadedCount\s*:\s*loader\.startupLoadedCount/.test(videoPlaneSource) &&
+    /inFlight\s*:\s*loader\.inFlightCount/.test(videoPlaneSource),
+  "video diagnostics expose staged startup state",
+);
 
 console.log("render profile assertions passed");

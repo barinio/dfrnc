@@ -565,8 +565,21 @@ eq(videoStateFor(1, "done").opacity, 1, "video done: visible at tail");
 eq(lottieBleedFor(0.3), 0, "bleed: framed mid-page");
 eq(lottieBleedFor(VIDEO_START), 0, "bleed: framed before zoom");
 eq(lottieBleedFor(VIDEO_START + VIDEO_FADE), 1, "bleed: full-bleed after ramp");
-ok(lottiePlaneVisibleFor(LOTTIE_TOTAL_S - 1 / 60), "main Lottie remains visible before the transparent tail");
-ok(!lottiePlaneVisibleFor(LOTTIE_TOTAL_S), "main Lottie stops drawing on the transparent final frame");
+ok(
+  lottiePlaneVisibleFor(
+    LOTTIE_TOTAL_S - 1 / 60,
+    LOTTIE_END - 1e-6,
+  ),
+  "main Lottie remains visible before the raw cutoff",
+);
+ok(
+  !lottiePlaneVisibleFor(LOTTIE_TOTAL_S - 1 / 60, LOTTIE_END),
+  "raw cutoff hides the trailing smoothed Lottie",
+);
+ok(
+  !lottiePlaneVisibleFor(LOTTIE_TOTAL_S, LOTTIE_END - 1e-6),
+  "main Lottie stops drawing on the transparent final frame",
+);
 
 // arc.ts: apex at midpoint, mirroring flips travel direction only
 import { makeArc, FIGURES } from "../src/arc";

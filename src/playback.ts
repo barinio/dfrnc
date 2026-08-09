@@ -260,6 +260,9 @@ export function lottieBleedFor(sp: number): number {
 
 const LOTTIE_TRANSPARENT_TAIL_EPS = 1 / 120;
 
-export function lottiePlaneVisibleFor(tSec: number): boolean {
-  return tSec < LOTTIE_TOTAL_S - LOTTIE_TRANSPARENT_TAIL_EPS;
+export function lottiePlaneVisibleFor(tSec: number, targetSp: number): boolean {
+  return (
+    targetSp < LOTTIE_END &&
+    tSec < LOTTIE_TOTAL_S - LOTTIE_TRANSPARENT_TAIL_EPS
+  );
 }

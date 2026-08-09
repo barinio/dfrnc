@@ -180,12 +180,13 @@ export default function LottiePlane({
   useFrame((state, delta) => {
     const anim = animRef.current;
     if (!anim || !texture) return;
+    const targetSp = scrollRef.current;
 
     // Frame dissolve: scale the padded plane up to full-bleed as the zoom +
     // video reveal begin (lottieBleedFor ramps over [VIDEO_START, +VIDEO_FADE]).
     // Applied every frame BEFORE the tSec dedup so the scale tracks scroll
     // even when the Lottie frame itself isn't changing.
-    const bleed = lottieBleedFor(scrollRef.current);
+    const bleed = lottieBleedFor(targetSp);
     if (meshRef.current) {
       const sx = 1 + bleed * (bleedRatioXRef.current - 1);
       const sy = 1 + bleed * (bleedRatioYRef.current - 1);
@@ -209,12 +210,12 @@ export default function LottiePlane({
     } else if (phase === "done") {
       // Reduced motion: the discrete frame swap is intentional — never animate
       // it, so the smoothing lerp must not run here.
-      tSec = lottieTimeFor(scrollRef.current, phase);
+      tSec = lottieTimeFor(targetSp, phase);
     } else {
       // Scroll-driven; lottieTimeFor never returns less than DEFT_DROP_S, so
       // the drop can't replay on scroll-up. Smooth toward the target so coarse
       // wheel jumps glide through the timeline instead of skipping frames.
-      const target = lottieTimeFor(scrollRef.current, phase);
+      const target = lottieTimeFor(targetSp, phase);
       if (smoothSecRef.current < 0) smoothSecRef.current = target;
       smoothSecRef.current +=
         (target - smoothSecRef.current) * (1 - Math.exp(-delta * 10));
@@ -223,10 +224,12 @@ export default function LottiePlane({
         smoothSecRef.current = target;
       tSec = smoothSecRef.current;
     }
-    const visible = lottiePlaneVisibleFor(tSec);
+    const visible = lottiePlaneVisibleFor(tSec, targetSp);
     if (meshRef.current) meshRef.current.visible = visible;
     if (!visible) {
-      lastTimeRef.current = tSec;
+      // Force one refresh if reverse scrolling makes the plane eligible again,
+      // even when the smoothed authored time has not moved yet.
+      lastTimeRef.current = -1;
       return;
     }
     if (tSec === lastTimeRef.current) return;

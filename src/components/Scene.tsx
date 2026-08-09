@@ -10,7 +10,7 @@ import {
 import type { ComponentProps, ReactNode, MutableRefObject, Ref } from "react";
 import Loader from "./Loader";
 import { Canvas, useThree, useFrame } from "@react-three/fiber";
-import { Environment, useProgress } from "@react-three/drei";
+import { AdaptiveDpr, Environment, useProgress } from "@react-three/drei";
 import {
   EffectComposer,
   Noise,
@@ -162,11 +162,10 @@ export default function Scene() {
   type IntroStage = "loader" | "drop" | "free";
   const [introStage, setIntroStage] = useState<IntroStage>("loader");
 
-  // Hold the intro loader until the FPV video's first frame is decodable, so the
-  // user never scrolls past the Lottie intro into an empty screen where the video
-  // should be (it reveals at sp=0.63). VideoPlane fires onReady on first frame OR
-  // error; the timeout is a hard cap so a very slow / stuck video can never
-  // deadlock the loader (the GradientBackground still covers a late first frame).
+  // Hold the intro loader until frame 0 has decoded (or terminally failed) and
+  // all nine startup anchors have settled, so the video reveal has both an
+  // initial frame and coarse whole-clip coverage. The timeout remains a hard cap
+  // for a very slow/stuck sequence; GradientBackground covers a late startup.
   const [videoReady, setVideoReady] = useState(false);
   const handleVideoReady = useCallback(() => setVideoReady(true), []);
   useEffect(() => {
@@ -377,6 +376,7 @@ export default function Scene() {
             slowFrameMs={renderProfile.slowFrameMs}
             slowFrameLimit={renderProfile.slowFrameLimit}
           />
+          <AdaptiveDpr />
           <RendererConfig exposure={toneMappingExposure} />
           <GradientBackground
             scrollRef={scrollRef}

@@ -12,6 +12,7 @@ import { VID_FLY_END } from "../constants";
 import {
   FrameSequenceLoader,
   frameIndexFor,
+  frameLoaderBudgetFor,
   frameTierForScreen,
   FRAME_COUNT,
 } from "../frames";
@@ -52,10 +53,9 @@ interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
   galleryRef: MutableRefObject<number>;
   phase: Phase;
-  // Fired once the first frame is decodable (or on error) — lets Scene hold the
-  // intro loader until the clip can render at its sp=0.63 reveal, so the user
-  // never scrolls into an empty screen. Called on error too so a failed/slow
-  // sequence can never deadlock the loader (Scene also has a timeout).
+  // Fired once frame 0 is decoded (or terminally failed) and all nine startup
+  // anchors have settled. This gives the first reveal a drawable frame plus
+  // coarse whole-clip coverage; terminal errors still cannot deadlock Scene.
   onReady?: () => void;
 }
 
@@ -71,7 +71,8 @@ export default function VideoPlane({
   const textureRef = useRef<THREE.Texture | null>(null);
   const loaderRef = useRef<FrameSequenceLoader | null>(null);
   const currentImgRef = useRef<HTMLImageElement | null>(null);
-  // True once the first frame is loaded (the sequence can render).
+  // True once the staged startup barrier has settled (the sequence can render
+  // frame 0 or the nearest successfully loaded startup anchor).
   const readyRef = useRef(false);
   // Latest onReady kept in a ref so the loader effect never re-runs on identity
   // change (it would recreate the whole frame loader).
@@ -158,16 +159,18 @@ export default function VideoPlane({
     texture.generateMipmaps = false;
     textureRef.current = texture;
 
-    const loader = new FrameSequenceLoader(frameTierForScreen(), FRAME_COUNT, {
-      onFirstReady: () => {
+    const tier = frameTierForScreen();
+    const loader = new FrameSequenceLoader(tier, FRAME_COUNT, {
+      ...frameLoaderBudgetFor(tier),
+      onStartupReady: () => {
         readyRef.current = true;
-        notifyReady(); // first frame decodable → let the loader release
+        notifyReady();
       },
     });
     loaderRef.current = loader;
 
-    // Safety net: if the very first frame fails to load, still release the loader
-    // so a stuck sequence can never deadlock the intro (Scene also has a timeout).
+    // Safety net for requests that never settle at all; ordinary terminal image
+    // errors satisfy the startup barrier themselves. Scene has the same hard cap.
     const failSafe = window.setTimeout(() => notifyReady(), 8000);
 
     return () => {
@@ -215,6 +218,9 @@ export default function VideoPlane({
         loadedCount: loader.loadedCount,
         loadedHere: loader.isLoaded(idx),
         imgNull: img === null,
+        startupReady: loader.startupReady,
+        startupLoadedCount: loader.startupLoadedCount,
+        inFlight: loader.inFlightCount,
         sp: Math.round(sp * 1000) / 1000,
         gp: Math.round(gp * 1000) / 1000,
         t: Math.round(t * 1000) / 1000,
