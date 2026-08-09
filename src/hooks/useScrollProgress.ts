@@ -79,6 +79,8 @@ export function useScrollTimelineRefs(
         readInnerHeight: () => window.innerHeight,
         readInnerWidth: () => window.innerWidth,
         readDocumentEnd: documentScrollEnd,
+        readRootScrollEnabled: () =>
+          !document.body.classList.contains("scroll-locked"),
         readVisibilityState: () => document.visibilityState,
         setTimeout: (callback, delayMs) =>
           window.setTimeout(callback, delayMs),

@@ -153,6 +153,7 @@ class FakeEnvironment implements ScrollTimelineControllerEnvironment {
   innerHeight = 844;
   innerWidth = 390;
   maxScrollY = 100_000;
+  rootScrollEnabled = true;
   visibilityState = "visible";
   scrollToCalls: Array<{ top: number; behavior: "auto" }> = [];
   emitScrollFromScrollTo = false;
@@ -162,6 +163,7 @@ class FakeEnvironment implements ScrollTimelineControllerEnvironment {
   readInnerHeight = () => this.innerHeight;
   readInnerWidth = () => this.innerWidth;
   readDocumentEnd = () => this.maxScrollY;
+  readRootScrollEnabled = () => this.rootScrollEnabled;
   readVisibilityState = () => this.visibilityState;
   setTimeout = this.timers.setTimeout;
   clearTimeout = this.timers.clearTimeout;
@@ -192,8 +194,8 @@ class FakeEnvironment implements ScrollTimelineControllerEnvironment {
     });
   }
 
-  wheel(deltaY = 0) {
-    this.windowTarget.dispatch("wheel", { deltaY });
+  wheel(deltaY = 0, extra: Record<string, unknown> = {}) {
+    this.windowTarget.dispatch("wheel", { deltaY, ...extra });
   }
 
   keyDown(
@@ -581,6 +583,61 @@ for (const [label, beginBurst] of [
   eq(environment.scrollToCalls.length, 1, `${label} dirty finish reanchors once`);
   eq(environment.scrollY, bounds.endY, `${label} physical scroll reanchors to seam`);
   eq(latest().virtualY, bounds.endY, `${label} virtual scroll remains at seam`);
+  controller.dispose();
+}
+
+// Geometric room is not enough while the site's root scroll contract is
+// disabled. Locked input finishes normally; a later unlocked input reads the
+// live capability, awaits its native publication, and remains boundary-owned.
+for (const [label, beginBurst] of [
+  ["wheel", (environment: FakeEnvironment) => environment.wheel(300)],
+  ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
+] as const) {
+  const harness = createHarness(bounds.endY - 100);
+  const { environment, latest, controller } = harness;
+  environment.rootScrollEnabled = false;
+  beginBurst(environment);
+  environment.timers.advance(119);
+  ok(latest().gestureActive, `locked ${label} keeps ordinary quiet ownership`);
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, `locked ${label} finishes without native scroll`);
+  eq(environment.timers.size, 0, `locked ${label} leaves no timerless await`);
+
+  environment.rootScrollEnabled = true;
+  beginBurst(environment);
+  environment.timers.advance(1_000);
+  ok(latest().gestureActive, `unlocked ${label} reads live root capability`);
+  eq(environment.timers.size, 0, `unlocked ${label} awaits without a grace timer`);
+  environment.scrollToRaw(bounds.endY + 200);
+  eq(latest().virtualY, bounds.endY, `unlocked ${label} clamps at the seam`);
+  eq(latest().gp, VID_FLY_END, `unlocked ${label} holds gp=VID_FLY_END`);
+  ok(latest().discardedForwardPx > 0, `unlocked ${label} records discard`);
+  eq(environment.timers.size, 1, `unlocked ${label} publication starts quiet`);
+  environment.timers.advance(120);
+  ok(!latest().gestureActive, `unlocked ${label} finishes after actual quiet`);
+  controller.dispose();
+}
+
+// The same live root gate applies to reverse intent, and an already-cancelled
+// wheel has no browser-default scroll to await.
+for (const [label, beginBurst] of [
+  ["reverse wheel", (environment: FakeEnvironment) => environment.wheel(-100)],
+  ["reverse key", (environment: FakeEnvironment) => environment.keyDown("ArrowUp")],
+  [
+    "prevented wheel",
+    (environment: FakeEnvironment) =>
+      environment.wheel(100, { defaultPrevented: true }),
+  ],
+] as const) {
+  const harness = createHarness(bounds.startY + 500);
+  const { environment, latest, controller } = harness;
+  if (label !== "prevented wheel") environment.rootScrollEnabled = false;
+  beginBurst(environment);
+  environment.timers.advance(119);
+  ok(latest().gestureActive, `${label} remains active through 119ms quiet`);
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, `${label} does not enter timerless await`);
+  eq(environment.timers.size, 0, `${label} finishes without a lingering timer`);
   controller.dispose();
 }
 

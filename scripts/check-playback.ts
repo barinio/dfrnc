@@ -1595,7 +1595,10 @@ for (const f of FIGURES) {
     "wheel and key quiet releases only after expected native publication",
   );
   ok(
-    /const\s+deltaY\s*=\s*event\.deltaY/.test(wheelIntentBody) &&
+    /if\s*\(\s*event\.defaultPrevented\s*\)\s*return\s+0/.test(
+      wheelIntentBody,
+    ) &&
+      /const\s+deltaY\s*=\s*event\.deltaY/.test(wheelIntentBody) &&
       /Number\.isFinite\(deltaY\)/.test(wheelIntentBody) &&
       /deltaY\s*===\s*0/.test(wheelIntentBody) &&
       /deltaY\s*>\s*0\s*\?\s*1\s*:\s*-1/.test(wheelIntentBody),
@@ -1615,7 +1618,10 @@ for (const f of FIGURES) {
     "scrolling keys map forward and reverse default-scroll intent",
   );
   ok(
-    /const\s+rawY\s*=\s*environment\.readScrollY\(\)/.test(
+    /if\s*\(\s*!environment\.readRootScrollEnabled\(\)\s*\)\s*return\s+false/.test(
+      physicalScrollBody,
+    ) &&
+      /const\s+rawY\s*=\s*environment\.readScrollY\(\)/.test(
       physicalScrollBody,
     ) &&
       /direction\s*===\s*0/.test(physicalScrollBody) &&
@@ -1624,7 +1630,22 @@ for (const f of FIGURES) {
         physicalScrollBody,
       ) &&
       /rawY\s*>\s*0/.test(physicalScrollBody),
-    "awaited ownership requires physical room in the intended direction",
+    "awaited ownership requires a live enabled root and physical directional room",
+  );
+  ordered(
+    physicalScrollBody,
+    [
+      "if (!environment.readRootScrollEnabled()) return false",
+      "const rawY = environment.readScrollY()",
+    ],
+    "root scroll capability is read live before geometric room",
+  );
+  ok(
+    /readRootScrollEnabled\(\)\s*:\s*boolean/.test(scrollControllerCode) &&
+      /readRootScrollEnabled:\s*\(\)\s*=>\s*!document\.body\.classList\.contains\(\s*["']scroll-locked["']\s*\)/.test(
+        scrollHookCode,
+      ),
+    "browser adapter derives live root-scroll capability from the site lock class",
   );
   ordered(
     beginBurstBody,

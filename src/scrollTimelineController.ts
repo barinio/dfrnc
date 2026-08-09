@@ -41,6 +41,7 @@ export interface ScrollTimelineControllerEnvironment {
   readInnerHeight(): number;
   readInnerWidth(): number;
   readDocumentEnd(): number;
+  readRootScrollEnabled(): boolean;
   readVisibilityState(): string;
   setTimeout(callback: () => void, delayMs: number): number;
   clearTimeout(id: number): void;
@@ -148,6 +149,7 @@ type ScrollIntentDirection = -1 | 0 | 1;
 function wheelScrollIntent(
   event: Record<string, unknown>,
 ): ScrollIntentDirection {
+  if (event.defaultPrevented) return 0;
   const deltaY = event.deltaY;
   if (
     typeof deltaY !== "number" ||
@@ -470,6 +472,7 @@ export function createScrollTimelineController(
   };
 
   const physicalScrollCanMove = (direction: ScrollIntentDirection) => {
+    if (!environment.readRootScrollEnabled()) return false;
     const rawY = environment.readScrollY();
     if (!Number.isFinite(rawY) || direction === 0) return false;
     if (direction > 0) return rawY < safeDocumentEnd(environment);
