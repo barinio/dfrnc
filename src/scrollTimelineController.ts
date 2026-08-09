@@ -1,21 +1,22 @@
 import {
-  applyScrollSample,
-  beginScrollGesture,
-  createScrollGovernorState,
-  endScrollGesture,
-  releaseScrollSuppression,
   scrollYForTimelineProgress,
-  syncRawScrollPosition,
   timelineProgressForY,
-  videoTimeForY,
+  videoGovernorBounds,
 } from "./scrollGovernor";
+import { videoMasterTimeFor } from "./playback";
+import {
+  createGalleryStepperState,
+  galleryStepTargets,
+  requestGalleryStep,
+} from "./galleryGestureStepper";
 import type {
-  ScrollGovernorState,
-  ScrollGovernorStep,
-  TimelineProgress,
-} from "./scrollGovernor";
+  GalleryDirection,
+  GalleryStepperState,
+} from "./galleryGestureStepper";
 
-export type ScrollTimelineEventListener = (event: Record<string, unknown>) => void;
+export type ScrollTimelineEventListener = (
+  event: Record<string, unknown>,
+) => void;
 
 export type ScrollTimelineListenerOptions =
   | boolean
@@ -40,23 +41,28 @@ export interface ScrollTimelineControllerEnvironment {
   readScrollY(): number;
   readInnerHeight(): number;
   readInnerWidth(): number;
-  readDocumentEnd(): number;
-  readRootScrollEnabled(): boolean;
   readVisibilityState(): string;
+  readNow(): number;
   setTimeout(callback: () => void, delayMs: number): number;
   clearTimeout(id: number): void;
+  requestFrame(callback: (now: number) => void): number;
+  cancelFrame(id: number): void;
   scrollTo(options: { top: number; behavior: "auto" }): void;
 }
 
+export type GalleryMode =
+  | "native-before"
+  | "gallery-idle"
+  | "gallery-transitioning"
+  | "native-after";
+
 export interface ScrollTimelinePublication {
-  rawY: number;
-  virtualY: number;
+  scrollY: number;
   sp: number;
   gp: number;
   clipT: number;
-  gestureActive: boolean;
-  gestureLocksGallery: boolean;
-  discardedForwardPx: number;
+  galleryMode: GalleryMode;
+  galleryStep: number;
 }
 
 export interface ScrollTimelineControllerOptions {
@@ -73,19 +79,29 @@ export interface ScrollTimelineController {
 export interface WritableScrollTimelineRefs {
   scrollRef: { current: number };
   galleryRef: { current: number };
-  virtualYRef: { current: number };
 }
 
 export interface ScrollTimelineRefValues {
   sp: number;
   gp: number;
-  virtualY: number;
 }
 
-export const INPUT_QUIET_MS = 120;
-const REANCHOR_TOLERANCE_PX = 1;
-const REANCHOR_GUARD_MS = 80;
+export const INPUT_QUIET_MS = 140;
+export const TOUCH_STEP_PX = 24;
+export const GALLERY_TRANSITION_MS = 520;
+
 const PASSIVE_EVENT_OPTIONS = { passive: true } as const;
+const CANCELLABLE_EVENT_OPTIONS = { passive: false } as const;
+const BOUNDARY_TOLERANCE_PX = 1;
+const LINE_DELTA_PX = 16;
+
+interface GalleryTransition {
+  fromGp: number;
+  targetGp: number;
+  startedAt: number;
+}
+
+type PinSide = "before" | "after";
 
 function validViewportHeight(value: number, fallback = 1): number {
   if (Number.isFinite(value) && value > 0) return value;
@@ -93,16 +109,39 @@ function validViewportHeight(value: number, fallback = 1): number {
   return 1;
 }
 
-function safeDocumentEnd(environment: ScrollTimelineControllerEnvironment) {
-  const end = environment.readDocumentEnd();
-  return Number.isFinite(end) ? Math.max(end, 0) : 0;
+function finiteScrollY(value: number): number {
+  return Number.isFinite(value) ? Math.max(value, 0) : 0;
 }
 
-function touchCount(event: Record<string, unknown>): number {
-  const touches = event.touches as { length?: unknown } | undefined;
-  return typeof touches?.length === "number" && Number.isFinite(touches.length)
-    ? Math.max(touches.length, 0)
-    : 0;
+function preventDefault(event: Record<string, unknown>): void {
+  const prevent = event.preventDefault;
+  if (typeof prevent === "function") prevent.call(event);
+}
+
+function wheelDeltaPx(
+  event: Record<string, unknown>,
+  innerHeight: number,
+): number {
+  const raw = event.deltaY;
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return 0;
+  const mode = event.deltaMode;
+  if (mode === 1) return raw * LINE_DELTA_PX;
+  if (mode === 2) return raw * innerHeight;
+  return raw;
+}
+
+function directionFor(value: number): GalleryDirection | 0 {
+  if (!Number.isFinite(value) || value === 0) return 0;
+  return value > 0 ? 1 : -1;
+}
+
+function firstTouchY(
+  event: Record<string, unknown>,
+  key: "touches" | "changedTouches" = "touches",
+): number | null {
+  const list = event[key] as ArrayLike<{ clientY?: unknown }> | undefined;
+  const value = list?.[0]?.clientY;
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
 function isEditableTarget(target: unknown): boolean {
@@ -119,56 +158,63 @@ function isEditableTarget(target: unknown): boolean {
   );
 }
 
-function isScrollingKey(event: Record<string, unknown>): boolean {
+function keyDirection(event: Record<string, unknown>): GalleryDirection | 0 {
   if (
     event.defaultPrevented ||
+    event.repeat ||
     event.metaKey ||
     event.ctrlKey ||
-    event.altKey
-  ) {
-    return false;
-  }
-  if (event.shiftKey && event.key !== " " && event.key !== "Spacebar") {
-    return false;
-  }
-  if (isEditableTarget(event.target)) return false;
-  return [
-    "ArrowUp",
-    "ArrowDown",
-    "PageUp",
-    "PageDown",
-    " ",
-    "Spacebar",
-    "Home",
-    "End",
-  ].includes(String(event.key));
-}
-
-type ScrollIntentDirection = -1 | 0 | 1;
-
-function wheelScrollIntent(
-  event: Record<string, unknown>,
-): ScrollIntentDirection {
-  if (event.defaultPrevented) return 0;
-  const deltaY = event.deltaY;
-  if (
-    typeof deltaY !== "number" ||
-    !Number.isFinite(deltaY) ||
-    deltaY === 0
+    event.altKey ||
+    isEditableTarget(event.target)
   ) {
     return 0;
   }
-  return deltaY > 0 ? 1 : -1;
-}
-
-function keyScrollIntent(
-  event: Record<string, unknown>,
-): ScrollIntentDirection {
   const key = String(event.key);
   if (key === " " || key === "Spacebar") return event.shiftKey ? -1 : 1;
   if (["ArrowDown", "PageDown", "End"].includes(key)) return 1;
   if (["ArrowUp", "PageUp", "Home"].includes(key)) return -1;
   return 0;
+}
+
+function keyProjectedDelta(
+  event: Record<string, unknown>,
+  innerHeight: number,
+): number {
+  const direction = keyDirection(event);
+  if (direction === 0) return 0;
+  const key = String(event.key);
+  if (key === "Home" || key === "End") {
+    return direction * Number.MAX_SAFE_INTEGER;
+  }
+  if (["PageUp", "PageDown", " ", "Spacebar"].includes(key)) {
+    return direction * innerHeight * 0.9;
+  }
+  return direction * 40;
+}
+
+function easeInOutCubic(value: number): number {
+  const u = Math.min(Math.max(value, 0), 1);
+  return u < 0.5
+    ? 4 * u * u * u
+    : 1 - Math.pow(-2 * u + 2, 3) / 2;
+}
+
+function nearestStepIndex(gp: number): number {
+  const targets = galleryStepTargets();
+  let nearest = 0;
+  let distance = Number.POSITIVE_INFINITY;
+  for (let index = 0; index < targets.length; index += 1) {
+    const nextDistance = Math.abs(targets[index] - gp);
+    if (nextDistance < distance) {
+      nearest = index;
+      distance = nextDistance;
+    }
+  }
+  return nearest;
+}
+
+function isPinnedMode(mode: GalleryMode): boolean {
+  return mode === "gallery-idle" || mode === "gallery-transitioning";
 }
 
 export function writeScrollTimelineRefs(
@@ -177,7 +223,6 @@ export function writeScrollTimelineRefs(
 ): void {
   refs.scrollRef.current = values.sp;
   refs.galleryRef.current = values.gp;
-  refs.virtualYRef.current = values.virtualY;
 }
 
 export function createScrollTimelineController(
@@ -185,443 +230,416 @@ export function createScrollTimelineController(
 ): ScrollTimelineController {
   const { environment, reducedMotion, onPublish } = options;
   let innerHeight = validViewportHeight(environment.readInnerHeight());
-  let logicalMaxY = scrollYForTimelineProgress(
-    { sp: 1, gp: 1 },
-    innerHeight,
-  );
   let lastWidth = environment.readInnerWidth();
-  let state: ScrollGovernorState = createScrollGovernorState(
-    environment.readScrollY(),
-  );
+  let seamY = videoGovernorBounds(innerHeight).endY;
+  let galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, innerHeight);
+
+  const initialY = finiteScrollY(environment.readScrollY());
+  const initialProgress = timelineProgressForY(initialY, innerHeight);
+  const initialStep = nearestStepIndex(initialProgress.gp);
+  let stepper: GalleryStepperState = createGalleryStepperState(initialStep);
+  let galleryGp = galleryStepTargets()[stepper.index];
+  let mode: GalleryMode =
+    initialY < seamY - BOUNDARY_TOLERANCE_PX
+      ? "native-before"
+      : initialY >= galleryEndY - BOUNDARY_TOLERANCE_PX
+        ? "native-after"
+        : "gallery-idle";
+  let pinSide: PinSide = initialY >= (seamY + galleryEndY) / 2 ? "after" : "before";
+  let pinY = pinSide === "before" ? seamY : galleryEndY;
+
+  let wheelBurstActive = false;
+  let wheelQuietTimer: number | null = null;
   let touchActive = false;
-  let touchMomentumActive = false;
-  let touchMomentumEndTimer: number | null = null;
-  let burstActive = false;
-  let burstAwaitsNativeScroll = false;
-  let burstEndTimer: number | null = null;
-  let suppressionQuietTimer: number | null = null;
-  let expectedReanchorTimer: number | null = null;
-  let expectedReanchorY: number | null = null;
-  let selfReanchorPending = false;
-  let discardedForwardPx = 0;
+  let touchOwned = false;
+  let touchStepUsed = false;
+  let touchStartY: number | null = null;
+  let touchLastY: number | null = null;
+  let touchQuietTimer: number | null = null;
+  let transition: GalleryTransition | null = null;
+  let transitionFrame: number | null = null;
+  let transitionEndTimer: number | null = null;
+  let expectedScrollY: number | null = null;
   let disposed = false;
 
-  const clearBurstEndTimer = () => {
-    if (burstEndTimer === null) return;
-    environment.clearTimeout(burstEndTimer);
-    burstEndTimer = null;
-  };
-
-  const clearTouchMomentumEndTimer = () => {
-    if (touchMomentumEndTimer === null) return;
-    environment.clearTimeout(touchMomentumEndTimer);
-    touchMomentumEndTimer = null;
-  };
-
-  const clearSuppressionQuietTimer = () => {
-    if (suppressionQuietTimer === null) return;
-    environment.clearTimeout(suppressionQuietTimer);
-    suppressionQuietTimer = null;
-  };
-
-  const clearExpectedReanchor = () => {
-    if (expectedReanchorTimer !== null) {
-      environment.clearTimeout(expectedReanchorTimer);
-      expectedReanchorTimer = null;
-    }
-    expectedReanchorY = null;
-  };
-
-  const publish = (
-    progress: TimelineProgress,
-    addedDiscardedForwardPx = 0,
-  ) => {
+  const publish = () => {
     if (disposed) return;
-    discardedForwardPx += Math.max(addedDiscardedForwardPx, 0);
+    const scrollY = finiteScrollY(environment.readScrollY());
+    const progress = isPinnedMode(mode)
+      ? { sp: 1, gp: galleryGp }
+      : timelineProgressForY(scrollY, innerHeight);
     onPublish({
-      rawY: environment.readScrollY(),
-      virtualY: state.virtualY,
+      scrollY,
       sp: progress.sp,
       gp: progress.gp,
-      clipT: videoTimeForY(state.virtualY, innerHeight),
-      gestureActive: state.gestureActive,
-      gestureLocksGallery: state.gestureLocksGallery,
-      discardedForwardPx,
+      clipT: videoMasterTimeFor(progress.sp, progress.gp, "scroll"),
+      galleryMode: mode,
+      galleryStep: stepper.index,
     });
   };
 
-  const publishStep = (step: ScrollGovernorStep) => {
-    state = step.state;
-    publish(step.progress, step.discardedForwardPx);
+  const clearWheelQuiet = () => {
+    if (wheelQuietTimer === null) return;
+    environment.clearTimeout(wheelQuietTimer);
+    wheelQuietTimer = null;
   };
 
-  const publishState = () => {
-    publish(timelineProgressForY(state.virtualY, innerHeight));
+  const clearTouchQuiet = () => {
+    if (touchQuietTimer === null) return;
+    environment.clearTimeout(touchQuietTimer);
+    touchQuietTimer = null;
   };
 
-  const setExpectedReanchor = (targetY: number) => {
-    clearExpectedReanchor();
-    expectedReanchorY = targetY;
-    expectedReanchorTimer = environment.setTimeout(() => {
-      expectedReanchorTimer = null;
-      expectedReanchorY = null;
-    }, REANCHOR_GUARD_MS);
+  const clearTransition = () => {
+    if (transitionFrame !== null) {
+      environment.cancelFrame(transitionFrame);
+      transitionFrame = null;
+    }
+    if (transitionEndTimer !== null) {
+      environment.clearTimeout(transitionEndTimer);
+      transitionEndTimer = null;
+    }
+    transition = null;
   };
 
-  const reanchor = (guardExpectedEvent = true) => {
-    const targetY = Math.min(
-      Math.max(state.virtualY, 0),
-      safeDocumentEnd(environment),
-    );
-    state = syncRawScrollPosition(state, targetY);
-    publishState();
-
-    if (
-      Math.abs(environment.readScrollY() - targetY) <=
-      REANCHOR_TOLERANCE_PX
-    ) {
-      clearExpectedReanchor();
+  const movePhysicalScroll = (targetY: number) => {
+    const target = finiteScrollY(targetY);
+    expectedScrollY = target;
+    if (Math.abs(environment.readScrollY() - target) < BOUNDARY_TOLERANCE_PX) {
+      expectedScrollY = null;
       return;
     }
-
-    selfReanchorPending = true;
-    if (guardExpectedEvent) setExpectedReanchor(targetY);
-    else clearExpectedReanchor();
-    environment.scrollTo({ top: targetY, behavior: "auto" });
+    environment.scrollTo({ top: target, behavior: "auto" });
   };
 
-  const releaseSuppression = () => {
-    clearSuppressionQuietTimer();
-    if (!state.suppressForward) return;
-
-    if (
-      Math.abs(state.lastRawY - state.virtualY) >
-        REANCHOR_TOLERANCE_PX ||
-      Math.abs(environment.readScrollY() - state.virtualY) >
-        REANCHOR_TOLERANCE_PX
-    ) {
-      reanchor();
-    }
-    state = releaseScrollSuppression(state);
-    selfReanchorPending = false;
-    publishState();
-  };
-
-  const armSuppressionQuiet = () => {
-    clearSuppressionQuietTimer();
-    if (!state.suppressForward) return;
-    suppressionQuietTimer = environment.setTimeout(() => {
-      suppressionQuietTimer = null;
-      releaseSuppression();
-    }, INPUT_QUIET_MS);
-  };
-
-  const finishReducedMotionLifecycle = () => {
-    clearTouchMomentumEndTimer();
-    clearBurstEndTimer();
-    clearSuppressionQuietTimer();
-    clearExpectedReanchor();
-    touchActive = false;
-    touchMomentumActive = false;
-    burstActive = false;
-    burstAwaitsNativeScroll = false;
-    selfReanchorPending = false;
-    discardedForwardPx = 0;
-    publishStep(
-      applyScrollSample(state, {
-        rawY: environment.readScrollY(),
-        innerHeight,
-        maxScrollY: safeDocumentEnd(environment),
-        maxVirtualY: logicalMaxY,
-        reducedMotion: true,
-        bypass: true,
-      }),
-    );
-  };
-
-  const finishGesture = () => {
-    if (reducedMotion()) {
-      finishReducedMotionLifecycle();
-      return;
-    }
-
-    const step = endScrollGesture(state, innerHeight);
-    state = step.state;
-    publish(step.progress, step.discardedForwardPx);
-    if (step.needsReanchor) reanchor();
-    armSuppressionQuiet();
-  };
-
-  const finishGestureIfIdle = () => {
-    if (
+  const settlePinnedMode = () => {
+    if (!isPinnedMode(mode)) return;
+    const blocked =
+      transition !== null ||
+      wheelBurstActive ||
       touchActive ||
-      touchMomentumActive ||
-      burstActive ||
-      !state.gestureActive
-    ) {
-      return;
-    }
-    finishGesture();
+      touchQuietTimer !== null;
+    const nextMode: GalleryMode = blocked
+      ? "gallery-transitioning"
+      : "gallery-idle";
+    if (mode === nextMode) return;
+    mode = nextMode;
+    publish();
   };
 
-  const endTouchMomentumAfterQuiet = () => {
-    clearTouchMomentumEndTimer();
-    touchMomentumEndTimer = environment.setTimeout(() => {
-      touchMomentumEndTimer = null;
-      touchMomentumActive = false;
-      finishGestureIfIdle();
+  const armWheelQuiet = () => {
+    clearWheelQuiet();
+    wheelQuietTimer = environment.setTimeout(() => {
+      wheelQuietTimer = null;
+      wheelBurstActive = false;
+      settlePinnedMode();
     }, INPUT_QUIET_MS);
   };
 
-  const beginExplicitGesture = () => {
-    if (state.gestureActive) return;
-    clearSuppressionQuietTimer();
-    clearExpectedReanchor();
-    selfReanchorPending = false;
-    discardedForwardPx = 0;
-    state = beginScrollGesture(state);
-    publishState();
+  const armTouchQuiet = () => {
+    clearTouchQuiet();
+    touchQuietTimer = environment.setTimeout(() => {
+      touchQuietTimer = null;
+      settlePinnedMode();
+    }, INPUT_QUIET_MS);
+  };
+
+  const enterGallery = (side: PinSide, consumeCurrentGesture: boolean) => {
+    clearTransition();
+    pinSide = side;
+    pinY = side === "before" ? seamY : galleryEndY;
+    stepper = createGalleryStepperState(
+      side === "before" ? 0 : galleryStepTargets().length - 1,
+    );
+    galleryGp = galleryStepTargets()[stepper.index];
+    mode = consumeCurrentGesture ? "gallery-transitioning" : "gallery-idle";
+    movePhysicalScroll(pinY);
+    publish();
+  };
+
+  const finishTransition = () => {
+    if (transition === null) return;
+    galleryGp = transition.targetGp;
+    clearTransition();
+    settlePinnedMode();
+    publish();
+  };
+
+  const tickTransition = (now: number) => {
+    if (transition === null || disposed) return;
+    const elapsed = now - transition.startedAt;
+    const fraction = elapsed / GALLERY_TRANSITION_MS;
+    galleryGp =
+      transition.fromGp +
+      (transition.targetGp - transition.fromGp) * easeInOutCubic(fraction);
+    publish();
+    if (fraction >= 1) {
+      finishTransition();
+      return;
+    }
+    transitionFrame = environment.requestFrame(tickTransition);
+  };
+
+  const animateGalleryTo = (targetGp: number) => {
+    clearTransition();
+    mode = "gallery-transitioning";
+    transition = {
+      fromGp: galleryGp,
+      targetGp,
+      startedAt: environment.readNow(),
+    };
+    transitionFrame = environment.requestFrame(tickTransition);
+    transitionEndTimer = environment.setTimeout(
+      finishTransition,
+      GALLERY_TRANSITION_MS,
+    );
+    publish();
+  };
+
+  const releaseBefore = () => {
+    clearTransition();
+    mode = "native-before";
+    movePhysicalScroll(Math.max(seamY - BOUNDARY_TOLERANCE_PX, 0));
+    publish();
+  };
+
+  const releaseAfter = () => {
+    clearTransition();
+    mode = "native-after";
+    movePhysicalScroll(galleryEndY);
+    publish();
+  };
+
+  const acceptIntent = (direction: GalleryDirection) => {
+    if (mode !== "gallery-idle" || transition !== null) return;
+    const result = requestGalleryStep(stepper, direction);
+    if (result.kind === "release-before") {
+      releaseBefore();
+      return;
+    }
+    if (result.kind === "release-after") {
+      releaseAfter();
+      return;
+    }
+    stepper = result.state;
+    animateGalleryTo(result.targetGp);
   };
 
   const onScroll: ScrollTimelineEventListener = () => {
-    const rawY = environment.readScrollY();
     if (reducedMotion()) {
-      finishReducedMotionLifecycle();
+      publish();
       return;
     }
-    if (expectedReanchorY !== null) {
-      const expectedY = expectedReanchorY;
-      clearExpectedReanchor();
-      if (Math.abs(rawY - expectedY) <= REANCHOR_TOLERANCE_PX) {
-        state = syncRawScrollPosition(state, rawY);
-        publishState();
+
+    const rawY = finiteScrollY(environment.readScrollY());
+    if (expectedScrollY !== null) {
+      const expected = expectedScrollY;
+      expectedScrollY = null;
+      if (Math.abs(rawY - expected) <= BOUNDARY_TOLERANCE_PX) {
+        publish();
         return;
       }
     }
 
-    const hasExplicitAttribution =
-      touchActive || touchMomentumActive || burstActive;
-    if (
-      hasExplicitAttribution &&
-      !state.gestureActive &&
-      !reducedMotion()
-    ) {
-      beginExplicitGesture();
+    if (isPinnedMode(mode)) {
+      if (Math.abs(rawY - pinY) > BOUNDARY_TOLERANCE_PX) {
+        movePhysicalScroll(pinY);
+      }
+      publish();
+      return;
     }
 
-    const bypass = !hasExplicitAttribution && !state.suppressForward;
-    const step = applyScrollSample(state, {
-      rawY,
-      innerHeight,
-      maxScrollY: safeDocumentEnd(environment),
-      maxVirtualY: logicalMaxY,
-      reducedMotion: reducedMotion(),
-      bypass,
-      preserveVirtualOffset: true,
-    });
-    publishStep(step);
-
-    if (burstActive && !touchActive && !touchMomentumActive) {
-      burstAwaitsNativeScroll = false;
-      endBurstAfterQuiet();
+    if (mode === "native-before" && rawY >= seamY) {
+      enterGallery("before", true);
+      return;
     }
-    if (touchMomentumActive) endTouchMomentumAfterQuiet();
-    if (!state.suppressForward) return;
-    armSuppressionQuiet();
-    if (step.needsReanchor) reanchor();
+    if (mode === "native-after" && rawY < galleryEndY) {
+      enterGallery("after", true);
+      return;
+    }
+    publish();
+  };
+
+  const onWheel: ScrollTimelineEventListener = (event) => {
+    if (reducedMotion()) return;
+    const delta = wheelDeltaPx(event, innerHeight);
+    const direction = directionFor(delta);
+    if (direction === 0) return;
+
+    if (wheelBurstActive) {
+      preventDefault(event);
+      armWheelQuiet();
+      return;
+    }
+
+    const rawY = finiteScrollY(environment.readScrollY());
+    if (mode === "native-before") {
+      if (direction > 0 && rawY + delta >= seamY) {
+        preventDefault(event);
+        wheelBurstActive = true;
+        armWheelQuiet();
+        enterGallery("before", true);
+      }
+      return;
+    }
+    if (mode === "native-after") {
+      if (direction < 0 && rawY + delta <= galleryEndY) {
+        preventDefault(event);
+        wheelBurstActive = true;
+        armWheelQuiet();
+        enterGallery("after", true);
+      }
+      return;
+    }
+
+    preventDefault(event);
+    wheelBurstActive = true;
+    armWheelQuiet();
+    acceptIntent(direction);
+    settlePinnedMode();
   };
 
   const onTouchStart: ScrollTimelineEventListener = (event) => {
-    if (touchCount(event) <= 0) return;
-    if (reducedMotion()) {
-      finishReducedMotionLifecycle();
+    const y = firstTouchY(event);
+    if (y === null) return;
+    clearTouchQuiet();
+    touchActive = true;
+    touchOwned = isPinnedMode(mode);
+    touchStepUsed = false;
+    touchStartY = y;
+    touchLastY = y;
+  };
+
+  const onTouchMove: ScrollTimelineEventListener = (event) => {
+    const y = firstTouchY(event);
+    if (y === null || touchLastY === null || touchStartY === null) return;
+    const delta = touchLastY - y;
+    const total = touchStartY - y;
+    touchLastY = y;
+    if (reducedMotion()) return;
+
+    if (!touchOwned) {
+      const rawY = finiteScrollY(environment.readScrollY());
+      if (mode === "native-before" && delta > 0 && rawY + delta >= seamY) {
+        preventDefault(event);
+        touchOwned = true;
+        touchStepUsed = true;
+        enterGallery("before", true);
+        return;
+      }
+      if (mode === "native-after" && delta < 0 && rawY + delta <= galleryEndY) {
+        preventDefault(event);
+        touchOwned = true;
+        touchStepUsed = true;
+        enterGallery("after", true);
+      }
       return;
     }
-    if (touchActive) return;
 
-    if (burstAwaitsNativeScroll) {
-      burstAwaitsNativeScroll = false;
-      if (burstEndTimer === null) burstActive = false;
-    }
-
-    if (touchMomentumActive) {
-      clearTouchMomentumEndTimer();
-      touchMomentumActive = false;
-    }
-    if (state.gestureActive) {
-      finishGesture();
-      clearSuppressionQuietTimer();
-      clearExpectedReanchor();
-      selfReanchorPending = false;
-    }
-
-    touchActive = true;
-    beginExplicitGesture();
+    preventDefault(event);
+    if (touchStepUsed || Math.abs(total) < TOUCH_STEP_PX) return;
+    touchStepUsed = true;
+    const direction = directionFor(total);
+    if (direction !== 0) acceptIntent(direction);
+    settlePinnedMode();
   };
 
   const onTouchEnd: ScrollTimelineEventListener = (event) => {
     if (!touchActive) return;
-    if (touchCount(event) > 0) return;
+    if (firstTouchY(event) !== null) return;
+    if (touchOwned) preventDefault(event);
     touchActive = false;
-    if (reducedMotion()) {
-      finishReducedMotionLifecycle();
-      return;
-    }
-    touchMomentumActive = true;
-    endTouchMomentumAfterQuiet();
-  };
-
-  const physicalScrollCanMove = (direction: ScrollIntentDirection) => {
-    if (!environment.readRootScrollEnabled()) return false;
-    const rawY = environment.readScrollY();
-    if (!Number.isFinite(rawY) || direction === 0) return false;
-    if (direction > 0) return rawY < safeDocumentEnd(environment);
-    return rawY > 0;
-  };
-
-  const endBurstAfterQuiet = () => {
-    clearBurstEndTimer();
-    burstEndTimer = environment.setTimeout(() => {
-      burstEndTimer = null;
-      if (burstAwaitsNativeScroll) return;
-      burstAwaitsNativeScroll = false;
-      burstActive = false;
-      finishGestureIfIdle();
-    }, INPUT_QUIET_MS);
-  };
-
-  const beginBurst = (direction: ScrollIntentDirection) => {
-    burstAwaitsNativeScroll =
-      !touchActive &&
-      !touchMomentumActive &&
-      physicalScrollCanMove(direction);
-    burstActive = true;
-    beginExplicitGesture();
-    endBurstAfterQuiet();
-  };
-
-  const onWheel: ScrollTimelineEventListener = (event) => {
-    if (reducedMotion()) {
-      finishReducedMotionLifecycle();
-      return;
-    }
-    beginBurst(wheelScrollIntent(event));
+    touchOwned = false;
+    touchStepUsed = false;
+    touchStartY = null;
+    touchLastY = null;
+    armTouchQuiet();
+    settlePinnedMode();
   };
 
   const onKeyDown: ScrollTimelineEventListener = (event) => {
-    if (!isScrollingKey(event)) return;
-    if (reducedMotion()) {
-      finishReducedMotionLifecycle();
+    if (reducedMotion()) return;
+    const direction = keyDirection(event);
+    if (direction === 0) return;
+    const projectedDelta = keyProjectedDelta(event, innerHeight);
+    const rawY = finiteScrollY(environment.readScrollY());
+
+    if (mode === "native-before") {
+      if (direction > 0 && rawY + projectedDelta >= seamY) {
+        preventDefault(event);
+        enterGallery("before", false);
+      }
       return;
     }
-    beginBurst(keyScrollIntent(event));
+    if (mode === "native-after") {
+      if (direction < 0 && rawY + projectedDelta <= galleryEndY) {
+        preventDefault(event);
+        enterGallery("after", false);
+      }
+      return;
+    }
+
+    preventDefault(event);
+    acceptIntent(direction);
   };
 
-  const onScrollEnd: ScrollTimelineEventListener = () => {
-    if (!state.suppressForward) {
-      selfReanchorPending = false;
-      return;
-    }
-    // scrollend can be emitted by our own auto scrollTo. Whether self-authored
-    // or native, it is only evidence for a new quiet window—not permission to
-    // release synchronously while residual momentum can still arrive.
-    if (selfReanchorPending) {
-      selfReanchorPending = false;
-      armSuppressionQuiet();
-      return;
-    }
-    armSuppressionQuiet();
-  };
-
-  const resetInterruptedGesture = () => {
-    if (reducedMotion()) {
-      finishReducedMotionLifecycle();
-      return;
-    }
-
-    clearTouchMomentumEndTimer();
-    clearBurstEndTimer();
-    clearSuppressionQuietTimer();
-    clearExpectedReanchor();
+  const resetInputOwnership = () => {
+    clearWheelQuiet();
+    clearTouchQuiet();
+    wheelBurstActive = false;
     touchActive = false;
-    touchMomentumActive = false;
-    burstActive = false;
-    burstAwaitsNativeScroll = false;
-    selfReanchorPending = false;
-
-    const step = endScrollGesture(state, innerHeight);
-    publishStep(step);
-    if (
-      step.needsReanchor ||
-      Math.abs(environment.readScrollY() - state.virtualY) >
-        REANCHOR_TOLERANCE_PX
-    ) {
-      reanchor(false);
-    }
-    if (state.suppressForward) {
-      state = releaseScrollSuppression(state);
-      publishState();
-    }
-    clearSuppressionQuietTimer();
-    clearExpectedReanchor();
-    selfReanchorPending = false;
+    touchOwned = false;
+    touchStepUsed = false;
+    touchStartY = null;
+    touchLastY = null;
+    settlePinnedMode();
   };
 
   const onVisibilityChange: ScrollTimelineEventListener = () => {
-    if (environment.readVisibilityState() === "hidden") {
-      resetInterruptedGesture();
-    }
+    if (environment.readVisibilityState() === "hidden") resetInputOwnership();
   };
 
   const onResize: ScrollTimelineEventListener = () => {
-    const currentWidth = environment.readInnerWidth();
-    if (currentWidth === lastWidth) {
-      state = syncRawScrollPosition(state, environment.readScrollY());
-      publishState();
+    const width = environment.readInnerWidth();
+    if (width === lastWidth) {
+      publish();
       return;
     }
-    lastWidth = currentWidth;
-    innerHeight = validViewportHeight(
-      environment.readInnerHeight(),
-      innerHeight,
-    );
-    logicalMaxY = scrollYForTimelineProgress(
-      { sp: 1, gp: 1 },
-      innerHeight,
-    );
-    clearTouchMomentumEndTimer();
-    clearBurstEndTimer();
-    clearSuppressionQuietTimer();
-    clearExpectedReanchor();
-    touchActive = false;
-    touchMomentumActive = false;
-    burstActive = false;
-    burstAwaitsNativeScroll = false;
-    selfReanchorPending = false;
-    discardedForwardPx = 0;
-
-    publishStep(
-      applyScrollSample(state, {
-        rawY: environment.readScrollY(),
-        innerHeight,
-        maxScrollY: safeDocumentEnd(environment),
-        maxVirtualY: logicalMaxY,
-        reducedMotion: reducedMotion(),
-        bypass: true,
-      }),
-    );
+    lastWidth = width;
+    innerHeight = validViewportHeight(environment.readInnerHeight(), innerHeight);
+    seamY = videoGovernorBounds(innerHeight).endY;
+    galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, innerHeight);
+    if (isPinnedMode(mode)) {
+      pinY = pinSide === "before" ? seamY : galleryEndY;
+      movePhysicalScroll(pinY);
+    }
+    publish();
   };
 
-  publishStep(
-    applyScrollSample(state, {
-      rawY: environment.readScrollY(),
-      innerHeight,
-      maxScrollY: safeDocumentEnd(environment),
-      maxVirtualY: logicalMaxY,
-      reducedMotion: reducedMotion(),
-      bypass: true,
-    }),
-  );
+  const syncReducedMotion = () => {
+    resetInputOwnership();
+    clearTransition();
+    const rawY = finiteScrollY(environment.readScrollY());
+    if (reducedMotion()) {
+      mode = rawY < seamY ? "native-before" : "native-after";
+      publish();
+      return;
+    }
+    const progress = timelineProgressForY(rawY, innerHeight);
+    if (rawY < seamY - BOUNDARY_TOLERANCE_PX) {
+      mode = "native-before";
+    } else if (rawY >= galleryEndY - BOUNDARY_TOLERANCE_PX) {
+      mode = "native-after";
+    } else {
+      stepper = createGalleryStepperState(nearestStepIndex(progress.gp));
+      galleryGp = galleryStepTargets()[stepper.index];
+      pinSide = rawY >= (seamY + galleryEndY) / 2 ? "after" : "before";
+      pinY = pinSide === "before" ? seamY : galleryEndY;
+      mode = "gallery-idle";
+      movePhysicalScroll(pinY);
+    }
+    publish();
+  };
 
   environment.windowTarget.addEventListener(
     "scroll",
@@ -629,55 +647,57 @@ export function createScrollTimelineController(
     PASSIVE_EVENT_OPTIONS,
   );
   environment.windowTarget.addEventListener(
+    "wheel",
+    onWheel,
+    CANCELLABLE_EVENT_OPTIONS,
+  );
+  environment.windowTarget.addEventListener(
     "touchstart",
     onTouchStart,
     PASSIVE_EVENT_OPTIONS,
   );
   environment.windowTarget.addEventListener(
+    "touchmove",
+    onTouchMove,
+    CANCELLABLE_EVENT_OPTIONS,
+  );
+  environment.windowTarget.addEventListener(
     "touchend",
     onTouchEnd,
-    PASSIVE_EVENT_OPTIONS,
+    CANCELLABLE_EVENT_OPTIONS,
   );
   environment.windowTarget.addEventListener(
     "touchcancel",
     onTouchEnd,
-    PASSIVE_EVENT_OPTIONS,
-  );
-  environment.windowTarget.addEventListener(
-    "wheel",
-    onWheel,
-    PASSIVE_EVENT_OPTIONS,
+    CANCELLABLE_EVENT_OPTIONS,
   );
   environment.windowTarget.addEventListener("keydown", onKeyDown);
-  environment.windowTarget.addEventListener("scrollend", onScrollEnd);
   environment.windowTarget.addEventListener("resize", onResize);
-  environment.windowTarget.addEventListener("blur", resetInterruptedGesture);
+  environment.windowTarget.addEventListener("blur", resetInputOwnership);
   environment.documentTarget.addEventListener(
     "visibilitychange",
     onVisibilityChange,
   );
 
+  publish();
+
   return {
-    syncReducedMotion() {
-      if (disposed || !reducedMotion()) return;
-      finishReducedMotionLifecycle();
-    },
+    syncReducedMotion,
     dispose() {
       if (disposed) return;
       disposed = true;
-      clearTouchMomentumEndTimer();
-      clearBurstEndTimer();
-      clearSuppressionQuietTimer();
-      clearExpectedReanchor();
-      touchActive = false;
-      touchMomentumActive = false;
-      burstActive = false;
-      burstAwaitsNativeScroll = false;
-      selfReanchorPending = false;
+      clearWheelQuiet();
+      clearTouchQuiet();
+      clearTransition();
       environment.windowTarget.removeEventListener(
         "scroll",
         onScroll,
         PASSIVE_EVENT_OPTIONS,
+      );
+      environment.windowTarget.removeEventListener(
+        "wheel",
+        onWheel,
+        CANCELLABLE_EVENT_OPTIONS,
       );
       environment.windowTarget.removeEventListener(
         "touchstart",
@@ -685,26 +705,25 @@ export function createScrollTimelineController(
         PASSIVE_EVENT_OPTIONS,
       );
       environment.windowTarget.removeEventListener(
+        "touchmove",
+        onTouchMove,
+        CANCELLABLE_EVENT_OPTIONS,
+      );
+      environment.windowTarget.removeEventListener(
         "touchend",
         onTouchEnd,
-        PASSIVE_EVENT_OPTIONS,
+        CANCELLABLE_EVENT_OPTIONS,
       );
       environment.windowTarget.removeEventListener(
         "touchcancel",
         onTouchEnd,
-        PASSIVE_EVENT_OPTIONS,
-      );
-      environment.windowTarget.removeEventListener(
-        "wheel",
-        onWheel,
-        PASSIVE_EVENT_OPTIONS,
+        CANCELLABLE_EVENT_OPTIONS,
       );
       environment.windowTarget.removeEventListener("keydown", onKeyDown);
-      environment.windowTarget.removeEventListener("scrollend", onScrollEnd);
       environment.windowTarget.removeEventListener("resize", onResize);
       environment.windowTarget.removeEventListener(
         "blur",
-        resetInterruptedGesture,
+        resetInputOwnership,
       );
       environment.documentTarget.removeEventListener(
         "visibilitychange",
