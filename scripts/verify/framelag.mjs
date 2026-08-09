@@ -15,6 +15,25 @@ const track = Number(opt("track", "1240")); // keep in sync with SCROLL_TRACK_VH
 const [w, h] = opt("viewport", "390x844").split("x").map(Number);
 const VCARD = 140, FLY = 0.4;
 
+async function closeBrowserWithin(browser, timeoutMs = 5000) {
+  let timeoutId;
+  await Promise.race([
+    browser.close(),
+    new Promise((resolve) => {
+      timeoutId = setTimeout(() => {
+        try {
+          browser.disconnect();
+          browser.process()?.kill();
+        } catch {
+          // The browser may have exited between timeout and cleanup.
+        }
+        resolve();
+      }, timeoutMs);
+    }),
+  ]);
+  if (timeoutId !== undefined) clearTimeout(timeoutId);
+}
+
 const browser = await puppeteer.launch({
   executablePath: CHROME, headless: true,
   args: ["--enable-unsafe-swiftshader", "--use-angle=swiftshader-webgl", `--window-size=${w},${h}`],
@@ -54,7 +73,7 @@ try {
         resolved: f.resolved,
         loaded: f.loadedCount,
         startupReady: Boolean(f.startupReady),
-        startupLoaded: f.startupLoadedCount,
+        startupLoadedCount: f.startupLoadedCount,
         inFlight: f.inFlight,
         sp: f.sp,
         gp: f.gp,
@@ -69,7 +88,7 @@ try {
         resolved: f.resolved,
         loaded: f.loadedCount,
         startupReady: Boolean(f.startupReady),
-        startupLoaded: f.startupLoadedCount,
+        startupLoadedCount: f.startupLoadedCount,
         inFlight: f.inFlight,
         sp: f.sp,
         gp: f.gp,
@@ -81,7 +100,17 @@ try {
 
   let maxGap = Number.NEGATIVE_INFINITY, at = null;
   let maxAbsGap = 0, atAbs = null;
-  const resolvedSamples = samples.filter((s) => Number.isFinite(s.resolved) && s.resolved >= 0);
+  const sweepSamples = samples.filter((s) => !s.dwell);
+  const sweepStartedReady = Boolean(sweepSamples[0]?.startupReady);
+  const unresolvedSamples = samples.filter(
+    (s) => !Number.isFinite(s.resolved) || s.resolved < 0,
+  );
+  const resolvedSamples = samples.filter(
+    (s) =>
+      Number.isFinite(s.idx) &&
+      Number.isFinite(s.resolved) &&
+      s.resolved >= 0,
+  );
   for (const s of resolvedSamples) {
     const gap = s.idx - s.resolved;
     const absGap = Math.abs(gap);
@@ -92,7 +121,8 @@ try {
   const startupEverReady = samples.some((s) => s.startupReady);
   console.log(
     `mbps=${mbps} samples=${samples.length} finalLoaded=${last.loaded}/295 ` +
-    `startupReady=${startupEverReady} startupLoaded=${last.startupLoaded} inFlight=${last.inFlight}`,
+    `startupReady=${startupEverReady} ` +
+    `startupLoadedCount=${last.startupLoadedCount} inFlight=${last.inFlight}`,
   );
   console.log(
     `MAX GAP idx−resolved = ${Number.isFinite(maxGap) ? maxGap : "n/a"} frames` +
@@ -107,8 +137,22 @@ try {
     .sort((a, b) => Math.abs(b.idx - b.resolved) - Math.abs(a.idx - a.resolved))
     .slice(0, 6);
   for (const s of worst) console.log(`  idx=${s.idx} resolved=${s.resolved} gap=${s.idx - s.resolved} loaded=${s.loaded} sp=${s.sp} gp=${s.gp}`);
+  for (const s of unresolvedSamples.slice(0, 6)) {
+    console.log(
+      `  UNRESOLVED idx=${s.idx} resolved=${s.resolved} ` +
+      `loaded=${s.loaded} sp=${s.sp} gp=${s.gp} dwell=${Boolean(s.dwell)}`,
+    );
+  }
   const failures = [];
   if (!startupEverReady) failures.push("startup coverage never became ready");
+  if (!sweepStartedReady) {
+    failures.push("startup coverage was not ready when the active sweep began");
+  }
+  if (unresolvedSamples.length) {
+    failures.push(
+      `${unresolvedSamples.length} frame diagnostic sample(s) were unresolved`,
+    );
+  }
   if (!resolvedSamples.length) failures.push("no resolved frame diagnostics were sampled");
   if (maxAbsGap > 32) failures.push(`resolved frame exceeded ±32 contract (max ${maxAbsGap})`);
   if (failures.length) {
@@ -118,5 +162,5 @@ try {
     console.log("PASS — startup ready and resolved frames stayed within ±32");
   }
 } finally {
-  await browser.close();
+  await closeBrowserWithin(browser);
 }
