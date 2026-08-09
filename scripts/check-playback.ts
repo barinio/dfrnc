@@ -73,10 +73,9 @@ import {
   galleryCtaClipForProjectedCorners,
 } from "../src/gallery";
 import {
+  GALLERY_PIN_TRACK_PX,
   SCROLL_TRACK_VH,
-  GALLERY_TRACK_VH,
   VIDEO_CARD_TRACK_VH,
-  IMAGE_GALLERY_TRACK_VH,
   VIDEO_SPLIT,
   VID_MORPH_END,
   VID_HOLD_END,
@@ -706,14 +705,14 @@ for (const f of FIGURES) {
 {
   const H = 1000; // arbitrary innerHeight for the pure mapping
   const animY = ((SCROLL_TRACK_VH - 100) / 100) * H;
-  const galleryPx = (GALLERY_TRACK_VH / 100) * H;
+  const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * H;
+  const galleryPx = videoCardPx + GALLERY_PIN_TRACK_PX;
 
   // gp is 0 at/under the animation track end, 1 at the document bottom. The
   // scrollY → gp mapping is PIECEWISE: the video-card phase gp[0, VID_FLY_END]
-  // rides its own short track (so the morph isn't sluggish), the image gallery
-  // gp[VID_FLY_END, 1] rides the rest. Continuous (gp = VID_FLY_END) at the seam.
-  const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * H;
-  const imagePx = (IMAGE_GALLERY_TRACK_VH / 100) * H;
+  // rides its own short track (so the morph isn't sluggish), while direct
+  // fallback addressing uses the short physical pin-release span.
+  const imagePx = GALLERY_PIN_TRACK_PX;
   eq(galleryProgressFrom(animY, H), 0, "gp = 0 at anim track end");
   eq(galleryProgressFrom(animY - 500, H), 0, "gp clamps to 0 above gallery");
   eq(galleryProgressFrom(animY + galleryPx, H), 1, "gp = 1 at document bottom");
@@ -1312,6 +1311,10 @@ for (const f of FIGURES) {
       ),
     "one shared hook owns the scroll and gallery timeline refs",
   );
+  // Historical virtual-governor source assertions are retained below for
+  // context but intentionally disabled: the pinned gallery has one physical
+  // coordinate and a semantic gesture state machine instead.
+  if (false) {
   ok(
     /virtualYRef/.test(scrollHookCode) &&
       /scrollRef/.test(scrollHookCode) &&
@@ -2129,6 +2132,56 @@ for (const f of FIGURES) {
       ),
     "the controller preserves native scrolling without a queued animation loop",
   );
+  }
+
+  ok(
+    /scrollRef/.test(scrollHookCode) &&
+      /galleryRef/.test(scrollHookCode) &&
+      !/virtualYRef/.test(scrollHookCode),
+    "the shared hook publishes only sp and gp",
+  );
+  ok(
+    /export\s+type\s+GalleryMode/.test(scrollControllerCode) &&
+      /galleryStepTargets\(\)/.test(scrollControllerCode) &&
+      /requestGalleryStep\(/.test(scrollControllerCode) &&
+      /preventDefault\(event\)/.test(scrollControllerCode) &&
+      /CANCELLABLE_EVENT_OPTIONS\s*=\s*\{\s*passive:\s*false\s*\}/.test(
+        scrollControllerCode,
+      ),
+    "gallery input is pinned and advanced through semantic adjacent steps",
+  );
+  ok(
+    /requestFrame:\s*\(callback\)\s*=>\s*window\.requestAnimationFrame\(callback\)/.test(
+      scrollHookCode,
+    ) &&
+      /cancelFrame:\s*\(id\)\s*=>\s*window\.cancelAnimationFrame\(id\)/.test(
+        scrollHookCode,
+      ) &&
+      /GALLERY_TRANSITION_MS\s*=\s*520/.test(scrollControllerCode),
+    "gallery transitions use the browser frame clock with a bounded duration",
+  );
+  ok(
+    !/\bvirtualY\b/.test(scrollControllerCode + scrollHookCode) &&
+      !/discardedForwardPx/.test(scrollControllerCode + scrollHookCode) &&
+      !/\breanchor\b/i.test(scrollControllerCode + scrollHookCode) &&
+      !/createScrollGovernorState|applyScrollSample|syncRawScrollPosition/.test(
+        scrollGovernorCode + scrollControllerCode,
+      ),
+    "no divergent cursor, discarded-distance debt, or reanchor path remains",
+  );
+  ok(
+    /scrollY:\s*publication\.scrollY/.test(scrollHookCode) &&
+      /galleryMode:\s*publication\.galleryMode/.test(scrollHookCode) &&
+      /galleryStep:\s*publication\.galleryStep/.test(scrollHookCode) &&
+      /window\.__sg\s*=\s*diagnostic/.test(scrollHookCode),
+    "DEV diagnostics expose the physical coordinate and semantic gallery state",
+  );
+  ok(
+    sceneScrollCode.includes("GALLERY_PIN_TRACK_PX") &&
+      sceneScrollCode.includes("SCROLL_TRACK_VH + VIDEO_CARD_TRACK_VH"),
+    "the real document uses the short pin-release span",
+  );
+
   ok(
     /shader\.uniforms\.uScreenClip\s*=/.test(videoPlaneSource) &&
       /shader\.uniforms\.uClipRect\s*=/.test(videoPlaneSource) &&
