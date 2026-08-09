@@ -2,7 +2,6 @@ import {
   IMAGE_GALLERY_TRACK_VH,
   SCROLL_TRACK_VH,
   VIDEO_CARD_TRACK_VH,
-  VIDEO_DURATION_S,
   VID_FLY_END,
 } from "./constants";
 import { galleryProgressFrom } from "./gallery";
@@ -13,13 +12,9 @@ export interface TimelineProgress {
   gp: number;
 }
 
-export type ScrollDirection = -1 | 0 | 1;
-
 export interface ScrollGovernorState {
   virtualY: number;
   lastRawY: number;
-  lastInputAtMs: number | null;
-  direction: ScrollDirection;
   gestureActive: boolean;
   gestureLocksGallery: boolean;
   suppressForward: boolean;
@@ -27,7 +22,6 @@ export interface ScrollGovernorState {
 
 export interface ScrollSample {
   rawY: number;
-  nowMs: number;
   innerHeight: number;
   // Physical browser scroll bound. Raw bookkeeping is clamped here.
   maxScrollY: number;
@@ -47,9 +41,6 @@ export interface ScrollGovernorStep {
   discardedForwardPx: number;
   needsReanchor: boolean;
 }
-
-const INITIAL_INPUT_QUANTUM_MS = 1000 / 60;
-const MAX_ACTIVE_GAP_MS = 50;
 
 function validHeight(innerHeight: number): boolean {
   return Number.isFinite(innerHeight) && innerHeight > 0;
@@ -170,12 +161,6 @@ function normalizedState(
   return {
     virtualY,
     lastRawY,
-    lastInputAtMs:
-      state.lastInputAtMs !== null && Number.isFinite(state.lastInputAtMs)
-        ? state.lastInputAtMs
-        : null,
-    direction:
-      state.direction === -1 || state.direction === 1 ? state.direction : 0,
     gestureActive: Boolean(state.gestureActive),
     gestureLocksGallery: Boolean(state.gestureLocksGallery),
     suppressForward: Boolean(state.suppressForward),
@@ -195,61 +180,23 @@ function stepFor(
   };
 }
 
-function sampleTime(nowMs: number, state: ScrollGovernorState): number {
-  if (Number.isFinite(nowMs)) return nowMs;
-  return state.lastInputAtMs ?? 0;
-}
-
-function forwardInputMs(state: ScrollGovernorState, nowMs: number): number {
-  if (state.direction === 0) {
-    return INITIAL_INPUT_QUANTUM_MS;
-  }
-
-  // A reverse sample already established a real input timestamp. Reversing
-  // direction must not manufacture another full first-sample quantum: rapid
-  // +/- alternation would otherwise advance the clip much faster than time.
-  if (state.direction === -1) {
-    if (state.lastInputAtMs === null) return 0;
-    const directionChangeGap = nowMs - state.lastInputAtMs;
-    if (!Number.isFinite(directionChangeGap) || directionChangeGap <= 0) {
-      return 0;
-    }
-    return Math.min(directionChangeGap, INITIAL_INPUT_QUANTUM_MS);
-  }
-
-  if (state.lastInputAtMs === null) return INITIAL_INPUT_QUANTUM_MS;
-
-  const gap = nowMs - state.lastInputAtMs;
-  if (!Number.isFinite(gap) || gap < 0 || gap > MAX_ACTIVE_GAP_MS) {
-    return INITIAL_INPUT_QUANTUM_MS;
-  }
-  return gap;
-}
-
 export function createScrollGovernorState(rawY = 0): ScrollGovernorState {
   const initialY = finiteNonNegative(rawY);
   return {
     virtualY: initialY,
     lastRawY: initialY,
-    lastInputAtMs: null,
-    direction: 0,
     gestureActive: false,
     gestureLocksGallery: false,
     suppressForward: false,
   };
 }
 
-export function beginScrollGesture(
-  state: ScrollGovernorState,
-  nowMs: number,
-): ScrollGovernorState {
+export function beginScrollGesture(state: ScrollGovernorState): ScrollGovernorState {
   const current = normalizedState(state);
   if (current.gestureActive) return current;
 
   return {
     ...current,
-    lastInputAtMs: Number.isFinite(nowMs) ? nowMs : null,
-    direction: 0,
     gestureActive: true,
     gestureLocksGallery: false,
     // A newly identified input gesture is intentional user motion, not the
@@ -270,7 +217,6 @@ export function applyScrollSample(
   const current = normalizedState(state, maxScrollY, maxVirtualY);
   const rawY = clampDocumentY(sample.rawY, maxScrollY, current.lastRawY);
   const rawDelta = rawY - current.lastRawY;
-  const nowMs = sampleTime(sample.nowMs, current);
 
   if (sample.bypass || sample.reducedMotion) {
     const virtualY =
@@ -287,8 +233,6 @@ export function applyScrollSample(
       ...current,
       virtualY,
       lastRawY: rawY,
-      lastInputAtMs: null,
-      direction: 0,
       gestureActive: false,
       gestureLocksGallery: false,
       suppressForward: false,
@@ -301,8 +245,6 @@ export function applyScrollSample(
       {
         ...current,
         lastRawY: rawY,
-        lastInputAtMs: null,
-        direction: 0,
       },
       sample.innerHeight,
       Math.max(rawDelta, 0),
@@ -324,8 +266,6 @@ export function applyScrollSample(
         ...current,
         virtualY,
         lastRawY: rawY,
-        lastInputAtMs: nowMs,
-        direction: -1,
       },
       sample.innerHeight,
     );
@@ -339,7 +279,6 @@ export function applyScrollSample(
     );
   }
 
-  const activeInputMs = forwardInputMs(current, nowMs);
   const requestedY = clampDocumentY(
     current.virtualY + rawDelta,
     maxVirtualY,
@@ -348,40 +287,17 @@ export function applyScrollSample(
   const bounds = videoGovernorBounds(sample.innerHeight);
   const hasGovernor =
     validHeight(sample.innerHeight) && bounds.endY > bounds.startY;
-  const entersGovernor =
+  const intersectsVideo =
     hasGovernor &&
     current.virtualY < bounds.endY &&
     requestedY > bounds.startY;
   const gestureLocksGallery =
     current.gestureLocksGallery ||
-    (current.gestureActive && entersGovernor);
+    (current.gestureActive && intersectsVideo);
 
   let virtualY = requestedY;
-  if (hasGovernor && gestureLocksGallery) {
+  if (hasGovernor && current.gestureActive && gestureLocksGallery) {
     virtualY = Math.min(virtualY, bounds.endY);
-  }
-
-  if (entersGovernor) {
-    const governedFromY = Math.max(current.virtualY, bounds.startY);
-    const governedRequestedY = Math.min(requestedY, bounds.endY);
-    const currentClipT = videoTimeForY(governedFromY, sample.innerHeight);
-    const requestedClipT = videoTimeForY(
-      governedRequestedY,
-      sample.innerHeight,
-    );
-    const permittedClipDelta =
-      activeInputMs / (VIDEO_DURATION_S * 1000);
-    const permittedClipT = Math.min(currentClipT + permittedClipDelta, 1);
-
-    if (requestedClipT > permittedClipT) {
-      virtualY = scrollYForVideoTime(permittedClipT, sample.innerHeight);
-    } else if (gestureLocksGallery) {
-      // Preserve the exact requested coordinate for sub-cap movement; the
-      // inverse is only needed when the request actually exceeds the cap.
-      virtualY = governedRequestedY;
-    } else if (requestedY <= bounds.endY) {
-      virtualY = requestedY;
-    }
   }
 
   virtualY = clampDocumentY(virtualY, maxVirtualY, current.virtualY);
@@ -393,8 +309,6 @@ export function applyScrollSample(
       ...current,
       virtualY,
       lastRawY: rawY,
-      lastInputAtMs: nowMs,
-      direction: 1,
       gestureLocksGallery,
     },
     sample.innerHeight,
@@ -408,12 +322,17 @@ export function endScrollGesture(
 ): ScrollGovernorStep {
   const current = normalizedState(state);
   const needsReanchor = current.lastRawY !== current.virtualY;
+  const bounds = videoGovernorBounds(innerHeight);
+  const atLockedBoundary =
+    current.gestureLocksGallery &&
+    validHeight(innerHeight) &&
+    bounds.endY > bounds.startY &&
+    current.virtualY >= bounds.endY;
   const ended: ScrollGovernorState = {
     ...current,
-    lastInputAtMs: null,
-    direction: 0,
     gestureActive: false,
-    suppressForward: current.suppressForward || needsReanchor,
+    suppressForward:
+      current.suppressForward || needsReanchor || atLockedBoundary,
   };
   return stepFor(ended, innerHeight);
 }
