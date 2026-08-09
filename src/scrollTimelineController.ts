@@ -408,7 +408,9 @@ export function createScrollTimelineController(
     if (touchMomentumActive) {
       clearTouchMomentumEndTimer();
       touchMomentumActive = false;
-      if (state.gestureActive) finishGesture();
+    }
+    if (state.gestureActive) {
+      finishGesture();
       clearSuppressionQuietTimer();
       clearExpectedReanchor();
       selfReanchorPending = false;

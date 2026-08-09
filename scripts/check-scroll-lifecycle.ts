@@ -432,6 +432,55 @@ const bounds = videoGovernorBounds(IH);
   controller.dispose();
 }
 
+// First direct touch contact also supersedes a wheel/key-only reducer gesture.
+// It starts clean at the seam without changing the burst's original deadline.
+for (const [label, beginBurst] of [
+  ["wheel", (environment: FakeEnvironment) => environment.wheel()],
+  ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
+] as const) {
+  const harness = createHarness(bounds.endY - 100);
+  const { environment, latest, controller } = harness;
+  beginBurst(environment);
+  environment.scrollToRaw(bounds.endY + 200);
+  eq(latest().virtualY, bounds.endY, `${label} burst reaches the seam`);
+  ok(latest().gestureLocksGallery, `${label} burst owns the old gallery lock`);
+  ok(latest().discardedForwardPx > 0, `${label} burst records boundary discard`);
+  eq(environment.timers.size, 1, `${label} burst owns one timer`);
+
+  environment.timers.advance(60);
+  const reanchorsBeforeTouch = environment.scrollToCalls.length;
+  environment.touchStart();
+  eq(environment.timers.size, 1, `first touch preserves the ${label} burst timer`);
+
+  const rawBeforeFirstSwipe = environment.scrollY;
+  environment.scrollToRaw(rawBeforeFirstSwipe + 100);
+  eq(
+    latest().virtualY,
+    bounds.endY + 100,
+    `first touch swipe after ${label} moves exactly into the gallery`,
+  );
+  ok(!latest().gestureLocksGallery, `first touch clears the ${label} gallery lock`);
+  eq(latest().discardedForwardPx, 0, `first touch clears the ${label} discard metric`);
+  eq(
+    environment.scrollToCalls.length,
+    reanchorsBeforeTouch + 1,
+    `first touch reanchors the old ${label} boundary once`,
+  );
+
+  environment.timers.advance(59);
+  ok(latest().gestureActive, `${label} deadline remains live through 119ms`);
+  eq(environment.timers.size, 1, `${label} retains its original timer before quiet`);
+  environment.timers.advance(1);
+  eq(environment.timers.size, 0, `${label} clears at its original deadline`);
+  ok(latest().gestureActive, `${label} quiet cannot end active direct touch`);
+
+  environment.touchEnd();
+  eq(environment.timers.size, 1, `terminal touch after ${label} owns momentum quiet`);
+  environment.timers.advance(120);
+  ok(!latest().gestureActive, `touch after ${label} ends at momentum quiet`);
+  controller.dispose();
+}
+
 // Wheel and scrolling-key bursts end at 120ms, and an aligned interior finish
 // does not quarantine later forward movement.
 for (const [label, begin] of [

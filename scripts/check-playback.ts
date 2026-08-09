@@ -1602,16 +1602,43 @@ for (const f of FIGURES) {
       !/finishGestureIfIdle\(/.test(touchEndBody),
     "terminal touchend transfers direct ownership to touch momentum without publishing a finish",
   );
+  const touchMomentumResetBody = sourceBlock(
+    touchStartBody,
+    "if (touchMomentumActive)",
+    "touch momentum reset on fresh touch",
+  );
+  const priorGestureFinishBody = sourceBlock(
+    touchStartBody,
+    "if (state.gestureActive)",
+    "prior reducer gesture finish on fresh touch",
+  );
   ok(
-    /if\s*\(\s*touchMomentumActive\s*\)/.test(touchStartBody) &&
-      /clearTouchMomentumEndTimer\(\)/.test(touchStartBody) &&
-      /touchMomentumActive\s*=\s*false/.test(touchStartBody) &&
-      /finishGesture\(\)/.test(touchStartBody) &&
-      /clearSuppressionQuietTimer\(\)/.test(touchStartBody) &&
-      /clearExpectedReanchor\(\)/.test(touchStartBody) &&
+    /clearTouchMomentumEndTimer\(\)/.test(touchMomentumResetBody) &&
+      /touchMomentumActive\s*=\s*false/.test(touchMomentumResetBody) &&
+      !/finishGesture\(\)/.test(touchMomentumResetBody) &&
+      /finishGesture\(\)/.test(priorGestureFinishBody) &&
+      /clearSuppressionQuietTimer\(\)/.test(priorGestureFinishBody) &&
+      /clearExpectedReanchor\(\)/.test(priorGestureFinishBody) &&
+      /selfReanchorPending\s*=\s*false/.test(priorGestureFinishBody) &&
       !/clearBurstEndTimer\(\)/.test(touchStartBody) &&
-      !/burstActive\s*=\s*false/.test(touchStartBody),
-    "fresh touch finalizes old touch momentum without disturbing wheel/key ownership",
+      !/burstActive\s*=\s*false/.test(touchStartBody) &&
+      !/endBurstAfterQuiet\(\)/.test(touchStartBody),
+    "first touch finalizes any prior reducer gesture without disturbing wheel/key ownership",
+  );
+  ordered(
+    touchStartBody,
+    [
+      "if (touchMomentumActive)",
+      "touchMomentumActive = false",
+      "if (state.gestureActive)",
+      "finishGesture()",
+      "clearSuppressionQuietTimer()",
+      "clearExpectedReanchor()",
+      "selfReanchorPending = false",
+      "touchActive = true",
+      "beginExplicitGesture()",
+    ],
+    "clean first-touch takeover",
   );
 
   const refWriterBody = sourceBlock(
