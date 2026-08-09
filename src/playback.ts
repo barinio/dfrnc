@@ -80,6 +80,33 @@ export function lottieTimeFor(sp: number, phase: Phase): number {
   return LOTTIE_ZOOM_S + t * (LOTTIE_TOTAL_S - LOTTIE_ZOOM_S);
 }
 
+// During every actually visible figure flight the typography must already be
+// on its authored frame-103 settle. The scroll-derived target can jump across
+// the short clean beat in one wheel/touch sample, so temporal smoothing alone
+// cannot enforce this visual handoff.
+export function lottieSettledIntroRequiredFor(sp: number): boolean {
+  return sp >= FIGURES_START && sp <= LOTTIE_SCRUB_START;
+}
+
+// Framerate-independent display-time smoothing for the scroll-driven Lottie.
+// The figures interval is the one deliberate snap: both forward and reverse
+// jumps must show the exact settled title before 3D is rendered. Everywhere
+// else the displayed frame keeps chasing coarse scroll steps smoothly.
+export function lottieDisplayedTimeFor(
+  currentSec: number,
+  targetSp: number,
+  deltaSec: number,
+): number {
+  const targetSec = lottieTimeFor(targetSp, "scroll");
+  if (lottieSettledIntroRequiredFor(targetSp)) return LOTTIE_INTRO_S;
+  if (!Number.isFinite(currentSec) || currentSec < 0) return targetSec;
+
+  const safeDelta = Number.isFinite(deltaSec) ? Math.max(deltaSec, 0) : 0;
+  const nextSec =
+    currentSec + (targetSec - currentSec) * (1 - Math.exp(-safeDelta * 10));
+  return Math.abs(targetSec - nextSec) < 1 / 120 ? targetSec : nextSec;
+}
+
 export interface FigureState {
   // Local flight progress through this figure's window, 0..1 (clamped).
   t: number;

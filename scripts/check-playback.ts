@@ -6,6 +6,8 @@ import { createHash } from "node:crypto";
 import {
   lottieFrameForTime,
   lottieTimeFor,
+  lottieDisplayedTimeFor,
+  lottieSettledIntroRequiredFor,
   figureStateFor,
   figureVisibleFor,
   videoStateFor,
@@ -455,6 +457,48 @@ eq(lottieTimeFor(LOTTIE_END, "scroll"), LOTTIE_TOTAL_S, "lottie @LOTTIE_END");
 eq(lottieTimeFor(1, "scroll"), LOTTIE_TOTAL_S, "lottie clamped after end");
 eq(lottieTimeFor(500 / SCROLL_TRACK_VH, "done"), LOTTIE_INTRO_S, "lottie done: readable frame held");
 eq(lottieTimeFor(0.9, "done"), LOTTIE_TOTAL_S, "lottie done: final frame at tail");
+
+// The displayed texture normally eases toward coarse scroll jumps, but the
+// first visible 3D frame must never beat the authored frame-103 title settle.
+// This is bidirectional: reverse-scrolling into the figures phase must restore
+// the same exact hold before any figure can be visible.
+const firstVisibleFigureSp = FIGURES_START + 0.001;
+ok(
+  lottieSettledIntroRequiredFor(firstVisibleFigureSp),
+  "visible figures require the exact settled intro texture",
+);
+ok(
+  !lottieSettledIntroRequiredFor(FIGURES_START - 1 / SCROLL_TRACK_VH),
+  "pre-figure reveal keeps normal texture throttling",
+);
+ok(
+  !lottieSettledIntroRequiredFor(
+    LOTTIE_SCRUB_START + 1 / SCROLL_TRACK_VH,
+  ),
+  "post-flight typography resumes normal texture throttling",
+);
+eq(
+  lottieDisplayedTimeFor(DEFT_DROP_S, firstVisibleFigureSp, 1 / 60),
+  LOTTIE_INTRO_S,
+  "fast forward jump snaps the Lottie settle before 3D",
+);
+eq(
+  lottieDisplayedTimeFor(LOTTIE_TOTAL_S, firstVisibleFigureSp, 1 / 60),
+  LOTTIE_INTRO_S,
+  "reverse jump restores the settled Lottie frame before 3D",
+);
+const beforeFiguresSp = FIGURES_START - 1 / SCROLL_TRACK_VH;
+const beforeFiguresTarget = lottieTimeFor(beforeFiguresSp, "scroll");
+const beforeFiguresDisplayed = lottieDisplayedTimeFor(
+  DEFT_DROP_S,
+  beforeFiguresSp,
+  1 / 60,
+);
+ok(
+  beforeFiguresDisplayed > DEFT_DROP_S &&
+    beforeFiguresDisplayed < beforeFiguresTarget,
+  "pre-figure Lottie reveal keeps its temporal smoothing",
+);
 // Reduced-motion handoff: the readable frame may only swap to the (empty)
 // final frame once the video is FULLY opaque — otherwise these users see the
 // typography vanish over a bare background.

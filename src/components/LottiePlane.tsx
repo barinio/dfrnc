@@ -9,6 +9,8 @@ import { DEFT_DROP_S } from "../constants";
 import {
   lottieFrameForTime,
   lottieTimeFor,
+  lottieDisplayedTimeFor,
+  lottieSettledIntroRequiredFor,
   lottieBleedFor,
   lottiePlaneVisibleFor,
 } from "../playback";
@@ -215,13 +217,13 @@ export default function LottiePlane({
       // Scroll-driven; lottieTimeFor never returns less than DEFT_DROP_S, so
       // the drop can't replay on scroll-up. Smooth toward the target so coarse
       // wheel jumps glide through the timeline instead of skipping frames.
-      const target = lottieTimeFor(targetSp, phase);
-      if (smoothSecRef.current < 0) smoothSecRef.current = target;
-      smoothSecRef.current +=
-        (target - smoothSecRef.current) * (1 - Math.exp(-delta * 10));
-      // Snap within a quarter of a 30 fps frame so settling is invisible.
-      if (Math.abs(target - smoothSecRef.current) < 1 / 120)
-        smoothSecRef.current = target;
+      // The visible-figures interval deliberately snaps to frame 103 so a fast
+      // jump cannot render 3D over an AUSGEZEICHNETES title still catching up.
+      smoothSecRef.current = lottieDisplayedTimeFor(
+        smoothSecRef.current,
+        targetSp,
+        delta,
+      );
       tSec = smoothSecRef.current;
     }
     const visible = lottiePlaneVisibleFor(tSec, targetSp);
@@ -233,11 +235,14 @@ export default function LottiePlane({
       return;
     }
     if (tSec === lastTimeRef.current) return;
+    const forceSettledFigureHandoff =
+      lottieSettledIntroRequiredFor(targetSp);
     const minUploadGap =
       Number.isFinite(textureFrameRate) && textureFrameRate > 0
         ? 1 / textureFrameRate
         : 0;
     if (
+      !forceSettledFigureHandoff &&
       minUploadGap > 0 &&
       state.clock.elapsedTime - lastUploadAtRef.current < minUploadGap
     ) {
