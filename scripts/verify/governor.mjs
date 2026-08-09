@@ -1,8 +1,8 @@
-// Browser regression for the native-speed scroll governor.
+// Browser regression for the scroll governor's video-to-gallery boundary.
 //
-// Governed movement is driven exclusively with trusted CDP wheel input. Direct
-// scrollTo calls are used only while no gesture is active, to place the test at
-// a known clip position.
+// Governed movement is driven exclusively with trusted CDP wheel input. The
+// only programmatic scroll is the setup reset performed before the complete
+// boundary -> quiet -> fresh -> reverse story begins.
 //
 //   node scripts/verify/governor.mjs \
 //     --url http://127.0.0.1:5173 --viewport 390x844
@@ -41,17 +41,9 @@ const CHROME =
   process.env.CHROME ||
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 const url = opt("url", "http://localhost:5173");
-const deltaY = positiveNumber("delta", 1200);
-const intervalMs = positiveNumber("interval-ms", 20);
-const scenicBurstMs = positiveNumber("burst-ms", 1050);
-const endBurstMs = positiveNumber("end-burst-ms", 1800);
 const timeoutMs = positiveNumber("timeout-ms", 45000);
 
-const VIDEO_DURATION_S = 23.56;
 const VID_FLY_END = 0.4;
-const RATE_LIMIT = 1.05;
-const QUIET_WAIT_MS = 300;
-const INPUT_QUIET_MS = 120;
 const DIAGNOSTIC_EPSILON = 1e-7;
 const RAW_ALIGNMENT_EPSILON_PX = 1;
 
@@ -63,150 +55,100 @@ async function readGovernor(page) {
     if (!diagnostic) return null;
     return {
       ...diagnostic,
-      now: performance.now(),
       scrollY: window.scrollY,
     };
   });
   if (!sample) throw new Error("window.__sg is unavailable (run a DEV build)");
-  for (const field of ["clipT", "gp", "sp", "virtualY", "discardedForwardPx", "now"]) {
+  for (const field of [
+    "rawY",
+    "virtualY",
+    "scrollY",
+    "clipT",
+    "gp",
+    "sp",
+    "discardedForwardPx",
+  ]) {
     if (!Number.isFinite(sample[field])) {
       throw new Error(`window.__sg.${field} is not finite`);
     }
   }
+  if (typeof sample.gestureActive !== "boolean") {
+    throw new Error("window.__sg.gestureActive is not boolean");
+  }
   return sample;
 }
 
-async function afterInputDelay(page, delayMs = 20) {
-  await sleep(delayMs);
-  return readGovernor(page);
-}
-
-async function waitForQuiet(page, waitMs = QUIET_WAIT_MS) {
-  await sleep(waitMs);
+async function waitForQuiet(page, minimumMs = 360) {
+  await sleep(minimumMs);
   const sample = await readGovernor(page);
-  if (sample.gestureActive) {
-    throw new Error(`gesture remained active after ${waitMs}ms without input`);
-  }
-  if (Math.abs(sample.scrollY - sample.virtualY) > RAW_ALIGNMENT_EPSILON_PX) {
-    throw new Error(
-      `raw/virtual scroll did not reanchor after quiet ` +
-        `(raw=${sample.scrollY}, virtual=${sample.virtualY})`,
-    );
+  if (sample.gestureActive) throw new Error("gesture remained active");
+  if (Math.abs(sample.scrollY - sample.virtualY) > 1) {
+    throw new Error("raw/virtual scroll did not reanchor");
   }
   return sample;
 }
 
-async function seekClipOutsideGesture(page, targetClipT) {
+async function trustedWheelOnce(page, deltaY, accept, label) {
+  const before = await readGovernor(page);
+  await page.mouse.wheel({ deltaY });
+  const deadline = Date.now() + 3000;
+  let after = before;
+  while (Date.now() < deadline) {
+    after = await readGovernor(page);
+    if (accept(after, before)) return { before, after, eventCount: 1 };
+    await sleep(10);
+  }
+  throw new Error(
+    `${label}: trusted wheel produced no expected publication ` +
+      `(before raw=${before.rawY}, virtual=${before.virtualY}, ` +
+      `clipT=${before.clipT}, gp=${before.gp}; ` +
+      `after raw=${after.rawY}, virtual=${after.virtualY}, ` +
+      `clipT=${after.clipT}, gp=${after.gp}, ` +
+      `discarded=${after.discardedForwardPx})`,
+  );
+}
+
+async function resetToTop(page) {
   await waitForQuiet(page);
-  // Isolate setup from the previous scenario's native momentum quarantine.
-  // This synthetic interruption is setup-only; every governed assertion below
-  // still uses trusted page.mouse.wheel input.
   await page.evaluate(() => window.dispatchEvent(new Event("blur")));
   await sleep(40);
-  const reset = await readGovernor(page);
-  if (
-    reset.gestureActive ||
-    Math.abs(reset.scrollY - reset.virtualY) > RAW_ALIGNMENT_EPSILON_PX
-  ) {
-    throw new Error(
-      `could not reset governor for programmatic setup ` +
-        `(active=${reset.gestureActive}, raw=${reset.scrollY}, ` +
-        `virtual=${reset.virtualY})`,
-    );
+
+  let sample = await readGovernor(page);
+  if (sample.gestureActive) {
+    throw new Error("could not clear gesture state before top reset");
   }
 
-  let low = 0;
-  let high = await page.evaluate(() => {
-    const root = document.scrollingElement || document.documentElement;
-    return Math.max(root.scrollHeight - window.innerHeight, 0);
+  await page.evaluate(() => {
+    window.scrollTo({ top: 0, behavior: "auto" });
   });
 
-  for (let index = 0; index < 24; index += 1) {
-    const y = (low + high) / 2;
-    await page.evaluate((nextY) => {
-      window.scrollTo({ top: nextY, behavior: "auto" });
-    }, y);
-    await sleep(20);
-    const sample = await readGovernor(page);
-    if (sample.gestureActive) {
-      throw new Error("programmatic setup was incorrectly attributed to a gesture");
+  const deadline = Date.now() + 3000;
+  while (Date.now() < deadline) {
+    sample = await readGovernor(page);
+    const physicalAtTop = Math.abs(sample.scrollY) <= RAW_ALIGNMENT_EPSILON_PX;
+    const rawAtTop = Math.abs(sample.rawY) <= RAW_ALIGNMENT_EPSILON_PX;
+    const virtualAtTop = Math.abs(sample.virtualY) <= RAW_ALIGNMENT_EPSILON_PX;
+    const clipAtTop = Math.abs(sample.clipT) <= DIAGNOSTIC_EPSILON;
+    const galleryAtTop = Math.abs(sample.gp) <= DIAGNOSTIC_EPSILON;
+    if (
+      !sample.gestureActive &&
+      physicalAtTop &&
+      rawAtTop &&
+      virtualAtTop &&
+      clipAtTop &&
+      galleryAtTop
+    ) {
+      return sample;
     }
-    if (sample.clipT < targetClipT) low = y;
-    else high = y;
+    await sleep(10);
   }
 
-  await page.evaluate((nextY) => {
-    window.scrollTo({ top: nextY, behavior: "auto" });
-  }, (low + high) / 2);
-  await sleep(40);
-  const result = await readGovernor(page);
-  if (Math.abs(result.clipT - targetClipT) > 0.003) {
-    throw new Error(
-      `could not seek to clipT=${targetClipT}; landed at ${result.clipT}`,
-    );
-  }
-  return result;
-}
-
-async function trustedWheel(page, amount, settleMs = intervalMs) {
-  const before = await readGovernor(page);
-  await page.mouse.wheel({ deltaY: amount });
-  const deadline = Date.now() + 1000;
-  let after = before;
-  do {
-    after = await afterInputDelay(page, settleMs);
-    const moved =
-      amount < 0
-        ? after.virtualY < before.virtualY
-        : after.virtualY > before.virtualY;
-    if (moved) return after;
-  } while (Date.now() < deadline);
-  return after;
-}
-
-async function trustedWheelBurst(page, { amount, durationMs }) {
-  const before = await readGovernor(page);
-  const deadline = Date.now() + durationMs;
-  let eventCount = 0;
-  let lastScheduledAt = null;
-  let maxScheduleGapMs = 0;
-  const pendingWheels = [];
-
-  // Do not await rAF or inspect WebGL state between wheel events. A headless
-  // WebGL frame can take >120ms, which would accidentally split this into many
-  // gestures and make the lock test meaningless.
-  do {
-    const scheduledAt = Date.now();
-    if (lastScheduledAt !== null) {
-      maxScheduleGapMs = Math.max(
-        maxScheduleGapMs,
-        scheduledAt - lastScheduledAt,
-      );
-    }
-    lastScheduledAt = scheduledAt;
-    // Intentionally do not await each CDP acknowledgement. Rendering can make
-    // an acknowledgement slower than the 120ms gesture quiet window even
-    // though the trusted input commands themselves are scheduled continuously.
-    pendingWheels.push(page.mouse.wheel({ deltaY: amount }));
-    eventCount += 1;
-    await sleep(intervalMs);
-  } while (Date.now() < deadline);
-
-  await Promise.all(pendingWheels);
-  await sleep(Math.max(intervalMs, 25));
-  const after = await readGovernor(page);
-  const elapsedSeconds = (after.now - before.now) / 1000;
-  const rate =
-    elapsedSeconds > 0
-      ? ((after.clipT - before.clipT) * VIDEO_DURATION_S) / elapsedSeconds
-      : 0;
-  return {
-    before,
-    after,
-    eventCount,
-    rate,
-    maxScheduleGapMs,
-  };
+  throw new Error(
+    `could not reset governor to top ` +
+      `(active=${sample.gestureActive}, scrollY=${sample.scrollY}, ` +
+      `rawY=${sample.rawY}, virtualY=${sample.virtualY}, ` +
+      `clipT=${sample.clipT}, gp=${sample.gp})`,
+  );
 }
 
 async function closeBrowserWithin(browserInstance, timeoutMs = 5000) {
@@ -264,122 +206,200 @@ try {
   const check = (condition, message) => {
     if (!condition) failures.push(message);
   };
+  const approximately = (actual, expected, tolerance) =>
+    Math.abs(actual - expected) <= tolerance;
 
-  // Scenic interval: a sustained stream of huge trusted deltas must advance the
-  // source clip no faster than real elapsed time.
-  await seekClipOutsideGesture(page, 0.2);
-  const scenic = await trustedWheelBurst(page, {
-    amount: deltaY,
-    durationMs: scenicBurstMs,
+  await resetToTop(page);
+  const documentEnd = await page.evaluate(() => {
+    const root = document.scrollingElement || document.documentElement;
+    return Math.max(root.scrollHeight - window.innerHeight, 0);
   });
-  check(
-    scenic.rate <= RATE_LIMIT + DIAGNOSTIC_EPSILON,
-    `sustained forward rate ${scenic.rate.toFixed(4)}x exceeds ${RATE_LIMIT}x`,
+  if (!Number.isFinite(documentEnd) || documentEnd <= 0) {
+    throw new Error(`document end is invalid (${documentEnd})`);
+  }
+  const hugeDelta = documentEnd + height;
+
+  // One oversized trusted event must cross the full video but may not spill
+  // into the gallery during the same gesture.
+  const boundary = await trustedWheelOnce(
+    page,
+    hugeDelta,
+    (after) =>
+      after.clipT >= 1 - DIAGNOSTIC_EPSILON &&
+      Math.abs(after.gp - VID_FLY_END) <= DIAGNOSTIC_EPSILON &&
+      after.discardedForwardPx > 1,
+    "huge boundary gesture",
   );
   check(
-    scenic.after.clipT > scenic.before.clipT + DIAGNOSTIC_EPSILON,
-    "sustained forward burst did not advance the clip",
+    approximately(boundary.before.clipT, 0, DIAGNOSTIC_EPSILON),
+    `boundary gesture did not start at clipT=0 (clipT=${boundary.before.clipT})`,
   );
   check(
-    scenic.maxScheduleGapMs < INPUT_QUIET_MS,
-    `trusted wheel scheduling split the burst (max gap ${scenic.maxScheduleGapMs}ms)`,
+    approximately(boundary.before.gp, 0, DIAGNOSTIC_EPSILON),
+    `boundary gesture did not start at gp=0 (gp=${boundary.before.gp})`,
+  );
+  check(
+    boundary.eventCount === 1,
+    `boundary story sent ${boundary.eventCount} trusted wheel events`,
+  );
+  check(
+    approximately(boundary.after.clipT, 1, DIAGNOSTIC_EPSILON),
+    `single boundary event did not reach clipT=1 (clipT=${boundary.after.clipT})`,
+  );
+  check(
+    approximately(boundary.after.gp, VID_FLY_END, DIAGNOSTIC_EPSILON),
+    `single boundary event escaped the seam (gp=${boundary.after.gp})`,
+  );
+  check(
+    boundary.after.virtualY > boundary.before.virtualY + 1,
+    "single boundary event did not advance virtual scroll",
+  );
+  check(
+    boundary.after.discardedForwardPx > 1,
+    "single boundary event did not discard gallery spillover",
+  );
+  check(
+    boundary.after.clipT - boundary.before.clipT >=
+      1 - 2 * DIAGNOSTIC_EPSILON,
+    "single boundary event did not cross the whole video",
   );
 
-  // Lifting/stopping must freeze immediately; no delayed catch-up is allowed.
-  const stoppedAt = scenic.after;
-  const afterStop = await waitForQuiet(page);
-  const stopDrift = Math.abs(afterStop.clipT - stoppedAt.clipT);
+  // With no further input, the held boundary must reanchor without debt or
+  // delayed motion.
+  const held = boundary.after;
+  const quiet = await waitForQuiet(page, 360);
+  const quietVirtualDrift = Math.abs(quiet.virtualY - held.virtualY);
+  const quietClipDrift = Math.abs(quiet.clipT - held.clipT);
+  const quietRawAlignment = Math.abs(quiet.scrollY - quiet.virtualY);
+  check(!quiet.gestureActive, "boundary gesture remained active after quiet");
   check(
-    stopDrift <= DIAGNOSTIC_EPSILON,
-    `clip drifted by ${stopDrift} after input stopped`,
+    quietRawAlignment <= RAW_ALIGNMENT_EPSILON_PX,
+    `quiet raw/virtual alignment error is ${quietRawAlignment}px`,
+  );
+  check(
+    quietVirtualDrift <= RAW_ALIGNMENT_EPSILON_PX,
+    `virtual scroll drifted by ${quietVirtualDrift}px without input`,
+  );
+  check(
+    quietClipDrift <= DIAGNOSTIC_EPSILON,
+    `clip drifted by ${quietClipDrift} without input`,
+  );
+  check(
+    approximately(quiet.gp, VID_FLY_END, DIAGNOSTIC_EPSILON),
+    `quiet boundary moved away from gp=0.4 (gp=${quiet.gp})`,
+  );
+  check(
+    quiet.discardedForwardPx <=
+      held.discardedForwardPx + DIAGNOSTIC_EPSILON,
+    "discarded distance increased while no input occurred",
   );
 
-  // A fresh burst receives only the normal first-event quantum. The idle time
-  // above cannot be converted into playback credit.
-  await seekClipOutsideGesture(page, 0.45);
-  const creditBefore = await readGovernor(page);
-  const creditAfter = await trustedWheel(page, deltaY, 25);
-  const creditedSourceSeconds =
-    Math.max(creditAfter.clipT - creditBefore.clipT, 0) * VIDEO_DURATION_S;
-  const firstEventAllowanceS = 1 / 60 + 0.004;
+  // No setup occurs between the boundary event and this new trusted gesture.
+  // A fresh gesture owns the gallery immediately and starts clean diagnostics.
+  const freshDelta = Math.max(height * 0.5, 300);
+  const fresh = await trustedWheelOnce(
+    page,
+    freshDelta,
+    (after) => after.gp > VID_FLY_END + DIAGNOSTIC_EPSILON,
+    "fresh gallery gesture",
+  );
+  const freshVirtualDelta = fresh.after.virtualY - fresh.before.virtualY;
   check(
-    creditedSourceSeconds <= firstEventAllowanceS,
-    `fresh burst banked ${creditedSourceSeconds.toFixed(4)}s of source time`,
+    approximately(fresh.before.gp, VID_FLY_END, DIAGNOSTIC_EPSILON),
+    `fresh gesture did not begin at gp=0.4 (gp=${fresh.before.gp})`,
+  );
+  check(
+    fresh.after.gp > VID_FLY_END + DIAGNOSTIC_EPSILON,
+    `fresh gesture did not enter the gallery (gp=${fresh.after.gp})`,
+  );
+  check(
+    freshVirtualDelta > 1,
+    `fresh gesture advanced virtual scroll by only ${freshVirtualDelta}px`,
+  );
+  check(
+    fresh.eventCount === 1,
+    `fresh story sent ${fresh.eventCount} trusted wheel events`,
+  );
+  check(
+    approximately(fresh.after.discardedForwardPx, 0, DIAGNOSTIC_EPSILON),
+    `fresh gesture retained ${fresh.after.discardedForwardPx}px of discarded distance`,
   );
 
-  // Reverse input is intentionally uncapped and must take effect on its first
-  // trusted event, even when it exceeds the forward first-event allowance.
-  await waitForQuiet(page);
-  await seekClipOutsideGesture(page, 0.55);
-  const reverseBefore = await readGovernor(page);
-  const reverseAfter = await trustedWheel(page, -deltaY, 25);
-  const reverseSourceSeconds =
-    (reverseBefore.clipT - reverseAfter.clipT) * VIDEO_DURATION_S;
-  check(
-    reverseAfter.clipT < reverseBefore.clipT - DIAGNOSTIC_EPSILON,
-    "negative burst did not reverse the clip immediately",
+  // Reverse from the resulting physical position, again without any setup
+  // seek. Reverse input is exact and does not inherit the old boundary gate.
+  await waitForQuiet(page, 360);
+  const reverseDelta = -(freshDelta + height * 0.5);
+  const reverse = await trustedWheelOnce(
+    page,
+    reverseDelta,
+    (after, before) => after.virtualY < before.virtualY - 1,
+    "reverse gesture",
+  );
+  const reverseRawDelta = reverse.after.rawY - reverse.before.rawY;
+  const reversePhysicalDelta =
+    reverse.after.scrollY - reverse.before.scrollY;
+  const reverseVirtualDelta =
+    reverse.after.virtualY - reverse.before.virtualY;
+  const reverseError = Math.abs(
+    Math.abs(reverseRawDelta) - Math.abs(reverseVirtualDelta),
   );
   check(
-    reverseSourceSeconds > 1 / 60,
-    `reverse moved only ${reverseSourceSeconds.toFixed(4)}s; expected uncapped movement`,
-  );
-
-  // The gesture that reaches the end of the video-card track stays locked there
-  // no matter how much more forward wheel input arrives.
-  await waitForQuiet(page);
-  await seekClipOutsideGesture(page, 0.9995);
-  const endBurst = await trustedWheelBurst(page, {
-    amount: deltaY,
-    durationMs: endBurstMs,
-  });
-  const held = endBurst.after;
-  check(
-    held.clipT >= 1 - DIAGNOSTIC_EPSILON,
-    `end-lock burst did not reach the clip end (clipT=${held.clipT})`,
+    reverseRawDelta < -1,
+    `reverse raw scroll moved by ${reverseRawDelta}px`,
   );
   check(
-    held.gp <= VID_FLY_END + DIAGNOSTIC_EPSILON,
-    `same gesture escaped into the gallery (gp=${held.gp})`,
+    reversePhysicalDelta < -1,
+    `reverse physical scroll moved by ${reversePhysicalDelta}px`,
   );
   check(
-    held.discardedForwardPx > 0,
-    "end-lock burst did not exercise discarded forward input",
+    reverseVirtualDelta < -1,
+    `reverse virtual scroll moved by ${reverseVirtualDelta}px`,
   );
   check(
-    endBurst.maxScheduleGapMs < INPUT_QUIET_MS,
-    `end-lock wheel scheduling split the burst ` +
-      `(max gap ${endBurst.maxScheduleGapMs}ms)`,
+    reverse.after.gp < reverse.before.gp - DIAGNOSTIC_EPSILON,
+    `reverse gesture did not decrease gallery progress ` +
+      `(gp=${reverse.before.gp} -> ${reverse.after.gp})`,
   );
-
-  // Once the quiet window has elapsed, a new trusted gesture owns the gallery.
-  await waitForQuiet(page);
-  const fresh = await trustedWheel(page, Math.max(deltaY / 2, 300), 25);
   check(
-    fresh.gp > VID_FLY_END + DIAGNOSTIC_EPSILON,
-    `fresh gesture did not enter the gallery (gp=${fresh.gp})`,
+    reverse.eventCount === 1,
+    `reverse story sent ${reverse.eventCount} trusted wheel events`,
+  );
+  check(
+    reverseError <= RAW_ALIGNMENT_EPSILON_PX,
+    `reverse raw/virtual distance error is ${reverseError}px`,
   );
 
+  console.log(`governor viewport=${width}x${height}`);
   console.log(
-    `governor viewport=${width}x${height} wheelEvents=${scenic.eventCount}`,
+    `  boundary events=${boundary.eventCount} ` +
+      `clip=${boundary.before.clipT.toFixed(0)}\u2192${boundary.after.clipT.toFixed(0)} ` +
+      `gp=${boundary.after.gp.toFixed(6)} ` +
+      `requestedDelta=${hugeDelta.toFixed(2)} ` +
+      `discardedPx=${boundary.after.discardedForwardPx.toFixed(2)}`,
   );
   console.log(
-    `  forward rate=${scenic.rate.toFixed(4)}x ` +
-      `max schedule gap=${scenic.maxScheduleGapMs}ms`,
+    `  quiet virtualDriftPx=${quietVirtualDrift.toFixed(6)} ` +
+      `clipDrift=${quietClipDrift.toFixed(8)} ` +
+      `rawAlignmentPx=${quietRawAlignment.toFixed(6)}`,
   );
   console.log(
-    `  discarded px=${held.discardedForwardPx.toFixed(2)} ` +
-      `stop drift=${stopDrift.toFixed(8)}`,
+    `  fresh gp=${fresh.before.gp.toFixed(6)}\u2192${fresh.after.gp.toFixed(6)} ` +
+      `virtualDeltaPx=${freshVirtualDelta.toFixed(2)}`,
   );
   console.log(
-    `  reverse delta=${reverseSourceSeconds.toFixed(4)}s ` +
-      `held gp=${held.gp.toFixed(6)} fresh gp=${fresh.gp.toFixed(6)}`,
+    `  reverse gp=${reverse.before.gp.toFixed(6)}\u2192${reverse.after.gp.toFixed(6)} ` +
+      `rawDeltaPx=${reverseRawDelta.toFixed(2)} ` +
+      `virtualDeltaPx=${reverseVirtualDelta.toFixed(2)} ` +
+      `errorPx=${reverseError.toFixed(6)}`,
   );
 
   if (failures.length) {
-    for (const failure of failures) console.error(`FAIL — ${failure}`);
+    for (const failure of failures) console.error(`FAIL \u2014 ${failure}`);
     process.exitCode = 1;
   } else {
-    console.log("PASS — native-speed cap, stop, reverse, and gallery lock");
+    console.log(
+      "PASS \u2014 boundary-only gate, debt-free quiet, reverse, and fresh gallery gesture",
+    );
   }
 } catch (error) {
   console.error("governor verifier failed:", error);
