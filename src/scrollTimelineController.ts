@@ -65,6 +65,7 @@ export interface ScrollTimelineControllerOptions {
 }
 
 export interface ScrollTimelineController {
+  syncReducedMotion(): void;
   dispose(): void;
 }
 
@@ -397,7 +398,12 @@ export function createScrollTimelineController(
   };
 
   const onTouchStart: ScrollTimelineEventListener = (event) => {
-    if (touchCount(event) <= 0 || touchActive) return;
+    if (touchCount(event) <= 0) return;
+    if (reducedMotion()) {
+      finishReducedMotionLifecycle();
+      return;
+    }
+    if (touchActive) return;
 
     if (touchMomentumActive) {
       clearTouchMomentumEndTimer();
@@ -434,6 +440,10 @@ export function createScrollTimelineController(
   };
 
   const onWheel: ScrollTimelineEventListener = () => {
+    if (reducedMotion()) {
+      finishReducedMotionLifecycle();
+      return;
+    }
     burstActive = true;
     beginExplicitGesture();
     endBurstAfterQuiet();
@@ -441,6 +451,10 @@ export function createScrollTimelineController(
 
   const onKeyDown: ScrollTimelineEventListener = (event) => {
     if (!isScrollingKey(event)) return;
+    if (reducedMotion()) {
+      finishReducedMotionLifecycle();
+      return;
+    }
     burstActive = true;
     beginExplicitGesture();
     endBurstAfterQuiet();
@@ -585,6 +599,10 @@ export function createScrollTimelineController(
   );
 
   return {
+    syncReducedMotion() {
+      if (disposed || !reducedMotion()) return;
+      finishReducedMotionLifecycle();
+    },
     dispose() {
       if (disposed) return;
       disposed = true;

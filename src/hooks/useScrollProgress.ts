@@ -5,6 +5,7 @@ import {
   writeScrollTimelineRefs,
 } from "../scrollTimelineController";
 import type {
+  ScrollTimelineController,
   ScrollTimelineEventTarget,
   ScrollTimelinePublication,
 } from "../scrollTimelineController";
@@ -64,6 +65,7 @@ export function useScrollTimelineRefs(
   const galleryRef = useRef(0);
   const virtualYRef = useRef(0);
   const reducedMotionRef = useRef(reducedMotion);
+  const controllerRef = useRef<ScrollTimelineController | null>(null);
   reducedMotionRef.current = reducedMotion;
 
   useEffect(() => {
@@ -100,12 +102,18 @@ export function useScrollTimelineRefs(
         window.__sg = diagnostic;
       },
     });
+    controllerRef.current = controller;
 
     return () => {
+      if (controllerRef.current === controller) controllerRef.current = null;
       controller.dispose();
       if (window.__sg === diagnostic) delete window.__sg;
     };
   }, []);
+
+  useEffect(() => {
+    controllerRef.current?.syncReducedMotion();
+  }, [reducedMotion]);
 
   return { scrollRef, galleryRef, virtualYRef };
 }

@@ -1340,6 +1340,34 @@ for (const f of FIGURES) {
     "controller reads the latest reduced-motion ref without listener churn",
   );
   ok(
+    /const\s+controllerRef\s*=\s*useRef<ScrollTimelineController\s*\|\s*null>\(null\)/.test(
+      scrollHookCode,
+    ) &&
+      /controllerRef\.current\s*=\s*controller/.test(mainScrollEffect) &&
+      /if\s*\(\s*controllerRef\.current\s*===\s*controller\s*\)\s*controllerRef\.current\s*=\s*null/.test(
+        mainScrollEffect,
+      ) &&
+      /useEffect\(\(\)\s*=>\s*\{\s*controllerRef\.current\?\.syncReducedMotion\(\)\s*;?\s*\}\s*,\s*\[reducedMotion\]\s*\)/.test(
+        scrollHookCode,
+      ),
+    "reduced-motion prop changes notify the mounted controller without reinstalling listeners",
+  );
+  const reducedMotionSyncBody = sourceBlock(
+    scrollControllerCode,
+    "syncReducedMotion() {",
+    "reduced-motion controller notification",
+  );
+  ok(
+    /export\s+interface\s+ScrollTimelineController\s*\{[\s\S]*syncReducedMotion\(\)\s*:\s*void/.test(
+      scrollControllerCode,
+    ) &&
+      /if\s*\(\s*disposed\s*\|\|\s*!reducedMotion\(\)\s*\)\s*return/.test(
+        reducedMotionSyncBody,
+      ) &&
+      /finishReducedMotionLifecycle\(\)/.test(reducedMotionSyncBody),
+    "controller notification immediately syncs only live reduced-motion controllers",
+  );
+  ok(
     (scrollControllerCode.match(
       /\.addEventListener\(\s*["']scroll["']/g,
     ) ?? [])
@@ -1496,6 +1524,36 @@ for (const f of FIGURES) {
     scrollControllerCode,
     "const onKeyDown:",
     "key burst",
+  );
+  ordered(
+    touchStartBody,
+    [
+      "if (reducedMotion())",
+      "finishReducedMotionLifecycle()",
+      "return",
+      "if (touchActive) return",
+    ],
+    "reduced-motion touchstart guard",
+  );
+  ordered(
+    wheelBody,
+    [
+      "if (reducedMotion())",
+      "finishReducedMotionLifecycle()",
+      "return",
+      "burstActive = true",
+    ],
+    "reduced-motion wheel guard",
+  );
+  ordered(
+    keyDownBody,
+    [
+      "if (reducedMotion())",
+      "finishReducedMotionLifecycle()",
+      "return",
+      "burstActive = true",
+    ],
+    "reduced-motion key guard",
   );
   ok(
     /(?:export\s+)?const\s+INPUT_QUIET_MS\s*=\s*120\s*;/.test(

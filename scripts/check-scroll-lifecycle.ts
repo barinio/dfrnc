@@ -240,6 +240,7 @@ function createHarness(initialY: number, initialReducedMotion = false) {
     latest,
     setReducedMotion(value: boolean) {
       reducedMotion = value;
+      controller.syncReducedMotion();
     },
   };
 }
@@ -844,12 +845,14 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
-// A reduced-motion scroll immediately direct-syncs and clears any live touch
-// momentum or wheel/key ownership.
+// A reduced-motion prop transition immediately direct-syncs and clears live
+// touch momentum and wheel/key ownership without waiting for scroll or quiet.
 {
-  const harness = createHarness(100);
+  const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller, setReducedMotion } = harness;
   environment.touchStart();
+  environment.scrollToRaw(bounds.endY + 200);
+  ok(latest().discardedForwardPx > 0, "pre-reduced fixture has boundary discard");
   environment.touchEnd();
   environment.wheel();
   eq(
@@ -858,24 +861,64 @@ for (const [label, begin] of [
     "pre-reduced fixture owns touch-momentum and wheel timers",
   );
 
-  setReducedMotion(true);
-  const directY = 250;
+  const directY = bounds.endY + 250;
+  environment.scrollY = directY;
   const scrollToCount = environment.scrollToCalls.length;
-  environment.scrollToRaw(directY);
-  eq(latest().virtualY, directY, "reduced scroll direct-syncs live momentum");
-  ok(!latest().gestureActive, "reduced scroll clears the shared gesture");
-  eq(environment.timers.size, 0, "reduced scroll clears every modality timer");
+  const publicationsBeforeFlip = harness.publications.length;
+  setReducedMotion(true);
+  eq(latest().virtualY, directY, "reduced flip immediately syncs live momentum rawY");
+  ok(!latest().gestureActive, "reduced flip immediately clears the shared gesture");
+  eq(environment.timers.size, 0, "reduced flip immediately clears every modality timer");
+  eq(latest().discardedForwardPx, 0, "reduced flip clears stale discard metrics");
+  eq(
+    harness.publications.length,
+    publicationsBeforeFlip + 1,
+    "reduced flip publishes one immediate direct sync",
+  );
   eq(
     environment.scrollToCalls.length,
     scrollToCount,
-    "reduced scroll performs no backward reanchor",
+    "reduced flip performs no backward reanchor",
   );
 
   setReducedMotion(false);
-  environment.scrollToRaw(300);
-  eq(latest().virtualY, 300, "post-reduced unattributed movement remains exact");
+  environment.scrollToRaw(directY + 50);
+  eq(
+    latest().virtualY,
+    directY + 50,
+    "post-reduced unattributed movement remains exact",
+  );
   ok(!latest().gestureActive, "post-reduced movement has no stale modality ownership");
   controller.dispose();
+}
+
+// Reduced-mode explicit inputs are direct and timer-free even when no matching
+// scroll event follows the input notification.
+{
+  const failures: string[] = [];
+  for (const [label, dispatch] of [
+    ["wheel", (environment: FakeEnvironment) => environment.wheel()],
+    ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
+    ["touch", (environment: FakeEnvironment) => environment.touchStart()],
+  ] as const) {
+    const harness = createHarness(100, true);
+    const { environment, latest, controller } = harness;
+    dispatch(environment);
+    const snapshot = latest();
+    if (
+      snapshot.gestureActive ||
+      environment.timers.size !== 0 ||
+      snapshot.discardedForwardPx !== 0
+    ) {
+      failures.push(
+        `${label} gestureActive=${snapshot.gestureActive} timers=${environment.timers.size} discard=${snapshot.discardedForwardPx}`,
+      );
+    }
+    controller.dispose();
+  }
+  if (failures.length > 0) {
+    throw new Error(`reduced explicit input must stay idle: ${failures.join("; ")}`);
+  }
 }
 
 // A reduced-motion rerender changes live semantics through the getter without
@@ -902,9 +945,9 @@ for (const [label, begin] of [
   controller.dispose();
 }
 
-// If reduced motion flips after a capped sample but before touchend, terminal
-// handling must direct-sync to the current raw position. Reanchoring backward
-// to the stale governed cursor would violate reduced-motion semantics.
+// If reduced motion flips after a boundary sample but before touchend, the prop
+// notification direct-syncs immediately and makes the later terminal event a
+// no-op. Reanchoring backward would violate reduced-motion semantics.
 {
   const harness = createHarness(bounds.endY - 100);
   const { environment, latest, controller, setReducedMotion } = harness;
@@ -915,19 +958,25 @@ for (const [label, begin] of [
   const scrollToCount = environment.scrollToCalls.length;
 
   setReducedMotion(true);
+  const publicationsAfterFlip = harness.publications.length;
   environment.touchEnd();
   eq(
     latest().virtualY,
     dirtyRawY,
-    "dirty reduced-motion touchend synchronizes directly to raw",
+    "dirty reduced-motion prop sync synchronizes directly to raw",
   );
-  ok(!latest().gestureActive, "dirty reduced-motion touchend clears gesture state");
+  ok(!latest().gestureActive, "dirty reduced-motion prop sync clears gesture state");
+  eq(
+    harness.publications.length,
+    publicationsAfterFlip,
+    "touchend after reduced sync is a no-op",
+  );
   eq(
     environment.scrollToCalls.length,
     scrollToCount,
-    "dirty reduced-motion touchend performs no backward reanchor",
+    "dirty reduced-motion prop sync performs no backward reanchor",
   );
-  eq(environment.timers.size, 0, "dirty reduced-motion finish clears lifecycle timers");
+  eq(environment.timers.size, 0, "dirty reduced-motion sync clears lifecycle timers");
 
   setReducedMotion(false);
   environment.scrollToRaw(bounds.endY - 100);
@@ -1084,7 +1133,7 @@ for (const [label, prepare] of [
 // and no later event can publish or mutate the timeline.
 {
   const harness = createHarness(100);
-  const { environment, publications, controller } = harness;
+  const { environment, publications, controller, setReducedMotion } = harness;
   environment.wheel();
   environment.touchStart();
   environment.touchEnd();
@@ -1096,6 +1145,8 @@ for (const [label, prepare] of [
   eq(environment.documentTarget.unmatchedRemoveCount, 0, "document capture/options match");
   eq(environment.timers.size, 0, "unmount clears every timer");
   const publicationCount = publications.length;
+  environment.scrollY = 400;
+  setReducedMotion(true);
   environment.touchStart();
   environment.wheel();
   environment.keyDown("ArrowDown");
