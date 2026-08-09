@@ -140,19 +140,6 @@ class FakeTimers {
     this.now = target;
   }
 
-  // Model one browser task: run only the oldest timer that was already due at
-  // the target time, leaving timers scheduled by its callback for a later task.
-  advanceOneTask(ms: number) {
-    const target = this.now + ms;
-    const next = [...this.timers.values()]
-      .filter((timer) => timer.at <= target)
-      .sort((a, b) => a.at - b.at || a.id - b.id)[0];
-    this.now = target;
-    if (!next) return;
-    this.timers.delete(next.id);
-    next.callback();
-  }
-
   get size(): number {
     return this.timers.size;
   }
@@ -205,8 +192,8 @@ class FakeEnvironment implements ScrollTimelineControllerEnvironment {
     });
   }
 
-  wheel() {
-    this.windowTarget.dispatch("wheel");
+  wheel(deltaY = 0) {
+    this.windowTarget.dispatch("wheel", { deltaY });
   }
 
   keyDown(
@@ -230,9 +217,14 @@ class FakeEnvironment implements ScrollTimelineControllerEnvironment {
   }
 }
 
-function createHarness(initialY: number, initialReducedMotion = false) {
+function createHarness(
+  initialY: number,
+  initialReducedMotion = false,
+  initialMaxScrollY = 100_000,
+) {
   const environment = new FakeEnvironment();
   environment.scrollY = initialY;
+  environment.maxScrollY = initialMaxScrollY;
   let reducedMotion = initialReducedMotion;
   const publications: ScrollTimelinePublication[] = [];
   const controller = createScrollTimelineController({
@@ -260,6 +252,7 @@ function createHarness(initialY: number, initialReducedMotion = false) {
 
 const IH = 844;
 const bounds = videoGovernorBounds(IH);
+const documentEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
 
 // Runtime sentinel: this catches swapped or raw-scroll-backed returned refs.
 {
@@ -420,7 +413,7 @@ const bounds = videoGovernorBounds(IH);
   environment.touchEnd();
   environment.scrollToRaw(bounds.endY + 200);
   environment.timers.advance(20);
-  environment.wheel();
+  environment.wheel(100);
   environment.timers.advance(40);
   eq(environment.timers.size, 2, "wheel and old touch momentum own two timers");
 
@@ -448,7 +441,7 @@ const bounds = videoGovernorBounds(IH);
 // First direct touch contact also supersedes a wheel/key-only reducer gesture.
 // It starts clean at the seam without changing the burst's original deadline.
 for (const [label, beginBurst] of [
-  ["wheel", (environment: FakeEnvironment) => environment.wheel()],
+  ["wheel", (environment: FakeEnvironment) => environment.wheel(300)],
   ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
 ] as const) {
   const harness = createHarness(bounds.endY - 100);
@@ -494,11 +487,71 @@ for (const [label, beginBurst] of [
   controller.dispose();
 }
 
-// A delayed default scroll remains burst-attributed when the 120ms quiet task
-// becomes runnable first. The settle task yields one browser task so queued
-// native scroll can replace it with a fresh 120ms quiet window.
+// First touch contact cancels an outstanding default-scroll expectation while
+// preserving the burst's already-running deadline. Direct touch publication
+// cannot move that deadline or leave burst ownership behind.
 for (const [label, beginBurst] of [
-  ["wheel", (environment: FakeEnvironment) => environment.wheel()],
+  ["wheel", (environment: FakeEnvironment) => environment.wheel(100)],
+  ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
+] as const) {
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  beginBurst(environment);
+  environment.timers.advance(60);
+  environment.touchStart();
+  eq(
+    environment.timers.size,
+    1,
+    `${label} takeover preserves the original timer`,
+  );
+  environment.scrollToRaw(150);
+  eq(latest().virtualY, 150, `${label} takeover touch scroll remains exact`);
+  environment.timers.advance(59);
+  ok(latest().gestureActive, `${label} original deadline remains live at 119ms`);
+  eq(
+    environment.timers.size,
+    1,
+    `${label} direct touch does not rearm burst quiet`,
+  );
+  environment.timers.advance(1);
+  ok(latest().gestureActive, `${label} quiet cannot finish direct touch`);
+  eq(
+    environment.timers.size,
+    0,
+    `${label} ownership clears on its original deadline`,
+  );
+  environment.touchEnd();
+  environment.timers.advance(120);
+  ok(!latest().gestureActive, `${label} takeover has no lingering burst ownership`);
+  controller.dispose();
+}
+
+// If input quiet elapsed while waiting, touch takeover releases the timerless
+// burst immediately so the new touch gesture cannot become indefinite.
+for (const [label, beginBurst] of [
+  ["wheel", (environment: FakeEnvironment) => environment.wheel(100)],
+  ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
+] as const) {
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  beginBurst(environment);
+  environment.timers.advance(1_000);
+  ok(latest().gestureActive, `${label} fixture is awaiting without a timer`);
+  eq(environment.timers.size, 0, `${label} fixture owns no fallback timer`);
+  environment.touchStart();
+  eq(environment.timers.size, 0, `${label} expired takeover invents no burst timer`);
+  environment.touchEnd();
+  eq(environment.timers.size, 1, `${label} expired takeover owns only touch quiet`);
+  environment.timers.advance(120);
+  ok(!latest().gestureActive, `${label} expired takeover finishes with touch quiet`);
+  controller.dispose();
+}
+
+// A delayed browser-default scroll remains owned even after the input quiet
+// deadline. Expected native publication, rather than task ordering, keeps the
+// burst alive without a grace timer.
+for (const [label, beginBurst] of [
+  ["wheel", (environment: FakeEnvironment) => environment.wheel(300)],
   ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
 ] as const) {
   const harness = createHarness(bounds.endY - 100);
@@ -506,13 +559,9 @@ for (const [label, beginBurst] of [
   beginBurst(environment);
   eq(environment.timers.size, 1, `${label} begins with one quiet timer`);
 
-  environment.timers.advanceOneTask(120);
-  eq(
-    Number(latest().gestureActive),
-    1,
-    `${label} quiet callback retains ownership for the settle task`,
-  );
-  eq(environment.timers.size, 1, `${label} quiet callback leaves one settle task`);
+  environment.timers.advance(1_000);
+  ok(latest().gestureActive, `${label} awaits its delayed native scroll`);
+  eq(environment.timers.size, 0, `${label} awaiting scroll owns no grace timer`);
 
   environment.scrollToRaw(bounds.endY + 200);
   eq(latest().virtualY, bounds.endY, `delayed ${label} scroll clamps at the seam`);
@@ -522,39 +571,185 @@ for (const [label, beginBurst] of [
   eq(
     environment.timers.size,
     1,
-    `delayed ${label} scroll replaces settle with fresh quiet`,
+    `delayed ${label} scroll starts fresh quiet from publication`,
   );
 
-  environment.timers.advanceOneTask(120);
-  ok(latest().gestureActive, `${label} fresh quiet yields to one settle task`);
-  eq(environment.timers.size, 1, `${label} fresh quiet owns one settle task`);
-  environment.timers.advanceOneTask(0);
-  ok(!latest().gestureActive, `${label} settles in the bounded next task`);
+  environment.timers.advance(119);
+  ok(latest().gestureActive, `${label} remains owned through 119ms actual quiet`);
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, `${label} finishes at 120ms actual quiet`);
   eq(environment.scrollToCalls.length, 1, `${label} dirty finish reanchors once`);
   eq(environment.scrollY, bounds.endY, `${label} physical scroll reanchors to seam`);
   eq(latest().virtualY, bounds.endY, `${label} virtual scroll remains at seam`);
   controller.dispose();
 }
 
-// With no native scroll queued, two-phase burst completion still finishes in
-// the immediately following task rather than leaving ownership active.
+// Every supported key maps to the correct physical direction and awaits when
+// movement is possible. Cleanup proves an awaited/no-timer burst is terminal.
+for (const [key, shiftKey, direction] of [
+  ["ArrowDown", false, 1],
+  ["PageDown", false, 1],
+  ["End", false, 1],
+  [" ", false, 1],
+  ["Spacebar", false, 1],
+  ["ArrowUp", false, -1],
+  ["PageUp", false, -1],
+  ["Home", false, -1],
+  [" ", true, -1],
+  ["Spacebar", true, -1],
+] as const) {
+  const harness = createHarness(direction > 0 ? 100 : 1_000);
+  const { environment, latest, controller } = harness;
+  environment.keyDown(key, { shiftKey });
+  environment.timers.advance(1_000);
+  ok(
+    latest().gestureActive,
+    `${shiftKey ? "shift-" : ""}${key} awaits native movement in its direction`,
+  );
+  eq(environment.timers.size, 0, `${key} awaited ownership has no grace timer`);
+  environment.windowTarget.dispatch("blur");
+  ok(!latest().gestureActive, `${key} awaited ownership is interruptible`);
+  controller.dispose();
+}
+
+// Inputs that cannot change the physical scroll position never await a native
+// publication. This includes zero wheel intent and every directional bound.
+for (const [label, initialY, maxScrollY, dispatch] of [
+  [
+    "zero wheel",
+    100,
+    100_000,
+    (environment: FakeEnvironment) => environment.wheel(0),
+  ],
+  [
+    "forward wheel at end",
+    documentEndY,
+    documentEndY,
+    (environment: FakeEnvironment) => environment.wheel(100),
+  ],
+  [
+    "reverse wheel at top",
+    0,
+    100_000,
+    (environment: FakeEnvironment) => environment.wheel(-100),
+  ],
+  [
+    "ArrowDown at end",
+    documentEndY,
+    documentEndY,
+    (environment: FakeEnvironment) => environment.keyDown("ArrowDown"),
+  ],
+  [
+    "PageDown at end",
+    documentEndY,
+    documentEndY,
+    (environment: FakeEnvironment) => environment.keyDown("PageDown"),
+  ],
+  [
+    "End at end",
+    documentEndY,
+    documentEndY,
+    (environment: FakeEnvironment) => environment.keyDown("End"),
+  ],
+  [
+    "space at end",
+    documentEndY,
+    documentEndY,
+    (environment: FakeEnvironment) => environment.keyDown(" "),
+  ],
+  [
+    "ArrowUp at top",
+    0,
+    100_000,
+    (environment: FakeEnvironment) => environment.keyDown("ArrowUp"),
+  ],
+  [
+    "PageUp at top",
+    0,
+    100_000,
+    (environment: FakeEnvironment) => environment.keyDown("PageUp"),
+  ],
+  [
+    "Home at top",
+    0,
+    100_000,
+    (environment: FakeEnvironment) => environment.keyDown("Home"),
+  ],
+  [
+    "shift-space at top",
+    0,
+    100_000,
+    (environment: FakeEnvironment) =>
+      environment.keyDown(" ", { shiftKey: true }),
+  ],
+] as const) {
+  const harness = createHarness(initialY, false, maxScrollY);
+  const { environment, latest, controller } = harness;
+  dispatch(environment);
+  eq(environment.timers.size, 1, `${label} starts ordinary burst quiet`);
+  environment.timers.advance(119);
+  ok(latest().gestureActive, `${label} stays active through 119ms quiet`);
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, `${label} finishes at exactly 120ms`);
+  eq(
+    environment.timers.size,
+    0,
+    `${label} leaves no timer or awaited ownership`,
+  );
+  controller.dispose();
+}
+
+// A prompt native publication consumes awaited ownership and replaces the
+// input deadline with one ordinary 120ms quiet timer from that publication.
+for (const [label, begin] of [
+  ["wheel", (environment: FakeEnvironment) => environment.wheel(100)],
+  ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
+] as const) {
+  const initialY = bounds.startY + 500;
+  const harness = createHarness(initialY);
+  const { environment, latest, controller } = harness;
+  begin(environment);
+  environment.timers.advance(100);
+  environment.scrollToRaw(initialY + 100);
+  eq(latest().virtualY, initialY + 100, `${label} applies prompt native distance`);
+  eq(environment.timers.size, 1, `${label} prompt scroll owns one fresh timer`);
+  environment.timers.advance(20);
+  ok(latest().gestureActive, `${label} old input deadline was replaced`);
+  environment.timers.advance(99);
+  ok(latest().gestureActive, `${label} remains active through 119ms scroll quiet`);
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, `${label} finishes 120ms after prompt publication`);
+  eq(environment.timers.size, 0, `${label} prompt finish leaves no timer`);
+  controller.dispose();
+}
+
+// Later burst inputs recompute expected movement instead of retaining stale
+// awaited state from an earlier event.
 {
   const harness = createHarness(100);
   const { environment, latest, controller } = harness;
-  environment.wheel();
-  environment.timers.advanceOneTask(120);
-  ok(latest().gestureActive, "no-scroll burst remains active for its settle task");
-  eq(environment.timers.size, 1, "no-scroll burst owns one settle task");
-  environment.timers.advanceOneTask(0);
-  ok(!latest().gestureActive, "no-scroll burst finishes in the next task");
-  eq(environment.timers.size, 0, "no-scroll burst leaves no timer");
+  environment.wheel(100);
+  environment.timers.advance(60);
+  environment.wheel(0);
+  environment.timers.advance(119);
+  ok(latest().gestureActive, "zero wheel replacement preserves its own quiet window");
+  environment.timers.advance(1);
+  ok(!latest().gestureActive, "zero wheel replacement clears stale awaited ownership");
+
+  environment.wheel(0);
+  environment.timers.advance(60);
+  environment.wheel(100);
+  environment.timers.advance(1_000);
+  ok(latest().gestureActive, "later directional wheel establishes fresh awaited ownership");
+  eq(environment.timers.size, 0, "fresh awaited ownership uses no grace timer");
+  environment.windowTarget.dispatch("blur");
   controller.dispose();
 }
 
 // Wheel and scrolling-key bursts end at 120ms, and an aligned interior finish
 // does not quarantine later forward movement.
 for (const [label, begin] of [
-  ["wheel", (environment: FakeEnvironment) => environment.wheel()],
+  ["wheel", (environment: FakeEnvironment) => environment.wheel(100)],
   ["key", (environment: FakeEnvironment) => environment.keyDown("ArrowDown")],
 ] as const) {
   const initialY = bounds.startY + 500;
@@ -578,7 +773,7 @@ for (const [label, begin] of [
 {
   const harness = createHarness(100);
   const { environment, latest, publications, controller } = harness;
-  environment.wheel();
+  environment.wheel(100);
   environment.timers.advance(60);
   environment.touchStart();
   const publicationsBeforeLift = publications.length;
@@ -610,7 +805,7 @@ for (const [label, begin] of [
   environment.touchStart();
   environment.touchEnd();
   environment.timers.advance(60);
-  environment.wheel();
+  environment.wheel(100);
   eq(environment.timers.size, 2, "touch then wheel owns two independent timers");
   const publicationsBeforeTouchQuiet = publications.length;
   environment.timers.advance(60);
@@ -636,7 +831,7 @@ for (const [label, begin] of [
   const harness = createHarness(100);
   const { environment, latest, controller } = harness;
   environment.touchStart();
-  environment.wheel();
+  environment.wheel(100);
   environment.timers.advance(120);
   ok(latest().gestureActive, "wheel quiet does not finish active direct touch");
   environment.scrollToRaw(150);
@@ -1114,6 +1309,48 @@ for (const [label, begin] of [
 
 // Blur and hidden visibility reconcile and cancel both active and suppressed
 // lifecycles, leaving no timer or stale quarantine behind.
+for (const [label, beginBurst, interrupt] of [
+  [
+    "reduced",
+    (environment: FakeEnvironment) => environment.wheel(100),
+    (harness: ReturnType<typeof createHarness>) => harness.setReducedMotion(true),
+  ],
+  [
+    "blur",
+    (environment: FakeEnvironment) => environment.keyDown("ArrowDown"),
+    (harness: ReturnType<typeof createHarness>) => {
+      harness.environment.windowTarget.dispatch("blur");
+    },
+  ],
+  [
+    "hidden",
+    (environment: FakeEnvironment) => environment.wheel(100),
+    (harness: ReturnType<typeof createHarness>) => {
+      harness.environment.visibilityState = "hidden";
+      harness.environment.documentTarget.dispatch("visibilitychange");
+    },
+  ],
+  [
+    "width resize",
+    (environment: FakeEnvironment) => environment.keyDown("ArrowDown"),
+    (harness: ReturnType<typeof createHarness>) => {
+      harness.environment.innerWidth += 1;
+      harness.environment.resize();
+    },
+  ],
+] as const) {
+  const harness = createHarness(100);
+  const { environment, latest, controller } = harness;
+  beginBurst(environment);
+  environment.timers.advance(1_000);
+  ok(latest().gestureActive, `${label} fixture awaits native scroll`);
+  eq(environment.timers.size, 0, `${label} fixture has no grace timer`);
+  interrupt(harness);
+  ok(!latest().gestureActive, `${label} clears awaited burst ownership`);
+  eq(environment.timers.size, 0, `${label} leaves no lifecycle timer`);
+  controller.dispose();
+}
+
 for (const [label, interrupt] of [
   [
     "blur",
@@ -1250,6 +1487,21 @@ for (const [label, prepare] of [
 
 // Disposal is a real unmount: capture-compatible listener removals, no timers,
 // and no later event can publish or mutate the timeline.
+{
+  const harness = createHarness(100);
+  const { environment, latest, publications, controller } = harness;
+  environment.wheel(100);
+  environment.timers.advance(1_000);
+  ok(latest().gestureActive, "dispose fixture awaits native scroll");
+  eq(environment.timers.size, 0, "dispose fixture has no grace timer");
+  const publicationCount = publications.length;
+  controller.dispose();
+  eq(environment.timers.size, 0, "dispose leaves awaited ownership timer-free");
+  environment.scrollToRaw(200);
+  environment.timers.advance(1_000);
+  eq(publications.length, publicationCount, "disposed awaited scroll publishes nothing");
+}
+
 {
   const harness = createHarness(100);
   const { environment, publications, controller, setReducedMotion } = harness;

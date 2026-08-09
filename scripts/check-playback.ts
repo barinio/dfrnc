@@ -1420,8 +1420,9 @@ for (const f of FIGURES) {
     !/clearTouchMomentumEndTimer\(\)/.test(sameWidthResizeBody) &&
       !/touchMomentumActive\s*=\s*false/.test(sameWidthResizeBody) &&
       !/clearBurstEndTimer\(\)/.test(sameWidthResizeBody) &&
-      !/burstActive\s*=\s*false/.test(sameWidthResizeBody),
-    "height-only resize preserves live touch momentum and burst ownership",
+      !/burstActive\s*=\s*false/.test(sameWidthResizeBody) &&
+      !/burstAwaitsNativeScroll\s*=\s*false/.test(sameWidthResizeBody),
+    "height-only resize preserves live touch momentum and awaited burst ownership",
   );
   for (const retiredGovernorBudget of [
     "VIDEO_DURATION_S",
@@ -1500,10 +1501,25 @@ for (const f of FIGURES) {
     "const endBurstAfterQuiet =",
     "burst quiet timer",
   );
-  const burstSettleBody = sourceBlock(
+  const beginBurstBody = sourceBlock(
     scrollControllerCode,
-    "const settleBurstAfterQuiet =",
-    "burst settle timer",
+    "const beginBurst =",
+    "burst begin",
+  );
+  const wheelIntentBody = sourceBlock(
+    scrollControllerCode,
+    "function wheelScrollIntent",
+    "wheel intent",
+  );
+  const keyIntentBody = sourceBlock(
+    scrollControllerCode,
+    "function keyScrollIntent",
+    "key intent",
+  );
+  const physicalScrollBody = sourceBlock(
+    scrollControllerCode,
+    "const physicalScrollCanMove =",
+    "physical scroll room",
   );
   const touchMomentumQuietBody = sourceBlock(
     scrollControllerCode,
@@ -1546,7 +1562,7 @@ for (const f of FIGURES) {
       "if (reducedMotion())",
       "finishReducedMotionLifecycle()",
       "return",
-      "burstActive = true",
+      "beginBurst(wheelScrollIntent(event))",
     ],
     "reduced-motion wheel guard",
   );
@@ -1556,7 +1572,7 @@ for (const f of FIGURES) {
       "if (reducedMotion())",
       "finishReducedMotionLifecycle()",
       "return",
-      "burstActive = true",
+      "beginBurst(keyScrollIntent(event))",
     ],
     "reduced-motion key guard",
   );
@@ -1567,15 +1583,61 @@ for (const f of FIGURES) {
       /environment\.setTimeout\([\s\S]*INPUT_QUIET_MS\)/.test(
         burstQuietBody,
       ) &&
-      /settleBurstAfterQuiet\(\)/.test(burstQuietBody) &&
-      !/burstActive\s*=\s*false/.test(burstQuietBody) &&
-      /burstEndTimer\s*=\s*environment\.setTimeout/.test(burstSettleBody) &&
-      /\},\s*0\s*\)/.test(burstSettleBody) &&
-      /burstActive\s*=\s*false/.test(burstSettleBody) &&
-      /finishGestureIfIdle\(\)/.test(burstSettleBody) &&
-      /endBurstAfterQuiet\(\)/.test(wheelBody) &&
-      /endBurstAfterQuiet\(\)/.test(keyDownBody),
-    "wheel and key bursts yield one settle task after exactly 120ms quiet",
+      /burstEndTimer\s*=\s*null/.test(burstQuietBody) &&
+      /if\s*\(\s*burstAwaitsNativeScroll\s*\)\s*return/.test(
+        burstQuietBody,
+      ) &&
+      /burstAwaitsNativeScroll\s*=\s*false/.test(burstQuietBody) &&
+      /burstActive\s*=\s*false/.test(burstQuietBody) &&
+      /finishGestureIfIdle\(\)/.test(burstQuietBody) &&
+      /beginBurst\(wheelScrollIntent\(event\)\)/.test(wheelBody) &&
+      /beginBurst\(keyScrollIntent\(event\)\)/.test(keyDownBody),
+    "wheel and key quiet releases only after expected native publication",
+  );
+  ok(
+    /const\s+deltaY\s*=\s*event\.deltaY/.test(wheelIntentBody) &&
+      /Number\.isFinite\(deltaY\)/.test(wheelIntentBody) &&
+      /deltaY\s*===\s*0/.test(wheelIntentBody) &&
+      /deltaY\s*>\s*0\s*\?\s*1\s*:\s*-1/.test(wheelIntentBody),
+    "wheel awaited ownership follows finite nonzero vertical intent",
+  );
+  ok(
+    /key\s*===\s*["'] ["']\s*\|\|\s*key\s*===\s*["']Spacebar["']/.test(
+      keyIntentBody,
+    ) &&
+      /event\.shiftKey\s*\?\s*-1\s*:\s*1/.test(keyIntentBody) &&
+      /\[\s*["']ArrowDown["']\s*,\s*["']PageDown["']\s*,\s*["']End["']\s*\]/.test(
+        keyIntentBody,
+      ) &&
+      /\[\s*["']ArrowUp["']\s*,\s*["']PageUp["']\s*,\s*["']Home["']\s*\]/.test(
+        keyIntentBody,
+      ),
+    "scrolling keys map forward and reverse default-scroll intent",
+  );
+  ok(
+    /const\s+rawY\s*=\s*environment\.readScrollY\(\)/.test(
+      physicalScrollBody,
+    ) &&
+      /direction\s*===\s*0/.test(physicalScrollBody) &&
+      /direction\s*>\s*0/.test(physicalScrollBody) &&
+      /rawY\s*<\s*safeDocumentEnd\(environment\)/.test(
+        physicalScrollBody,
+      ) &&
+      /rawY\s*>\s*0/.test(physicalScrollBody),
+    "awaited ownership requires physical room in the intended direction",
+  );
+  ordered(
+    beginBurstBody,
+    [
+      "burstAwaitsNativeScroll =",
+      "!touchActive",
+      "!touchMomentumActive",
+      "physicalScrollCanMove(direction)",
+      "burstActive = true",
+      "beginExplicitGesture()",
+      "endBurstAfterQuiet()",
+    ],
+    "each burst input recomputes expected native-scroll ownership",
   );
   ok(
     /let\s+touchActive\s*=\s*false/.test(scrollControllerCode) &&
@@ -1584,10 +1646,13 @@ for (const f of FIGURES) {
         scrollControllerCode,
       ) &&
       /let\s+burstActive\s*=\s*false/.test(scrollControllerCode) &&
+      /let\s+burstAwaitsNativeScroll\s*=\s*false/.test(
+        scrollControllerCode,
+      ) &&
       /let\s+burstEndTimer\s*:\s*number\s*\|\s*null\s*=\s*null/.test(
         scrollControllerCode,
       ),
-    "direct touch, touch momentum, and wheel/key burst ownership are independent",
+    "direct touch, touch momentum, burst, and awaited native-scroll ownership are explicit",
   );
   ok(
     /clearTouchMomentumEndTimer\(\)/.test(touchMomentumQuietBody) &&
@@ -1632,13 +1697,20 @@ for (const f of FIGURES) {
       /clearExpectedReanchor\(\)/.test(priorGestureFinishBody) &&
       /selfReanchorPending\s*=\s*false/.test(priorGestureFinishBody) &&
       !/clearBurstEndTimer\(\)/.test(touchStartBody) &&
-      !/burstActive\s*=\s*false/.test(touchStartBody) &&
+      /if\s*\(\s*burstAwaitsNativeScroll\s*\)/.test(touchStartBody) &&
+      /burstAwaitsNativeScroll\s*=\s*false/.test(touchStartBody) &&
+      /if\s*\(\s*burstEndTimer\s*===\s*null\s*\)\s*burstActive\s*=\s*false/.test(
+        touchStartBody,
+      ) &&
       !/endBurstAfterQuiet\(\)/.test(touchStartBody),
-    "first touch finalizes any prior reducer gesture without disturbing wheel/key ownership",
+    "first touch clears expected native scroll without moving a live burst deadline",
   );
   ordered(
     touchStartBody,
     [
+      "if (burstAwaitsNativeScroll)",
+      "burstAwaitsNativeScroll = false",
+      "if (burstEndTimer === null) burstActive = false",
       "if (touchMomentumActive)",
       "touchMomentumActive = false",
       "if (state.gestureActive)",
@@ -1709,10 +1781,10 @@ for (const f of FIGURES) {
     "reduced-motion scroll clears live modality ownership before direct sync",
   );
   ok(
-    /if\s*\(\s*burstActive\s*&&\s*!touchActive\s*&&\s*!touchMomentumActive\s*\)\s*\{\s*endBurstAfterQuiet\(\)/.test(
+    /if\s*\(\s*burstActive\s*&&\s*!touchActive\s*&&\s*!touchMomentumActive\s*\)\s*\{\s*burstAwaitsNativeScroll\s*=\s*false\s*;\s*endBurstAfterQuiet\(\)/.test(
       onScrollBody,
     ),
-    "burst-only scroll publication replaces pending settle with fresh quiet",
+    "burst-only scroll publication consumes expected ownership and starts fresh quiet",
   );
   ordered(
     onScrollBody,
@@ -1721,6 +1793,7 @@ for (const f of FIGURES) {
       "applyScrollSample(",
       "publishStep(step)",
       "if (burstActive && !touchActive && !touchMomentumActive)",
+      "burstAwaitsNativeScroll = false",
       "endBurstAfterQuiet()",
       "if (touchMomentumActive) endTouchMomentumAfterQuiet()",
       "if (!state.suppressForward) return",
@@ -1778,6 +1851,7 @@ for (const f of FIGURES) {
       /touchActive\s*=\s*false/.test(reducedFinishBody) &&
       /touchMomentumActive\s*=\s*false/.test(reducedFinishBody) &&
       /burstActive\s*=\s*false/.test(reducedFinishBody) &&
+      /burstAwaitsNativeScroll\s*=\s*false/.test(reducedFinishBody) &&
       /rawY:\s*environment\.readScrollY\(\)/.test(reducedFinishBody) &&
       /maxScrollY:\s*safeDocumentEnd\(environment\)/.test(
         reducedFinishBody,
@@ -1828,15 +1902,17 @@ for (const f of FIGURES) {
   );
   ok(
     /clearTouchMomentumEndTimer\(\)/.test(interruptedFinishBody) &&
-      /touchMomentumActive\s*=\s*false/.test(interruptedFinishBody),
-    "blur and hidden reset clear touch momentum timer and ownership",
+      /touchMomentumActive\s*=\s*false/.test(interruptedFinishBody) &&
+      /burstAwaitsNativeScroll\s*=\s*false/.test(interruptedFinishBody),
+    "blur and hidden reset clear touch momentum and awaited burst ownership",
   );
   ok(
     /clearTouchMomentumEndTimer\(\)/.test(resizeBody) &&
       /touchMomentumActive\s*=\s*false/.test(resizeBody) &&
       /clearBurstEndTimer\(\)/.test(resizeBody) &&
-      /burstActive\s*=\s*false/.test(resizeBody),
-    "width-changing resize clears touch momentum and wheel/key ownership",
+      /burstActive\s*=\s*false/.test(resizeBody) &&
+      /burstAwaitsNativeScroll\s*=\s*false/.test(resizeBody),
+    "width-changing resize clears touch momentum and awaited wheel/key ownership",
   );
 
   const reanchorBody = sourceBlock(
@@ -1953,8 +2029,9 @@ for (const f of FIGURES) {
   ok(
     /touchActive\s*=\s*false/.test(cleanupBody) &&
       /touchMomentumActive\s*=\s*false/.test(cleanupBody) &&
-      /burstActive\s*=\s*false/.test(cleanupBody),
-    "dispose clears direct touch, touch momentum, and wheel/key state",
+      /burstActive\s*=\s*false/.test(cleanupBody) &&
+      /burstAwaitsNativeScroll\s*=\s*false/.test(cleanupBody),
+    "dispose clears direct touch, touch momentum, and awaited wheel/key state",
   );
   const expectedGuardCleanup = sourceBlock(
     scrollControllerCode,
