@@ -410,6 +410,18 @@ export function cardFlyProgressFor(gp: number): number {
   return clamp01((gp - CARDS_FLY_START) / (CARDS_FLY_END - CARDS_FLY_START));
 }
 
+// Stable semantic landing point after `linear` photo cards have left the
+// stack. The pinned gesture controller uses these authored progress values
+// instead of deriving card state from an arbitrary scroll delta.
+export function galleryProgressForImageLinear(linear: number): number {
+  const n = Math.max(GALLERY_IMAGES.length, 1);
+  const clamped = clamp01(linear / n);
+  const imageProgress = lerp(CARDS_FLY_START, CARDS_FLY_END, clamped);
+  return clamp01(
+    IMAGE_GALLERY_START + imageProgress * (1 - IMAGE_GALLERY_START),
+  );
+}
+
 // CTA overlay opacity, driven by the last card's exit progress (cardExit, 0→1
 // as the last card flies up — see CardStack). Snaps to 1 over the tiny onset
 // window [CTA_REVEAL_FROM, CTA_REVEAL_TO] while the wordmark is still fully
