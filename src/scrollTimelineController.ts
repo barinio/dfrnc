@@ -11,6 +11,7 @@ import {
 } from "./galleryGestureStepper";
 import type {
   GalleryDirection,
+  GalleryStepResult,
   GalleryStepperState,
 } from "./galleryGestureStepper";
 
@@ -87,18 +88,63 @@ export interface ScrollTimelineRefValues {
 }
 
 export const INPUT_QUIET_MS = 140;
+// Travel (px, toward the gesture's latched direction) required before an
+// at-the-ends gesture releases the pin back to native scrolling.
 export const TOUCH_STEP_PX = 24;
+// Discrete (keyboard) step duration. Pointer gestures do NOT use this: they
+// scrub the card live and only the post-release settle animates.
 export const GALLERY_TRANSITION_MS = 520;
+
+// ── Gesture-follow (scrub) dials ─────────────────────────────────────────────
+// The card FOLLOWS the gesture (supervisor: "якщо він легко піднімає її до
+// гори — вона слідує за його рухом; зупинився — і карточка зупинилась"), then
+// settles when the gesture ends: forward to the adjacent card if it travelled
+// far/fast enough, back to where it rested otherwise. One gesture still moves
+// at most ONE step — the scrub is clamped to the adjacent target.
+export const GALLERY_DRAG_DEAD_ZONE_PX = 8;
+// Finger px for a FULL one-card scrub, as a fraction of the viewport height
+// (mirrors the old native conveyor's ≈35vh-per-card cadence).
+export const GALLERY_STEP_SPAN_FRAC = 0.35;
+export const GALLERY_STEP_SPAN_MIN_PX = 180;
+// Released past this fraction of the span → the step commits.
+export const GALLERY_COMMIT_FRAC = 0.3;
+// Release velocity (px/ms toward the latched direction) that commits a short
+// swipe — the "flick" path.
+export const GALLERY_FLICK_VELOCITY_PX_MS = 0.5;
+// A wheel burst that travelled at least this many px commits even below
+// GALLERY_COMMIT_FRAC, so a single mouse-wheel notch still advances a card.
+export const WHEEL_COMMIT_PX = 40;
+// Settle animation for a FULL remaining span; scaled down by the distance
+// actually left, floored so the tail never pops.
+export const GALLERY_SETTLE_MS = 360;
+export const GALLERY_SETTLE_MIN_MS = 120;
 
 const PASSIVE_EVENT_OPTIONS = { passive: true } as const;
 const CANCELLABLE_EVENT_OPTIONS = { passive: false } as const;
 const BOUNDARY_TOLERANCE_PX = 1;
 const LINE_DELTA_PX = 16;
+const VELOCITY_SMOOTHING = 0.3;
 
 interface GalleryTransition {
   fromGp: number;
   targetGp: number;
   startedAt: number;
+  durationMs: number;
+  ease: (value: number) => number;
+}
+
+// One live gesture scrubbing the pinned gallery. Direction is LATCHED at the
+// first dead-zone crossing: the same physical gesture can pull the card back
+// toward its anchor but never switches to the opposite step (and an at-the-end
+// wiggle can never accidentally release the pin).
+interface GalleryScrub {
+  source: "touch" | "wheel";
+  direction: GalleryDirection;
+  anchorGp: number;
+  result: GalleryStepResult;
+  totalPx: number;
+  velocityPxMs: number;
+  lastMoveAt: number;
 }
 
 type PinSide = "before" | "after";
@@ -199,6 +245,11 @@ function easeInOutCubic(value: number): number {
     : 1 - Math.pow(-2 * u + 2, 3) / 2;
 }
 
+function easeOutCubic(value: number): number {
+  const u = Math.min(Math.max(value, 0), 1);
+  return 1 - Math.pow(1 - u, 3);
+}
+
 function nearestStepIndex(gp: number): number {
   const targets = galleryStepTargets();
   let nearest = 0;
@@ -249,6 +300,9 @@ export function createScrollTimelineController(
   let pinY = pinSide === "before" ? seamY : galleryEndY;
 
   let wheelBurstActive = false;
+  // The current wheel burst has been fully spent (boundary entry, pin release,
+  // or discarded into a running transition) — its residue must stay inert.
+  let wheelBurstConsumed = false;
   let wheelQuietTimer: number | null = null;
   let touchActive = false;
   let touchOwned = false;
@@ -256,6 +310,7 @@ export function createScrollTimelineController(
   let touchStartY: number | null = null;
   let touchLastY: number | null = null;
   let touchQuietTimer: number | null = null;
+  let scrub: GalleryScrub | null = null;
   let transition: GalleryTransition | null = null;
   let transitionFrame: number | null = null;
   let transitionEndTimer: number | null = null;
@@ -316,6 +371,7 @@ export function createScrollTimelineController(
     if (!isPinnedMode(mode)) return;
     const blocked =
       transition !== null ||
+      scrub !== null ||
       wheelBurstActive ||
       touchActive ||
       touchQuietTimer !== null;
@@ -332,6 +388,8 @@ export function createScrollTimelineController(
     wheelQuietTimer = environment.setTimeout(() => {
       wheelQuietTimer = null;
       wheelBurstActive = false;
+      wheelBurstConsumed = false;
+      if (scrub !== null && scrub.source === "wheel") settleScrub();
       settlePinnedMode();
     }, INPUT_QUIET_MS);
   };
@@ -346,6 +404,7 @@ export function createScrollTimelineController(
 
   const enterGallery = (side: PinSide, consumeCurrentGesture: boolean) => {
     clearTransition();
+    scrub = null;
     pinSide = side;
     pinY = side === "before" ? seamY : galleryEndY;
     stepper = createGalleryStepperState(
@@ -368,10 +427,10 @@ export function createScrollTimelineController(
   const tickTransition = (now: number) => {
     if (transition === null || disposed) return;
     const elapsed = now - transition.startedAt;
-    const fraction = elapsed / GALLERY_TRANSITION_MS;
+    const fraction = elapsed / transition.durationMs;
     galleryGp =
       transition.fromGp +
-      (transition.targetGp - transition.fromGp) * easeInOutCubic(fraction);
+      (transition.targetGp - transition.fromGp) * transition.ease(fraction);
     publish();
     if (fraction >= 1) {
       finishTransition();
@@ -380,19 +439,22 @@ export function createScrollTimelineController(
     transitionFrame = environment.requestFrame(tickTransition);
   };
 
-  const animateGalleryTo = (targetGp: number) => {
+  const animateGalleryTo = (
+    targetGp: number,
+    durationMs = GALLERY_TRANSITION_MS,
+    ease: (value: number) => number = easeInOutCubic,
+  ) => {
     clearTransition();
     mode = "gallery-transitioning";
     transition = {
       fromGp: galleryGp,
       targetGp,
       startedAt: environment.readNow(),
+      durationMs,
+      ease,
     };
     transitionFrame = environment.requestFrame(tickTransition);
-    transitionEndTimer = environment.setTimeout(
-      finishTransition,
-      GALLERY_TRANSITION_MS,
-    );
+    transitionEndTimer = environment.setTimeout(finishTransition, durationMs);
     publish();
   };
 
@@ -410,8 +472,114 @@ export function createScrollTimelineController(
     publish();
   };
 
+  // ── Gesture-follow scrub ────────────────────────────────────────────────────
+
+  const stepSpanPx = () =>
+    Math.max(innerHeight * GALLERY_STEP_SPAN_FRAC, GALLERY_STEP_SPAN_MIN_PX);
+
+  const scrubDeadZonePx = (source: GalleryScrub["source"]) =>
+    source === "touch" ? GALLERY_DRAG_DEAD_ZONE_PX : 0;
+
+  // Px travelled toward the latched direction, past the dead zone (≥ 0 — the
+  // gesture can pull back to its anchor but never scrub the opposite step).
+  const scrubTravelPx = (active: GalleryScrub) =>
+    Math.max(
+      active.totalPx * active.direction - scrubDeadZonePx(active.source),
+      0,
+    );
+
+  const scrubFrac = (active: GalleryScrub) =>
+    Math.min(scrubTravelPx(active) / stepSpanPx(), 1);
+
+  const beginScrub = (
+    source: GalleryScrub["source"],
+    direction: GalleryDirection,
+  ): GalleryScrub => {
+    scrub = {
+      source,
+      direction,
+      anchorGp: galleryGp,
+      result: requestGalleryStep(stepper, direction),
+      totalPx: 0,
+      velocityPxMs: 0,
+      lastMoveAt: environment.readNow(),
+    };
+    mode = "gallery-transitioning";
+    return scrub;
+  };
+
+  const applyScrub = () => {
+    if (scrub === null) return;
+    const active = scrub;
+    if (active.result.kind !== "step") {
+      // No adjacent card in the latched direction — this gesture can only
+      // release the pin. The card holds its anchor while the gesture builds up
+      // to the release threshold.
+      galleryGp = active.anchorGp;
+      if (active.totalPx * active.direction >= TOUCH_STEP_PX) {
+        scrub = null;
+        if (active.source === "touch") touchStepUsed = true;
+        else wheelBurstConsumed = true;
+        if (active.result.kind === "release-before") releaseBefore();
+        else releaseAfter();
+        return;
+      }
+      publish();
+      return;
+    }
+    galleryGp =
+      active.anchorGp +
+      (active.result.targetGp - active.anchorGp) * scrubFrac(active);
+    publish();
+  };
+
+  // End-of-gesture settle: commit to the adjacent card when the gesture
+  // travelled far enough (or flicked fast enough), otherwise ease back to the
+  // anchor. Duration scales with the distance actually left so short tails
+  // never feel like a fresh full animation.
+  const settleScrub = () => {
+    if (scrub === null) return;
+    const active = scrub;
+    scrub = null;
+    if (active.result.kind !== "step") {
+      galleryGp = active.anchorGp;
+      settlePinnedMode();
+      publish();
+      return;
+    }
+    const frac = scrubFrac(active);
+    const flick =
+      active.source === "touch" &&
+      directionFor(active.velocityPxMs) === active.direction &&
+      Math.abs(active.velocityPxMs) >= GALLERY_FLICK_VELOCITY_PX_MS;
+    const wheelCommit =
+      active.source === "wheel" && scrubTravelPx(active) >= WHEEL_COMMIT_PX;
+    const commit = frac >= GALLERY_COMMIT_FRAC || flick || wheelCommit;
+    if (commit && active.result.kind === "step") {
+      stepper = active.result.state;
+    }
+    const targetGp = commit ? active.result.targetGp : active.anchorGp;
+    const stepSizeGp = Math.abs(active.result.targetGp - active.anchorGp);
+    const remainingGp = Math.abs(targetGp - galleryGp);
+    if (remainingGp < 1e-6 || stepSizeGp < 1e-9) {
+      galleryGp = targetGp;
+      clearTransition();
+      settlePinnedMode();
+      publish();
+      return;
+    }
+    const durationMs = Math.max(
+      GALLERY_SETTLE_MS * Math.min(remainingGp / stepSizeGp, 1),
+      GALLERY_SETTLE_MIN_MS,
+    );
+    animateGalleryTo(targetGp, durationMs, easeOutCubic);
+  };
+
+  // Discrete (keyboard) navigation keeps the fixed-duration eased step.
   const acceptIntent = (direction: GalleryDirection) => {
-    if (mode !== "gallery-idle" || transition !== null) return;
+    if (mode !== "gallery-idle" || transition !== null || scrub !== null) {
+      return;
+    }
     const result = requestGalleryStep(stepper, direction);
     if (result.kind === "release-before") {
       releaseBefore();
@@ -466,9 +634,31 @@ export function createScrollTimelineController(
     const direction = directionFor(delta);
     if (direction === 0) return;
 
-    if (wheelBurstActive) {
+    if (wheelBurstActive && wheelBurstConsumed) {
+      // Residue of a spent burst (boundary entry / release / discarded) stays
+      // inert until the burst goes quiet.
       preventDefault(event);
       armWheelQuiet();
+      return;
+    }
+
+    if (isPinnedMode(mode)) {
+      preventDefault(event);
+      wheelBurstActive = true;
+      armWheelQuiet();
+      if (transition !== null) {
+        // Contract: input during a transition is consumed, never queued.
+        wheelBurstConsumed = true;
+        return;
+      }
+      let active = scrub;
+      if (active !== null && active.source !== "wheel") {
+        wheelBurstConsumed = true;
+        return;
+      }
+      if (active === null) active = beginScrub("wheel", direction);
+      active.totalPx += delta;
+      applyScrub();
       return;
     }
 
@@ -477,6 +667,7 @@ export function createScrollTimelineController(
       if (direction > 0 && rawY + delta >= seamY) {
         preventDefault(event);
         wheelBurstActive = true;
+        wheelBurstConsumed = true;
         armWheelQuiet();
         enterGallery("before", true);
       }
@@ -486,20 +677,16 @@ export function createScrollTimelineController(
       if (direction < 0 && rawY + delta <= galleryEndY) {
         preventDefault(event);
         wheelBurstActive = true;
+        wheelBurstConsumed = true;
         armWheelQuiet();
         enterGallery("after", true);
       }
       return;
     }
-
-    preventDefault(event);
-    wheelBurstActive = true;
-    armWheelQuiet();
-    acceptIntent(direction);
-    settlePinnedMode();
   };
 
   const onTouchStart: ScrollTimelineEventListener = (event) => {
+    if (touchActive) return;
     const y = firstTouchY(event);
     if (y === null) return;
     clearTouchQuiet();
@@ -537,11 +724,28 @@ export function createScrollTimelineController(
     }
 
     preventDefault(event);
-    if (touchStepUsed || Math.abs(total) < TOUCH_STEP_PX) return;
-    touchStepUsed = true;
-    const direction = directionFor(total);
-    if (direction !== 0) acceptIntent(direction);
-    settlePinnedMode();
+    if (touchStepUsed) return;
+    if (transition !== null) return;
+    let active = scrub;
+    if (active !== null && active.source !== "touch") return;
+    let freshScrub = false;
+    if (active === null) {
+      if (Math.abs(total) < GALLERY_DRAG_DEAD_ZONE_PX) return;
+      const direction = directionFor(total);
+      if (direction === 0) return;
+      active = beginScrub("touch", direction);
+      freshScrub = true;
+    }
+    if (!freshScrub) {
+      const now = environment.readNow();
+      const dt = Math.max(now - active.lastMoveAt, 1);
+      active.lastMoveAt = now;
+      active.velocityPxMs =
+        active.velocityPxMs * (1 - VELOCITY_SMOOTHING) +
+        (delta / dt) * VELOCITY_SMOOTHING;
+    }
+    active.totalPx = total;
+    applyScrub();
   };
 
   const onTouchEnd: ScrollTimelineEventListener = (event) => {
@@ -553,6 +757,7 @@ export function createScrollTimelineController(
     touchStepUsed = false;
     touchStartY = null;
     touchLastY = null;
+    if (scrub !== null && scrub.source === "touch") settleScrub();
     armTouchQuiet();
     settlePinnedMode();
   };
@@ -587,11 +792,19 @@ export function createScrollTimelineController(
     clearWheelQuiet();
     clearTouchQuiet();
     wheelBurstActive = false;
+    wheelBurstConsumed = false;
     touchActive = false;
     touchOwned = false;
     touchStepUsed = false;
     touchStartY = null;
     touchLastY = null;
+    if (scrub !== null) {
+      // Losing focus/visibility mid-gesture: revert to the anchor without an
+      // animation so the step state stays consistent (no commit on blur).
+      galleryGp = scrub.anchorGp;
+      scrub = null;
+      publish();
+    }
     settlePinnedMode();
   };
 

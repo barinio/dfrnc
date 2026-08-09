@@ -1,9 +1,19 @@
-// Deterministic lifecycle checks for the pinned, one-step-per-gesture gallery.
-// Run manually with: npx tsx scripts/check-scroll-lifecycle.ts
+// Deterministic lifecycle checks for the pinned gallery with GESTURE-FOLLOW
+// navigation: the card scrubs live with the finger/wheel (stops when the user
+// stops), then settles on release — forward to the adjacent card past the
+// commit threshold or a flick, back to its anchor otherwise. One gesture still
+// moves at most one step. Run manually with:
+//   npx tsx scripts/check-scroll-lifecycle.ts
 import {
+  GALLERY_COMMIT_FRAC,
+  GALLERY_DRAG_DEAD_ZONE_PX,
+  GALLERY_SETTLE_MS,
+  GALLERY_STEP_SPAN_FRAC,
+  GALLERY_STEP_SPAN_MIN_PX,
   GALLERY_TRANSITION_MS,
   INPUT_QUIET_MS,
   TOUCH_STEP_PX,
+  WHEEL_COMMIT_PX,
   createScrollTimelineController,
 } from "../src/scrollTimelineController";
 import type {
@@ -276,6 +286,12 @@ function createHarness(initialY: number, initialReducedMotion = false) {
 const IH = 844;
 const seamY = videoGovernorBounds(IH).endY;
 const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
+const targets = galleryStepTargets();
+const SPAN = Math.max(IH * GALLERY_STEP_SPAN_FRAC, GALLERY_STEP_SPAN_MIN_PX);
+const stepGpAt = (index: number, travelPx: number) =>
+  targets[index] +
+  (targets[index + 1] - targets[index]) * Math.min(travelPx / SPAN, 1);
+const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
 
 // Native input remains untouched before the seam.
 {
@@ -287,7 +303,8 @@ const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
   controller.dispose();
 }
 
-// The crossing burst is burned at the seam; a fresh burst advances one card.
+// The crossing burst is burned at the seam; a fresh burst SCRUBS the card in
+// proportion to its travel and commits only once it goes quiet.
 {
   const harness = createHarness(seamY - 40);
   const { environment, latest, controller } = harness;
@@ -300,22 +317,38 @@ const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
 
   environment.clock.advance(INPUT_QUIET_MS);
   ok(environment.wheel(80), "fresh gallery wheel is owned");
-  eq(latest().galleryStep, 1, "fresh burst advances exactly one card");
+  eq(latest().gp, stepGpAt(0, 80), "wheel scrub follows burst travel", 1e-9);
+  eq(latest().galleryStep, 0, "scrubbing does not commit mid-burst");
   ok(environment.wheel(900), "same burst residue remains owned");
-  eq(latest().galleryStep, 1, "same burst cannot advance twice");
+  eq(latest().gp, targets[1], "one burst is clamped to the adjacent card", 1e-9);
+  eq(latest().galleryStep, 0, "a clamped burst is still uncommitted");
 
   environment.clock.advance(INPUT_QUIET_MS);
-  ok(environment.wheel(80), "input during transition is still consumed");
-  eq(latest().galleryStep, 1, "transition input is not queued");
-  environment.clock.advance(INPUT_QUIET_MS + GALLERY_TRANSITION_MS);
+  eq(latest().galleryStep, 1, "quiet commits exactly one card");
+  eq(latest().gp, targets[1], "committed scrub rests on the adjacent target", 1e-9);
+  eq(latest().galleryMode, "gallery-idle", "settled scrub becomes idle");
+
+  // Input during the settle transition is consumed, never queued.
+  ok(environment.wheel(100), "next settled burst is owned");
+  environment.clock.advance(INPUT_QUIET_MS);
+  eq(latest().galleryStep, 2, "past-commit travel advances at quiet");
+  ok(environment.wheel(80), "input during the settle is still consumed");
+  environment.clock.advance(SETTLE_DRAIN_MS + GALLERY_TRANSITION_MS);
+  eq(latest().galleryStep, 2, "transition input is not queued");
+  eq(latest().gp, targets[2], "settle finishes on its own target", 1e-9);
   eq(latest().galleryMode, "gallery-idle", "quiet settled transition becomes idle");
 
-  ok(environment.wheel(80), "next settled burst is owned");
-  eq(latest().galleryStep, 2, "next burst advances one adjacent card");
+  // A tiny nudge below both commit thresholds eases back to its anchor.
+  ok(environment.wheel(WHEEL_COMMIT_PX / 2), "tiny nudge is owned");
+  ok(latest().gp > targets[2], "tiny nudge still moves the card while active");
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  eq(latest().galleryStep, 2, "a sub-threshold nudge does not commit");
+  eq(latest().gp, targets[2], "a sub-threshold nudge eases back", 1e-9);
   controller.dispose();
 }
 
-// A touch that enters is consumed; the next swipe advances once despite distance.
+// A touch that enters is consumed; a fresh swipe DRAGS the card with the
+// finger, holds where the finger holds, and settles only on release.
 {
   const harness = createHarness(seamY - 10);
   const { environment, latest, controller } = harness;
@@ -327,12 +360,76 @@ const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
   environment.touchEnd(100);
   environment.clock.advance(INPUT_QUIET_MS);
 
-  environment.touchStart(500);
-  ok(environment.touchMove(500 - TOUCH_STEP_PX - 1), "fresh gallery swipe is owned");
-  eq(latest().galleryStep, 1, "threshold swipe advances one card");
-  ok(environment.touchMove(0), "large remainder stays owned");
-  eq(latest().galleryStep, 1, "one swipe cannot skip cards");
+  // Follow: 150px drag → the card sits at (150 − dead zone)/span of the step.
+  environment.touchStart(600);
+  ok(environment.touchMove(450), "fresh gallery swipe is owned");
+  eq(
+    latest().gp,
+    stepGpAt(0, 150 - GALLERY_DRAG_DEAD_ZONE_PX),
+    "card follows the finger",
+    1e-9,
+  );
+  eq(latest().galleryStep, 0, "following does not commit");
+
+  // Stop: no movement → the card rests exactly where the finger rests.
+  environment.clock.advance(250);
+  eq(
+    latest().gp,
+    stepGpAt(0, 150 - GALLERY_DRAG_DEAD_ZONE_PX),
+    "card rests where the finger stopped",
+    1e-9,
+  );
+
+  // Pull back: the same gesture retreats toward its anchor (never the
+  // opposite card), and a release short of the commit fraction reverts.
+  ok(environment.touchMove(520), "pull-back stays owned");
+  eq(
+    latest().gp,
+    stepGpAt(0, 80 - GALLERY_DRAG_DEAD_ZONE_PX),
+    "pull-back follows the finger down",
+    1e-9,
+  );
+  ok(
+    (80 - GALLERY_DRAG_DEAD_ZONE_PX) / SPAN < GALLERY_COMMIT_FRAC,
+    "pull-back travel sits below the commit fraction",
+  );
+  environment.touchEnd(520);
+  environment.clock.advance(SETTLE_DRAIN_MS);
+  eq(latest().galleryStep, 0, "sub-commit release does not advance");
+  eq(latest().gp, targets[0], "sub-commit release eases back to the anchor", 1e-9);
+
+  // Slow but far: a gentle drag past the commit fraction advances one card
+  // after release, easing the remainder instead of jumping.
+  environment.touchStart(600);
+  ok(environment.touchMove(400), "gentle far drag is owned");
+  ok(
+    (200 - GALLERY_DRAG_DEAD_ZONE_PX) / SPAN > GALLERY_COMMIT_FRAC,
+    "far drag travel clears the commit fraction",
+  );
+  eq(latest().galleryStep, 0, "no commit while the finger is down");
+  environment.touchEnd(400);
+  eq(latest().galleryStep, 1, "release past commit advances exactly one card");
+  ok(latest().gp < targets[1] - 1e-9, "the remainder eases instead of jumping");
+  environment.clock.advance(SETTLE_DRAIN_MS);
+  eq(latest().gp, targets[1], "settle finishes on the adjacent card", 1e-9);
+
+  // Flick: a short fast swipe commits on velocity.
+  environment.touchStart(600);
+  environment.touchMove(570);
+  environment.clock.advance(16);
+  environment.touchMove(540);
+  environment.touchEnd(540);
+  eq(latest().galleryStep, 2, "a short fast flick commits on velocity");
+  environment.clock.advance(SETTLE_DRAIN_MS);
+  eq(latest().gp, targets[2], "flick settles on the adjacent card", 1e-9);
+
+  // One gesture can never skip a card: a huge drag clamps at the neighbour.
+  environment.touchStart(700);
+  ok(environment.touchMove(0), "huge swipe stays owned");
+  eq(latest().gp, targets[3], "huge swipe clamps at the adjacent card", 1e-9);
   environment.touchEnd(0);
+  environment.clock.advance(SETTLE_DRAIN_MS);
+  eq(latest().galleryStep, 3, "huge swipe still advances exactly one card");
   controller.dispose();
 }
 
@@ -346,7 +443,6 @@ const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
   before.controller.dispose();
 
   const after = createHarness(seamY);
-  const targets = galleryStepTargets();
   after.environment.clock.advance(INPUT_QUIET_MS);
   for (let index = 1; index < targets.length; index += 1) {
     after.environment.keyDown("ArrowDown");
@@ -357,6 +453,27 @@ const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
   eq(after.latest().galleryMode, "native-after", "CTA release restores native-after");
   eq(after.environment.scrollY, galleryEndY, "CTA release moves to physical gallery end");
   after.controller.dispose();
+
+  // An at-the-end wiggle (forward then back past the anchor) must NOT release:
+  // the direction is latched by the first dead-zone crossing.
+  const wiggle = createHarness(seamY);
+  wiggle.environment.clock.advance(INPUT_QUIET_MS);
+  wiggle.environment.touchStart(500);
+  wiggle.environment.touchMove(400);
+  ok(
+    wiggle.latest().galleryMode !== "native-before",
+    "forward drag keeps the gallery pinned",
+  );
+  wiggle.environment.touchMove(500 + TOUCH_STEP_PX + 10);
+  ok(
+    wiggle.latest().galleryMode !== "native-before",
+    "reversing within one gesture cannot release the pin",
+  );
+  wiggle.environment.touchEnd(500 + TOUCH_STEP_PX + 10);
+  wiggle.environment.clock.advance(SETTLE_DRAIN_MS);
+  eq(wiggle.latest().galleryStep, 0, "wiggle gesture commits nothing");
+  eq(wiggle.latest().gp, targets[0], "wiggle gesture returns to its anchor", 1e-9);
+  wiggle.controller.dispose();
 }
 
 // Editable/repeated keys are ignored and cancellable listeners are intentional.
@@ -374,3 +491,5 @@ const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
   eq(environment.documentTarget.listenerCount(), 0, "dispose removes document listeners");
   eq(environment.clock.size, 0, "dispose clears timers and frames");
 }
+
+console.log("✓ scroll lifecycle (gesture-follow gallery)");

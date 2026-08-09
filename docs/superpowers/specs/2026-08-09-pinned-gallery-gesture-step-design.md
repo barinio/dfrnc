@@ -18,6 +18,21 @@ site, `https://radiance.family/`: native scrolling brings the user to the
 gallery, the gallery is pinned while a gesture observer owns navigation, and
 native scrolling resumes only after the internal sequence is complete.
 
+## Amendment (2026-08-10): gesture-follow scrub
+
+Supervisor feedback on the built branch: a card must not fly a full step on
+any input — it has to FOLLOW the gesture ("якщо він легко піднімає її до гори,
+то вона слідує за його рухом; зупинився — і карточка зупинилась"). The step
+model below still holds (one gesture moves at most one step; residue is
+burned; boundary entry/release unchanged), but while a wheel burst or touch
+gesture is live the rendered `gp` scrubs proportionally toward the adjacent
+target (clamped to it), and only the RELEASE settles: forward when the gesture
+travelled past `GALLERY_COMMIT_FRAC` of the span, flicked fast enough, or a
+wheel burst crossed `WHEEL_COMMIT_PX`; back to the anchor otherwise. The
+gesture direction is latched at its first dead-zone crossing, so an in-gesture
+reversal pulls the card back but can never switch steps or release the pin.
+Keyboard steps remain discrete eased transitions.
+
 ## Approved interaction contract
 
 - Before the gallery, scrolling remains native and keeps the existing video and
