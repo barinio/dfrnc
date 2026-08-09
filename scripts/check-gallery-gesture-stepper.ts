@@ -1,5 +1,8 @@
 import { VID_FLY_END } from "../src/constants";
-import { GALLERY_IMAGES } from "../src/gallery";
+import {
+  GALLERY_IMAGES,
+  galleryProgressForImageLinear,
+} from "../src/gallery";
 import {
   createGalleryStepperState,
   galleryStepTargets,
@@ -23,7 +26,11 @@ eq(
   "entrance plus one exit per photo",
 );
 eq(targets[0], VID_FLY_END, "entrance is the video/photo seam");
-eq(targets.at(-1)!, 1, "CTA is the terminal semantic target");
+eq(
+  targets.at(-1)!,
+  galleryProgressForImageLinear(GALLERY_IMAGES.length),
+  "CTA begins exactly when the last photo finishes leaving",
+);
 for (let index = 1; index < targets.length; index += 1) {
   ok(targets[index] > targets[index - 1], `target ${index} is ordered`);
 }

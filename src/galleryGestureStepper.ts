@@ -19,9 +19,7 @@ export function galleryStepTargets(): readonly number[] {
   return [
     VID_FLY_END,
     ...GALLERY_IMAGES.map((_, index) =>
-      index === GALLERY_IMAGES.length - 1
-        ? 1
-        : galleryProgressForImageLinear(index + 1),
+      galleryProgressForImageLinear(index + 1),
     ),
   ];
 }
