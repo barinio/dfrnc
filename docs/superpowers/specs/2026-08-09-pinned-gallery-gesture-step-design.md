@@ -33,6 +33,19 @@ gesture direction is latched at its first dead-zone crossing, so an in-gesture
 reversal pulls the card back but can never switch steps or release the pin.
 Keyboard steps remain discrete eased transitions.
 
+Amendment 2 (2026-08-11), wheel only: gesture segmentation is GONE for card
+advancement — macOS trackpad momentum makes burst/quiet heuristics eat gentle
+ramped swipes (the supervisor had to park the cursor between swipes). Wheel
+input now ACCUMULATES continuously (the Lenis/scroll-snap model): every pinned
+wheel px scrubs the card; a full step span (~35vh) commits it and accumulation
+re-anchors (overshoot dropped), paced by WHEEL_COMMIT_COOLDOWN_MS; crossing
+back through the anchor re-latches toward the opposite neighbour. A leftover
+below the span settles at quiet (commit ≥ WHEEL_COMMIT_PX for mouse notches,
+else ease back — never a second commit in a burst that already stepped). The
+pin still cannot RELEASE from a burst that committed a card, so a flick rides
+its cards one by one and stops at the boundary; leaving takes a separate
+gesture. Touch keeps the one-step-per-swipe drag model unchanged.
+
 ## Approved interaction contract
 
 - Before the gallery, scrolling remains native and keeps the existing video and

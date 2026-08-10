@@ -320,13 +320,13 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   eq(latest().gp, stepGpAt(0, 80), "wheel scrub follows burst travel", 1e-9);
   eq(latest().galleryStep, 0, "scrubbing does not commit mid-burst");
   ok(environment.wheel(900), "same burst residue remains owned");
-  eq(latest().gp, targets[1], "one burst is clamped to the adjacent card", 1e-9);
-  eq(latest().galleryStep, 1, "a fully-clamped burst commits immediately");
-  ok(environment.wheel(300), "post-commit residue remains owned");
-  eq(latest().galleryStep, 1, "burnt residue cannot advance a second card");
+  eq(latest().gp, targets[1], "a full span lands on the adjacent card", 1e-9);
+  eq(latest().galleryStep, 1, "a full accumulated span commits immediately");
+  ok(environment.wheel(300), "post-commit tail remains owned");
+  eq(latest().galleryStep, 1, "the commit cooldown paces same-instant input");
 
-  environment.clock.advance(INPUT_QUIET_MS);
-  eq(latest().galleryStep, 1, "quiet keeps the single committed card");
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  eq(latest().galleryStep, 1, "a below-cooldown tail eases back at quiet");
   eq(latest().gp, targets[1], "committed scrub rests on the adjacent target", 1e-9);
   eq(latest().galleryMode, "gallery-idle", "settled scrub becomes idle");
 
@@ -347,18 +347,26 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   eq(latest().galleryStep, 2, "a sub-threshold nudge does not commit");
   eq(latest().gp, targets[2], "a sub-threshold nudge eases back", 1e-9);
 
-  // Trackpad rhythm: a fresh impulse spiking above the decaying momentum
-  // envelope is a NEW gesture — the next card advances without any quiet gap.
-  ok(environment.wheel(320), "strong swipe is owned");
-  eq(latest().galleryStep, 3, "full-span swipe commits its card at once");
-  for (const tail of [100, 80, 64, 51, 41, 33, 26, 21, 17]) {
-    ok(environment.wheel(tail), "decaying momentum stays owned");
+  // Continuous deliberate scrolling flows card after card with NO quiet gaps
+  // (the trackpad complaint: gestures must never be eaten as "residue"),
+  // paced only by the commit cooldown.
+  const beforeSteady = latest().galleryStep;
+  for (let i = 0; i < 12; i += 1) {
+    ok(environment.wheel(150), "steady scrolling stays owned");
+    environment.clock.advance(60);
   }
-  eq(latest().galleryStep, 3, "decaying momentum cannot advance a second card");
-  ok(environment.wheel(300), "fresh impulse inside the tail is owned");
-  eq(latest().galleryStep, 4, "fresh impulse advances the next card without quiet");
-  environment.clock.advance(INPUT_QUIET_MS);
-  eq(latest().galleryMode, "gallery-idle", "impulse chain settles idle");
+  const afterSteady = latest().galleryStep;
+  ok(
+    afterSteady - beforeSteady >= 3,
+    `steady scrolling flows through multiple cards (got ${afterSteady - beforeSteady})`,
+  );
+  ok(
+    afterSteady < targets.length - 1,
+    "steady scrolling stays inside the gallery",
+  );
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  eq(latest().gp, targets[afterSteady], "steady leftover settles on a target", 1e-9);
+  eq(latest().galleryMode, "gallery-idle", "steady chain settles idle");
   controller.dispose();
 }
 

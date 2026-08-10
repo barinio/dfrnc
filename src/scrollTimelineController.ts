@@ -115,15 +115,21 @@ export const GALLERY_FLICK_VELOCITY_PX_MS = 0.5;
 // GALLERY_COMMIT_FRAC, so a single mouse-wheel notch still advances a card.
 export const WHEEL_COMMIT_PX = 40;
 // A wheel event this many times larger than the decaying envelope of recent
-// deltas is a FRESH human impulse, not momentum residue: macOS trackpad
-// inertia produces monotonically decaying deltas at frame rate, so a new
-// swipe spikes far above the envelope. Without this, rhythmic trackpad
-// scrolling never sees a quiet window and every follow-up swipe is eaten as
-// "same burst" (supervisor: "скрол веде себе дуже погано і не завжди
-// спрацьовує в обидві сторони").
+// deltas is a FRESH human impulse, not momentum residue — used ONLY to let a
+// deliberate new swipe escape a consumed burst (boundary entry / pin
+// release). Card ADVANCEMENT deliberately does not depend on this: gentle
+// trackpad swipes ramp up gradually and never spike above their predecessor's
+// envelope, so any gesture-segmentation heuristic eats them (supervisor had
+// to park the cursor between swipes just to outwait the quiet window).
 export const WHEEL_FRESH_FACTOR = 2.5;
 export const WHEEL_FRESH_MIN_PX = 16;
 const WHEEL_ENVELOPE_DECAY = 0.8;
+// Wheel advancement is CONTINUOUS ACCUMULATION instead (the Lenis/scroll-snap
+// model): every pinned wheel px feeds the scrub; a full step span commits the
+// card and accumulation restarts from the new anchor (overshoot dropped, so a
+// flick's tail refills at most ~one more span). The cooldown bounds the
+// commit cadence so heavy input steps through cards at a readable pace.
+export const WHEEL_COMMIT_COOLDOWN_MS = 160;
 // Settle animation for a FULL remaining span; scaled down by the distance
 // actually left, floored so the tail never pops.
 export const GALLERY_SETTLE_MS = 360;
@@ -310,12 +316,18 @@ export function createScrollTimelineController(
   let pinY = pinSide === "before" ? seamY : galleryEndY;
 
   let wheelBurstActive = false;
-  // The current wheel burst has been fully spent (boundary entry, pin release,
-  // committed step, or discarded into a running transition) — its residue
-  // stays inert until the burst goes quiet OR a fresh impulse spikes above
-  // the envelope (a new human swipe inside the old momentum tail).
+  // The current wheel burst has been fully spent (boundary entry or pin
+  // release) — its residue stays inert until the burst goes quiet OR a fresh
+  // impulse spikes above the envelope (a new human swipe inside the tail).
   let wheelBurstConsumed = false;
   let wheelEnvelopePx = 0;
+  let lastWheelCommitAt = -Infinity;
+  // A commit already happened inside the current burst: its remaining tail
+  // may keep ACCUMULATING toward further full-span commits (deliberate
+  // continuous scrolling flows card by card), but a below-span leftover eases
+  // back at quiet instead of committing, and the pin can never RELEASE from
+  // a tail — leaving the gallery takes a fresh gesture of its own.
+  let wheelCommittedInBurst = false;
   let wheelQuietTimer: number | null = null;
   let touchActive = false;
   let touchOwned = false;
@@ -404,6 +416,7 @@ export function createScrollTimelineController(
       wheelBurstConsumed = false;
       wheelEnvelopePx = 0;
       if (scrub !== null && scrub.source === "wheel") settleScrub();
+      wheelCommittedInBurst = false;
       settlePinnedMode();
     }, INPUT_QUIET_MS);
   };
@@ -513,11 +526,12 @@ export function createScrollTimelineController(
   const beginScrub = (
     source: GalleryScrub["source"],
     direction: GalleryDirection,
+    anchorGp = galleryGp,
   ): GalleryScrub => {
     scrub = {
       source,
       direction,
-      anchorGp: galleryGp,
+      anchorGp,
       result: requestGalleryStep(stepper, direction),
       totalPx: 0,
       velocityPxMs: 0,
@@ -530,11 +544,26 @@ export function createScrollTimelineController(
   const applyScrub = () => {
     if (scrub === null) return;
     const active = scrub;
+    if (active.source === "wheel" && active.totalPx * active.direction < 0) {
+      // Wheel accumulation crossing back through its anchor re-latches toward
+      // the opposite neighbour — continuous scrolling flows both ways. (Touch
+      // keeps its single latch so an in-swipe wiggle can never flip or
+      // release; a reversed wheel at the first card releasing the pin is the
+      // DESIRED way back up.)
+      active.direction = (-active.direction) as GalleryDirection;
+      active.result = requestGalleryStep(stepper, active.direction);
+    }
     if (active.result.kind !== "step") {
       // No adjacent card in the latched direction — this gesture can only
       // release the pin. The card holds its anchor while the gesture builds up
-      // to the release threshold.
+      // to the release threshold. A wheel burst that already committed a card
+      // cannot also release: leaving the gallery takes its own fresh gesture,
+      // so a flick's momentum tail never blows through the boundary.
       galleryGp = active.anchorGp;
+      if (active.source === "wheel" && wheelCommittedInBurst) {
+        publish();
+        return;
+      }
       if (active.totalPx * active.direction >= TOUCH_STEP_PX) {
         scrub = null;
         if (active.source === "touch") touchStepUsed = true;
@@ -573,7 +602,10 @@ export function createScrollTimelineController(
       Math.abs(active.velocityPxMs) >= GALLERY_FLICK_VELOCITY_PX_MS;
     const wheelCommit =
       active.source === "wheel" && scrubTravelPx(active) >= WHEEL_COMMIT_PX;
-    const commit = frac >= GALLERY_COMMIT_FRAC || flick || wheelCommit;
+    let commit = frac >= GALLERY_COMMIT_FRAC || flick || wheelCommit;
+    // Post-commit wheel leftovers ease back: the burst already advanced its
+    // card(s); a below-span tail must not add another at quiet.
+    if (active.source === "wheel" && wheelCommittedInBurst) commit = false;
     if (commit && active.result.kind === "step") {
       stepper = active.result.state;
     }
@@ -679,45 +711,38 @@ export function createScrollTimelineController(
       preventDefault(event);
       wheelBurstActive = true;
       armWheelQuiet();
-      if (transition !== null) {
-        // Contract: input during a transition is consumed, never queued.
-        wheelBurstConsumed = true;
-        return;
-      }
       let active = scrub;
       if (active !== null && active.source !== "wheel") {
+        // A live touch drag owns the card; wheel input stays consumed.
         wheelBurstConsumed = true;
         return;
       }
-      if (
-        active !== null &&
-        freshImpulse &&
-        direction !== active.direction
-      ) {
-        // Direction flip on a fresh swipe: drop the old scrub at its anchor
-        // (no settle animation — the new gesture owns the card now).
-        galleryGp = active.anchorGp;
-        scrub = null;
-        active = null;
+      if (transition !== null) {
+        // Only the events that land DURING a settle animation are dropped —
+        // no consumed flag, so the same physical swipe resumes accumulating
+        // the moment the settle finishes (settles only exist after a pause;
+        // live continuous scrolling commits instantly with no animation).
+        return;
       }
       if (active === null) active = beginScrub("wheel", direction);
       active.totalPx += delta;
       applyScrub();
-      // Full clamp = the step is unambiguous: commit NOW instead of waiting
-      // out the quiet window, and burn the rest of this burst (still exactly
-      // one step per gesture). The next fresh impulse starts the next card.
-      const settled = scrub;
+      // A full accumulated span commits the card; the next event re-anchors
+      // at the committed target and keeps accumulating (overshoot dropped).
+      // The cooldown paces violent input to a readable card cadence.
+      const clamped = scrub;
       if (
-        settled !== null &&
-        settled.source === "wheel" &&
-        settled.result.kind === "step" &&
-        scrubFrac(settled) >= 1
+        clamped !== null &&
+        clamped.source === "wheel" &&
+        clamped.result.kind === "step" &&
+        scrubFrac(clamped) >= 1 &&
+        environment.readNow() - lastWheelCommitAt >= WHEEL_COMMIT_COOLDOWN_MS
       ) {
-        stepper = settled.result.state;
-        galleryGp = settled.result.targetGp;
+        lastWheelCommitAt = environment.readNow();
+        wheelCommittedInBurst = true;
+        stepper = clamped.result.state;
+        galleryGp = clamped.result.targetGp;
         scrub = null;
-        wheelBurstConsumed = true;
-        settlePinnedMode();
         publish();
       }
       return;
@@ -855,6 +880,7 @@ export function createScrollTimelineController(
     wheelBurstActive = false;
     wheelBurstConsumed = false;
     wheelEnvelopePx = 0;
+    wheelCommittedInBurst = false;
     touchActive = false;
     touchOwned = false;
     touchStepUsed = false;
