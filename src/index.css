@@ -21,7 +21,12 @@
 html,
 body {
     width: 100%;
-    background: #0a0a0a;
+    /* PURE black: any viewport area beyond the 100svh canvas (mobile browser
+       chrome collapsing mid-scroll) shows this — it must be indistinguishable
+       from the scene's near-black edges (gradient edges clamp to 0, gallery
+       backdrop is 0x000000). #0a0a0a here reads as a visible dark band on
+       phones (supervisor: "маржин темний на мобілці — прибрати"). */
+    background: #000;
 }
 
 body.scroll-locked {
@@ -40,9 +45,9 @@ body.scroll-locked {
    lvh the scene filled the toolbar-hidden height, so its bottom edge (the last
    Lottie line) sat BEHIND Safari's bottom address bar (supervisor). svh fits
    the scene within the always-visible region, clearing the address bar. When
-   the toolbar later auto-hides mid-scroll, a thin strip of the dark page
-   background (#0a0a0a) shows below — matching the scene's dark frame. On
-   desktop svh == vh, so this is identical there. */
+   the toolbar later auto-hides mid-scroll, a thin strip of the page background
+   shows below — pure black (see body), indistinguishable from the scene's
+   near-black frame. On desktop svh == vh, so this is identical there. */
 .canvas-layer {
     position: fixed;
     top: 0;

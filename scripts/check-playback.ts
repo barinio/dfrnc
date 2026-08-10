@@ -384,6 +384,25 @@ eq(
   1745,
   "ENTWICKELT initial position x",
 );
+// The slide-in ONSETS are delayed past the previous word's landing (ENTWICKELT
+// lands f139, DISRUPTIVE f154): a scrub parked right where the previous word
+// settles — the natural stop point — must show NO lone leading-edge pixel
+// column at the viewport edge (supervisor: "видно зарано пару пікселів",
+// left = DISRUPTIVE onset, right = KONZEPTE onset).
+const disruptiveLayer = findNamedObject(introData, "7_DISRUPTIVE Outlines");
+const konzepteLayer = findNamedObject(introData, "8_KONZEPTE Outlines");
+ok(Boolean(disruptiveLayer), "DISRUPTIVE intro layer exists");
+ok(Boolean(konzepteLayer), "KONZEPTE intro layer exists");
+eq(
+  valueAtPath(disruptiveLayer, ["ks", "p", "k", 0, "t"]),
+  144.999,
+  "DISRUPTIVE entrance onset frame",
+);
+eq(
+  valueAtPath(konzepteLayer, ["ks", "p", "k", 0, "t"]),
+  157.999,
+  "KONZEPTE entrance onset frame",
+);
 const ausgezeichnetesScaleKeys = valueAtPath(ausgezeichnetesLayer, [
   "ks",
   "s",

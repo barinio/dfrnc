@@ -10,7 +10,7 @@ import {
 import type { ComponentProps, ReactNode, MutableRefObject, Ref } from "react";
 import Loader from "./Loader";
 import { Canvas, useThree, useFrame } from "@react-three/fiber";
-import { AdaptiveDpr, Environment, useProgress } from "@react-three/drei";
+import { AdaptiveDpr, Environment, Preload, useProgress } from "@react-three/drei";
 import {
   EffectComposer,
   Noise,
@@ -374,13 +374,22 @@ export default function Scene() {
             toneMappingExposure: 1.1,
           }}
           camera={{ fov: 60, near: 0.1, far: 100, position: [0, 0, 8] }}
-          style={{ width: "100%", height: "100%", background: "#0a0a0a" }}
+          style={{ width: "100%", height: "100%", background: "#000000" }}
         >
           <PerformanceRegressor
             slowFrameMs={renderProfile.slowFrameMs}
             slowFrameLimit={renderProfile.slowFrameLimit}
           />
           <AdaptiveDpr />
+          {/* Warm the GPU pipeline while the intro loader still covers the
+              screen: gl.compile() every mounted material (glass transmission,
+              lottie plane, cards) so the FIRST scrolled frame of each phase
+              doesn't stall on a mid-scroll shader compile (the classic mobile
+              hitch). Re-run once the frame sequence is ready (key flip) so the
+              video card's SDF-masked material — mounted slightly later — gets
+              the same warm-up; already-compiled programs are cached, so the
+              second pass only compiles the newcomers. */}
+          <Preload key={videoReady ? "warm-video" : "warm-initial"} all />
           <RendererConfig exposure={toneMappingExposure} />
           <GradientBackground
             scrollRef={scrollRef}
