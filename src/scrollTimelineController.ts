@@ -114,6 +114,16 @@ export const GALLERY_FLICK_VELOCITY_PX_MS = 0.5;
 // A wheel burst that travelled at least this many px commits even below
 // GALLERY_COMMIT_FRAC, so a single mouse-wheel notch still advances a card.
 export const WHEEL_COMMIT_PX = 40;
+// A wheel event this many times larger than the decaying envelope of recent
+// deltas is a FRESH human impulse, not momentum residue: macOS trackpad
+// inertia produces monotonically decaying deltas at frame rate, so a new
+// swipe spikes far above the envelope. Without this, rhythmic trackpad
+// scrolling never sees a quiet window and every follow-up swipe is eaten as
+// "same burst" (supervisor: "скрол веде себе дуже погано і не завжди
+// спрацьовує в обидві сторони").
+export const WHEEL_FRESH_FACTOR = 2.5;
+export const WHEEL_FRESH_MIN_PX = 16;
+const WHEEL_ENVELOPE_DECAY = 0.8;
 // Settle animation for a FULL remaining span; scaled down by the distance
 // actually left, floored so the tail never pops.
 export const GALLERY_SETTLE_MS = 360;
@@ -301,8 +311,11 @@ export function createScrollTimelineController(
 
   let wheelBurstActive = false;
   // The current wheel burst has been fully spent (boundary entry, pin release,
-  // or discarded into a running transition) — its residue must stay inert.
+  // committed step, or discarded into a running transition) — its residue
+  // stays inert until the burst goes quiet OR a fresh impulse spikes above
+  // the envelope (a new human swipe inside the old momentum tail).
   let wheelBurstConsumed = false;
+  let wheelEnvelopePx = 0;
   let wheelQuietTimer: number | null = null;
   let touchActive = false;
   let touchOwned = false;
@@ -389,6 +402,7 @@ export function createScrollTimelineController(
       wheelQuietTimer = null;
       wheelBurstActive = false;
       wheelBurstConsumed = false;
+      wheelEnvelopePx = 0;
       if (scrub !== null && scrub.source === "wheel") settleScrub();
       settlePinnedMode();
     }, INPUT_QUIET_MS);
@@ -412,6 +426,11 @@ export function createScrollTimelineController(
     );
     galleryGp = galleryStepTargets()[stepper.index];
     mode = consumeCurrentGesture ? "gallery-transitioning" : "gallery-idle";
+    // A consumed entry must still reach "gallery-idle" on its own: entries
+    // driven by a bare scroll event (scrollbar drag, momentum crossing) have
+    // no gesture end of their own, and would otherwise leave the pin stuck in
+    // "gallery-transitioning" with keyboard steps dead.
+    if (consumeCurrentGesture) armWheelQuiet();
     movePhysicalScroll(pinY);
     publish();
   };
@@ -633,13 +652,27 @@ export function createScrollTimelineController(
     const delta = wheelDeltaPx(event, innerHeight);
     const direction = directionFor(delta);
     if (direction === 0) return;
+    const magnitude = Math.abs(delta);
+    // Fresh-impulse test BEFORE the envelope absorbs this event: a new human
+    // swipe spikes far above the decaying momentum tail it interrupts.
+    const freshImpulse =
+      magnitude >= WHEEL_FRESH_MIN_PX &&
+      magnitude > wheelEnvelopePx * WHEEL_FRESH_FACTOR;
+    wheelEnvelopePx = Math.max(
+      magnitude,
+      wheelEnvelopePx * WHEEL_ENVELOPE_DECAY,
+    );
 
     if (wheelBurstActive && wheelBurstConsumed) {
-      // Residue of a spent burst (boundary entry / release / discarded) stays
-      // inert until the burst goes quiet.
-      preventDefault(event);
-      armWheelQuiet();
-      return;
+      if (!freshImpulse) {
+        // Residue of a spent burst (boundary entry / release / committed /
+        // discarded) stays inert until quiet or a fresh impulse.
+        preventDefault(event);
+        armWheelQuiet();
+        return;
+      }
+      // A fresh swipe inside the old tail begins a NEW gesture right here.
+      wheelBurstConsumed = false;
     }
 
     if (isPinnedMode(mode)) {
@@ -656,9 +689,37 @@ export function createScrollTimelineController(
         wheelBurstConsumed = true;
         return;
       }
+      if (
+        active !== null &&
+        freshImpulse &&
+        direction !== active.direction
+      ) {
+        // Direction flip on a fresh swipe: drop the old scrub at its anchor
+        // (no settle animation — the new gesture owns the card now).
+        galleryGp = active.anchorGp;
+        scrub = null;
+        active = null;
+      }
       if (active === null) active = beginScrub("wheel", direction);
       active.totalPx += delta;
       applyScrub();
+      // Full clamp = the step is unambiguous: commit NOW instead of waiting
+      // out the quiet window, and burn the rest of this burst (still exactly
+      // one step per gesture). The next fresh impulse starts the next card.
+      const settled = scrub;
+      if (
+        settled !== null &&
+        settled.source === "wheel" &&
+        settled.result.kind === "step" &&
+        scrubFrac(settled) >= 1
+      ) {
+        stepper = settled.result.state;
+        galleryGp = settled.result.targetGp;
+        scrub = null;
+        wheelBurstConsumed = true;
+        settlePinnedMode();
+        publish();
+      }
       return;
     }
 
@@ -793,6 +854,7 @@ export function createScrollTimelineController(
     clearTouchQuiet();
     wheelBurstActive = false;
     wheelBurstConsumed = false;
+    wheelEnvelopePx = 0;
     touchActive = false;
     touchOwned = false;
     touchStepUsed = false;

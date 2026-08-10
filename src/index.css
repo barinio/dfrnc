@@ -27,6 +27,17 @@ body {
        backdrop is 0x000000). #0a0a0a here reads as a visible dark band on
        phones (supervisor: "маржин темний на мобілці — прибрати"). */
     background: #000;
+    /* No visible scrollbar (the radiance.family reference does the same):
+       with the pinned gallery the document is only GALLERY_PIN_TRACK_PX
+       longer than the seam, so the thumb sits at ~98% while the whole card
+       sequence is still ahead — a lying scrollbar is worse than none
+       (supervisor: "ползунок скролу знаходиться в самому знизу"). */
+    scrollbar-width: none;
+}
+
+html::-webkit-scrollbar,
+body::-webkit-scrollbar {
+    display: none;
 }
 
 body.scroll-locked {

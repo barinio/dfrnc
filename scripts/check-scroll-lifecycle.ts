@@ -321,10 +321,12 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   eq(latest().galleryStep, 0, "scrubbing does not commit mid-burst");
   ok(environment.wheel(900), "same burst residue remains owned");
   eq(latest().gp, targets[1], "one burst is clamped to the adjacent card", 1e-9);
-  eq(latest().galleryStep, 0, "a clamped burst is still uncommitted");
+  eq(latest().galleryStep, 1, "a fully-clamped burst commits immediately");
+  ok(environment.wheel(300), "post-commit residue remains owned");
+  eq(latest().galleryStep, 1, "burnt residue cannot advance a second card");
 
   environment.clock.advance(INPUT_QUIET_MS);
-  eq(latest().galleryStep, 1, "quiet commits exactly one card");
+  eq(latest().galleryStep, 1, "quiet keeps the single committed card");
   eq(latest().gp, targets[1], "committed scrub rests on the adjacent target", 1e-9);
   eq(latest().galleryMode, "gallery-idle", "settled scrub becomes idle");
 
@@ -344,6 +346,36 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
   eq(latest().galleryStep, 2, "a sub-threshold nudge does not commit");
   eq(latest().gp, targets[2], "a sub-threshold nudge eases back", 1e-9);
+
+  // Trackpad rhythm: a fresh impulse spiking above the decaying momentum
+  // envelope is a NEW gesture — the next card advances without any quiet gap.
+  ok(environment.wheel(320), "strong swipe is owned");
+  eq(latest().galleryStep, 3, "full-span swipe commits its card at once");
+  for (const tail of [100, 80, 64, 51, 41, 33, 26, 21, 17]) {
+    ok(environment.wheel(tail), "decaying momentum stays owned");
+  }
+  eq(latest().galleryStep, 3, "decaying momentum cannot advance a second card");
+  ok(environment.wheel(300), "fresh impulse inside the tail is owned");
+  eq(latest().galleryStep, 4, "fresh impulse advances the next card without quiet");
+  environment.clock.advance(INPUT_QUIET_MS);
+  eq(latest().galleryMode, "gallery-idle", "impulse chain settles idle");
+  controller.dispose();
+}
+
+// A scroll-driven entry (scrollbar drag / momentum crossing) settles to idle
+// on its own, so keyboard steps work without any wheel/touch gesture first.
+{
+  const harness = createHarness(seamY - 200);
+  const { environment, latest, controller } = harness;
+  environment.scrollY = seamY + 50;
+  environment.windowTarget.dispatch("scroll", {});
+  eq(latest().galleryMode, "gallery-transitioning", "scroll entry consumes the gesture");
+  eq(environment.scrollY, seamY, "scroll entry pins at the seam");
+  environment.clock.advance(INPUT_QUIET_MS + 1);
+  eq(latest().galleryMode, "gallery-idle", "scroll-driven entry settles to idle on its own");
+  environment.keyDown("ArrowDown");
+  environment.clock.advance(GALLERY_TRANSITION_MS + 1);
+  eq(latest().galleryStep, 1, "keyboard advances after a scroll-driven entry");
   controller.dispose();
 }
 
