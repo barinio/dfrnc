@@ -568,16 +568,20 @@ export function createScrollTimelineController(
     }
     if (active.result.kind !== "step") {
       // No adjacent card in the latched direction — this gesture can only
-      // release the pin. The card holds its anchor while the gesture builds up
-      // to the release threshold. A wheel burst that already committed a card
-      // cannot also release: leaving the gallery takes its own fresh gesture,
-      // so a flick's momentum tail never blows through the boundary.
+      // release the pin. The card holds its anchor while the gesture builds
+      // up to the release threshold. A wheel burst that already committed
+      // cards pays a HIGHER price (half a step span of extra travel) instead
+      // of being blocked outright: continuous riding through the gallery
+      // unpins at the boundary without ever needing a quiet gap (supervisor:
+      // upward scrolling stalled at the first card until a 1-2s pause), while
+      // a flick's decaying tail — which spent its energy on the cards —
+      // still cannot blow through.
       galleryGp = active.anchorGp;
-      if (active.source === "wheel" && wheelCommittedInBurst) {
-        publish();
-        return;
-      }
-      if (active.totalPx * active.direction >= TOUCH_STEP_PX) {
+      const releaseThresholdPx =
+        active.source === "wheel" && wheelCommittedInBurst
+          ? stepSpanPx() * 0.5
+          : TOUCH_STEP_PX;
+      if (active.totalPx * active.direction >= releaseThresholdPx) {
         scrub = null;
         // Touch burns the rest of the swipe (finger-lift = natural gesture
         // end); a wheel tail after a release just scrolls the page natively —

@@ -518,6 +518,27 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   wiggle.controller.dispose();
 }
 
+// Continuous riding back through the gallery unpins at the boundary WITHOUT
+// any quiet gap — the boundary just costs half a span of extra travel (the
+// regression: upward scrolling stalled at the first card until a 1-2s pause).
+{
+  const ride = createHarness(seamY);
+  ride.environment.clock.advance(INPUT_QUIET_MS);
+  for (let i = 0; i < 2; i += 1) {
+    ride.environment.keyDown("ArrowDown");
+    ride.environment.clock.advance(GALLERY_TRANSITION_MS + 1);
+  }
+  eq(ride.latest().galleryStep, 2, "ride starts two cards deep");
+  let released = false;
+  for (let i = 0; i < 20 && !released; i += 1) {
+    ride.environment.wheel(-150);
+    ride.environment.clock.advance(60); // < INPUT_QUIET_MS: never a quiet gap
+    released = ride.latest().galleryMode === "native-before";
+  }
+  ok(released, "continuous upward ride releases the pin without a quiet gap");
+  ride.controller.dispose();
+}
+
 // Editable/repeated keys are ignored and cancellable listeners are intentional.
 {
   const harness = createHarness(seamY);
