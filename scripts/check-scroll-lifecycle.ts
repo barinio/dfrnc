@@ -1,8 +1,10 @@
 // Deterministic lifecycle checks for the pinned gallery with GESTURE-FOLLOW
 // navigation: the card scrubs live with the finger/wheel (stops when the user
-// stops), then settles on release — forward to the adjacent card past the
-// commit threshold or a flick, back to its anchor otherwise. One gesture still
-// moves at most one step. Run manually with:
+// stops). TOUCH settles on finger lift — forward to the adjacent card past
+// the commit threshold or a flick, back to its anchor otherwise. WHEEL
+// FREEZES at quiet exactly where the scroll ended (the radiance.family
+// etalon): settling wheel input moved the card AFTER the user stopped, which
+// read as back-jumps and fly-aways on a macOS trackpad. Run manually with:
 //   npx tsx scripts/check-scroll-lifecycle.ts
 import {
   GALLERY_COMMIT_FRAC,
@@ -13,7 +15,6 @@ import {
   GALLERY_TRANSITION_MS,
   INPUT_QUIET_MS,
   TOUCH_STEP_PX,
-  WHEEL_COMMIT_PX,
   WHEEL_ENTRY_GRACE_MS,
   createScrollTimelineController,
 } from "../src/scrollTimelineController";
@@ -328,32 +329,35 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   eq(latest().galleryStep, 1, "the commit cooldown paces same-instant input");
 
   environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
-  eq(latest().galleryStep, 1, "a below-cooldown tail eases back at quiet");
-  eq(latest().gp, targets[1], "committed scrub rests on the adjacent target", 1e-9);
-  eq(latest().galleryMode, "gallery-idle", "settled scrub becomes idle");
+  eq(latest().galleryStep, 2, "a cooldown-clamped tail keeps its card at quiet");
+  eq(latest().gp, targets[2], "the freeze rests exactly where the scrub ended", 1e-9);
+  eq(latest().galleryMode, "gallery-idle", "frozen scrub becomes idle");
 
-  // Input during the settle transition is consumed, never queued.
-  ok(environment.wheel(100), "next settled burst is owned");
+  // After a freeze there is NO settle animation to swallow input — the very
+  // next wheel event resumes scrubbing from the frozen spot.
+  ok(environment.wheel(100), "next burst is owned");
   environment.clock.advance(INPUT_QUIET_MS);
-  eq(latest().galleryStep, 2, "past-commit travel advances at quiet");
-  ok(environment.wheel(80), "input during the settle is still consumed");
-  environment.clock.advance(SETTLE_DRAIN_MS + GALLERY_TRANSITION_MS);
-  eq(latest().galleryStep, 2, "transition input is not queued");
-  eq(latest().gp, targets[2], "settle finishes on its own target", 1e-9);
-  eq(latest().galleryMode, "gallery-idle", "quiet settled transition becomes idle");
-
-  // A tiny nudge below both commit thresholds eases back to its anchor.
-  ok(environment.wheel(WHEEL_COMMIT_PX / 2), "tiny nudge is owned");
-  ok(latest().gp > targets[2], "tiny nudge still moves the card while active");
+  const frozenTail = stepGpAt(2, 100);
+  eq(latest().gp, frozenTail, "quiet freezes the scrub mid-gap", 1e-9);
+  eq(latest().galleryStep, 2, "a sub-half freeze keeps its anchor step");
+  ok(environment.wheel(80), "post-freeze input immediately resumes");
+  ok(latest().gp > frozenTail, "the resumed scrub continues from the frozen spot");
   environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
-  eq(latest().galleryStep, 2, "a sub-threshold nudge does not commit");
-  eq(latest().gp, targets[2], "a sub-threshold nudge eases back", 1e-9);
+  eq(latest().galleryMode, "gallery-idle", "resumed scrub freezes idle again");
+
+  // Even a tiny nudge freezes where it stops — nothing snaps behind the user.
+  const beforeNudge = latest().gp;
+  ok(environment.wheel(20), "tiny nudge is owned");
+  ok(latest().gp > beforeNudge, "tiny nudge still moves the card while active");
+  const afterNudge = latest().gp;
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  eq(latest().gp, afterNudge, "the nudge freezes in place", 1e-9);
 
   // Continuous deliberate scrolling flows card after card with NO quiet gaps
   // (the trackpad complaint: gestures must never be eaten as "residue"),
   // paced only by the commit cooldown.
   const beforeSteady = latest().galleryStep;
-  for (let i = 0; i < 12; i += 1) {
+  for (let i = 0; i < 8; i += 1) {
     ok(environment.wheel(150), "steady scrolling stays owned");
     environment.clock.advance(60);
   }
@@ -366,8 +370,9 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
     afterSteady < targets.length - 1,
     "steady scrolling stays inside the gallery",
   );
+  const beforeQuiet = latest().gp;
   environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
-  eq(latest().gp, targets[afterSteady], "steady leftover settles on a target", 1e-9);
+  eq(latest().gp, beforeQuiet, "steady leftover freezes exactly where it ended", 1e-9);
   eq(latest().galleryMode, "gallery-idle", "steady chain settles idle");
   controller.dispose();
 }
@@ -537,6 +542,130 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   }
   ok(released, "continuous upward ride releases the pin without a quiet gap");
   ride.controller.dispose();
+}
+
+// Wheel STOP = FREEZE (the radiance.family etalon): when trackpad input goes
+// quiet the card stays EXACTLY where the scroll ended — no auto-commit
+// fly-away, and never the reported back-slide (card 4 already shown, quiet
+// eases back, card 3 rises again on the next swipe).
+{
+  const harness = createHarness(seamY - 40);
+  const { environment, latest, publications, controller } = harness;
+  environment.wheel(240);
+  environment.clock.advance(WHEEL_ENTRY_GRACE_MS);
+  const monotonicFrom = publications.length;
+
+  // A fresh partial swipe freezes in place at quiet.
+  ok(environment.wheel(120), "partial swipe is owned");
+  const frozen1 = stepGpAt(0, 120);
+  eq(latest().gp, frozen1, "partial swipe scrubs in proportion", 1e-9);
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  eq(latest().gp, frozen1, "card freezes where the scroll ended (no fly-away)", 1e-9);
+  eq(latest().galleryStep, 0, "sub-half freeze keeps the anchor step");
+  eq(latest().galleryMode, "gallery-idle", "frozen scrub settles to idle");
+
+  // Resuming scrubs onward from the frozen position and can commit.
+  ok(environment.wheel(SPAN), "resumed swipe is owned");
+  eq(latest().gp, targets[1], "resumed full span lands on the adjacent card", 1e-9);
+  eq(latest().galleryStep, 1, "resumed full span commits");
+
+  // THE reported bug: a committed burst's leftover must freeze, never slide
+  // back to its anchor at quiet.
+  ok(environment.wheel(100), "post-commit leftover is owned");
+  const frozen2 = stepGpAt(1, 100);
+  eq(latest().gp, frozen2, "leftover scrubs past the committed card", 1e-9);
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  eq(latest().gp, frozen2, "committed-burst leftover freezes (never slides back)", 1e-9);
+  eq(latest().galleryMode, "gallery-idle", "frozen leftover settles to idle");
+
+  // Cooldown-clamped full span: the card fully advanced visually while the
+  // commit stayed gated — at quiet it must KEEP the advanced card (this was
+  // the full-card back-jump on a real trackpad).
+  ok(environment.wheel(SPAN), "burst head is owned");
+  eq(latest().galleryStep, 2, "burst head commits its span");
+  ok(environment.wheel(SPAN + 60), "same-instant burst tail is owned");
+  eq(latest().gp, targets[3], "tail clamps fully onto the next card", 1e-9);
+  eq(latest().galleryStep, 2, "the cooldown gates the tail's commit");
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  eq(latest().gp, targets[3], "the fully-advanced card stays at quiet", 1e-9);
+  eq(latest().galleryStep, 3, "quiet freeze adopts the visually-advanced card");
+
+  // Through the whole forward-only sequence gp must never move backward.
+  for (let i = monotonicFrom + 1; i < publications.length; i += 1) {
+    ok(
+      publications[i].gp >= publications[i - 1].gp - 1e-9,
+      `forward-only wheel input never moves gp backward (publication ${i})`,
+    );
+  }
+  controller.dispose();
+}
+
+// A frozen mid-gap residue next to a boundary scrubs back to the end target
+// first — releasing the pin from a mid-card position would visually pop.
+{
+  const harness = createHarness(seamY);
+  const { environment, latest, controller } = harness;
+  environment.clock.advance(INPUT_QUIET_MS);
+  ok(environment.wheel(120), "seed swipe is owned");
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  const frozen = stepGpAt(0, 120);
+  eq(latest().gp, frozen, "seed swipe froze mid-gap", 1e-9);
+
+  ok(environment.wheel(-40), "upward resume is owned");
+  ok(
+    latest().gp < frozen && latest().gp > targets[0],
+    "upward resume scrubs back through the residue",
+  );
+  ok(
+    latest().galleryMode !== "native-before",
+    "a frozen mid position cannot release the pin outright",
+  );
+  ok(environment.wheel(-SPAN), "residue span is owned");
+  eq(latest().gp, targets[0], "residue commit rests on the first target", 1e-9);
+  ok(
+    latest().galleryMode !== "native-before",
+    "the residue commit itself does not unpin",
+  );
+  // The same burst rode the residue, so the boundary costs half a span.
+  ok(environment.wheel(-(SPAN / 2 + 8)), "release travel is owned");
+  eq(latest().galleryMode, "native-before", "continued outward travel releases");
+  controller.dispose();
+}
+
+// Keyboard from a frozen mid position eases to the adjacent target; at the
+// boundary it consumes the residue before releasing.
+{
+  const harness = createHarness(seamY);
+  const { environment, latest, controller } = harness;
+  environment.clock.advance(INPUT_QUIET_MS);
+  ok(environment.wheel(120), "seed swipe is owned");
+  environment.clock.advance(INPUT_QUIET_MS + SETTLE_DRAIN_MS);
+  const frozen = stepGpAt(0, 120);
+  eq(latest().gp, frozen, "seed swipe froze mid-gap", 1e-9);
+
+  ok(environment.keyDown("ArrowUp"), "boundary key is consumed");
+  environment.clock.advance(GALLERY_TRANSITION_MS + INPUT_QUIET_MS + 1);
+  eq(latest().gp, targets[0], "boundary key first consumes the residue", 1e-9);
+  ok(latest().galleryMode !== "native-before", "residue key does not unpin");
+  ok(environment.keyDown("ArrowUp"), "follow-up key is consumed");
+  eq(latest().galleryMode, "native-before", "follow-up key releases the pin");
+  controller.dispose();
+}
+
+// Losing focus mid-scrub freezes in place — a blur must not jump the card.
+{
+  const harness = createHarness(seamY);
+  const { environment, latest, controller } = harness;
+  environment.clock.advance(INPUT_QUIET_MS);
+  ok(environment.wheel(150), "blur-test swipe is owned");
+  const frozen = stepGpAt(0, 150);
+  eq(latest().gp, frozen, "swipe scrubbed before blur", 1e-9);
+  environment.windowTarget.dispatch("blur", {});
+  eq(latest().gp, frozen, "blur freezes the card in place", 1e-9);
+  environment.clock.advance(SETTLE_DRAIN_MS);
+  eq(latest().gp, frozen, "nothing moves after a blur freeze", 1e-9);
+  eq(latest().galleryMode, "gallery-idle", "blur freeze settles to idle");
+  controller.dispose();
 }
 
 // Editable/repeated keys are ignored and cancellable listeners are intentional.

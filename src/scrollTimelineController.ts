@@ -111,9 +111,6 @@ export const GALLERY_COMMIT_FRAC = 0.3;
 // Release velocity (px/ms toward the latched direction) that commits a short
 // swipe — the "flick" path.
 export const GALLERY_FLICK_VELOCITY_PX_MS = 0.5;
-// A wheel burst that travelled at least this many px commits even below
-// GALLERY_COMMIT_FRAC, so a single mouse-wheel notch still advances a card.
-export const WHEEL_COMMIT_PX = 40;
 // A wheel event this many times larger than the decaying envelope of recent
 // deltas is a FRESH human impulse, not momentum residue — used ONLY to let a
 // deliberate new swipe escape a consumed burst (boundary entry / pin
@@ -124,11 +121,17 @@ export const WHEEL_COMMIT_PX = 40;
 export const WHEEL_FRESH_FACTOR = 2.5;
 export const WHEEL_FRESH_MIN_PX = 16;
 const WHEEL_ENVELOPE_DECAY = 0.8;
-// Wheel advancement is CONTINUOUS ACCUMULATION instead (the Lenis/scroll-snap
-// model): every pinned wheel px feeds the scrub; a full step span commits the
-// card and accumulation restarts from the new anchor (overshoot dropped, so a
+// Wheel advancement is CONTINUOUS ACCUMULATION instead (the Lenis model):
+// every pinned wheel px feeds the scrub; a full step span commits the card
+// and accumulation restarts from the new anchor (overshoot dropped, so a
 // flick's tail refills at most ~one more span). The cooldown bounds the
 // commit cadence so heavy input steps through cards at a readable pace.
+// When the input goes QUIET the card FREEZES exactly where the scroll ended
+// (the radiance.family etalon: ScrollTrigger scrub with no snap) — settling
+// it onto a target moved the card AFTER the user stopped, read as jumps: a
+// committed burst's leftover eased BACK (card 4 already shown, quiet slid it
+// back, card 3 rose again on the next swipe), and a fresh partial swipe flew
+// FORWARD on its own. The next gesture just resumes from the frozen spot.
 export const WHEEL_COMMIT_COOLDOWN_MS = 160;
 // Boundary crossings absorb wheel input for a short TIME grace instead of
 // burning the whole gesture: burning meant a macOS momentum tail (plus the
@@ -332,10 +335,10 @@ export function createScrollTimelineController(
   let lastWheelCommitAt = -Infinity;
   let wheelEntryGraceUntil = -Infinity;
   // A commit already happened inside the current burst: its remaining tail
-  // may keep ACCUMULATING toward further full-span commits (deliberate
-  // continuous scrolling flows card by card), but a below-span leftover eases
-  // back at quiet instead of committing, and the pin can never RELEASE from
-  // a tail — leaving the gallery takes a fresh gesture of its own.
+  // keeps ACCUMULATING toward further full-span commits (deliberate
+  // continuous scrolling flows card by card), but at the boundary the ride
+  // pays a HALF-SPAN price to release the pin, so a flick's decaying tail —
+  // which spent its energy on the cards — cannot blow through.
   let wheelCommittedInBurst = false;
   let wheelQuietTimer: number | null = null;
   let touchActive = false;
@@ -424,7 +427,7 @@ export function createScrollTimelineController(
       wheelBurstActive = false;
       wheelBurstConsumed = false;
       wheelEnvelopePx = 0;
-      if (scrub !== null && scrub.source === "wheel") settleScrub();
+      if (scrub !== null && scrub.source === "wheel") freezeScrub();
       wheelCommittedInBurst = false;
       settlePinnedMode();
     }, INPUT_QUIET_MS);
@@ -536,6 +539,34 @@ export function createScrollTimelineController(
   const scrubFrac = (active: GalleryScrub) =>
     Math.min(scrubTravelPx(active) / stepSpanPx(), 1);
 
+  // Wheel stop = freeze: the card stays exactly where the scroll ended (the
+  // etalon behaviour) and only the step BOOKKEEPING adopts the nearest
+  // target, so keyboard steps and the next gesture resume consistently.
+  const freezeScrub = () => {
+    if (scrub === null) return;
+    scrub = null;
+    stepper = createGalleryStepperState(nearestStepIndex(galleryGp));
+    publish();
+  };
+
+  // A release request from a gp frozen MID-GAP would unpin with a card half
+  // in flight (visual pop on the native handoff) — substitute a step that
+  // first scrubs the residue back onto the end target; releasing then takes
+  // continued travel from the target itself.
+  const requestScrubStep = (direction: GalleryDirection): GalleryStepResult => {
+    const result = requestGalleryStep(stepper, direction);
+    if (result.kind === "step") return result;
+    const endTarget = galleryStepTargets()[stepper.index];
+    if (Math.abs(galleryGp - endTarget) > 1e-6) {
+      return {
+        kind: "step",
+        state: createGalleryStepperState(stepper.index),
+        targetGp: endTarget,
+      };
+    }
+    return result;
+  };
+
   const beginScrub = (
     source: GalleryScrub["source"],
     direction: GalleryDirection,
@@ -545,7 +576,7 @@ export function createScrollTimelineController(
       source,
       direction,
       anchorGp,
-      result: requestGalleryStep(stepper, direction),
+      result: requestScrubStep(direction),
       totalPx: 0,
       velocityPxMs: 0,
       lastMoveAt: environment.readNow(),
@@ -564,7 +595,7 @@ export function createScrollTimelineController(
       // release; a reversed wheel at the first card releasing the pin is the
       // DESIRED way back up.)
       active.direction = (-active.direction) as GalleryDirection;
-      active.result = requestGalleryStep(stepper, active.direction);
+      active.result = requestScrubStep(active.direction);
     }
     if (active.result.kind !== "step") {
       // No adjacent card in the latched direction — this gesture can only
@@ -600,10 +631,11 @@ export function createScrollTimelineController(
     publish();
   };
 
-  // End-of-gesture settle: commit to the adjacent card when the gesture
-  // travelled far enough (or flicked fast enough), otherwise ease back to the
-  // anchor. Duration scales with the distance actually left so short tails
-  // never feel like a fresh full animation.
+  // End-of-TOUCH settle (finger lift is a real gesture end; wheel quiet
+  // FREEZES instead): commit to the adjacent card when the gesture travelled
+  // far enough (or flicked fast enough), otherwise ease back to the anchor.
+  // Duration scales with the distance actually left so short tails never
+  // feel like a fresh full animation.
   const settleScrub = () => {
     if (scrub === null) return;
     const active = scrub;
@@ -616,16 +648,10 @@ export function createScrollTimelineController(
     }
     const frac = scrubFrac(active);
     const flick =
-      active.source === "touch" &&
       directionFor(active.velocityPxMs) === active.direction &&
       Math.abs(active.velocityPxMs) >= GALLERY_FLICK_VELOCITY_PX_MS;
-    const wheelCommit =
-      active.source === "wheel" && scrubTravelPx(active) >= WHEEL_COMMIT_PX;
-    let commit = frac >= GALLERY_COMMIT_FRAC || flick || wheelCommit;
-    // Post-commit wheel leftovers ease back: the burst already advanced its
-    // card(s); a below-span tail must not add another at quiet.
-    if (active.source === "wheel" && wheelCommittedInBurst) commit = false;
-    if (commit && active.result.kind === "step") {
+    const commit = frac >= GALLERY_COMMIT_FRAC || flick;
+    if (commit) {
       stepper = active.result.state;
     }
     const targetGp = commit ? active.result.targetGp : active.anchorGp;
@@ -650,7 +676,7 @@ export function createScrollTimelineController(
     if (mode !== "gallery-idle" || transition !== null || scrub !== null) {
       return;
     }
-    const result = requestGalleryStep(stepper, direction);
+    const result = requestScrubStep(direction);
     if (result.kind === "release-before") {
       releaseBefore();
       return;
@@ -906,13 +932,9 @@ export function createScrollTimelineController(
     touchStepUsed = false;
     touchStartY = null;
     touchLastY = null;
-    if (scrub !== null) {
-      // Losing focus/visibility mid-gesture: revert to the anchor without an
-      // animation so the step state stays consistent (no commit on blur).
-      galleryGp = scrub.anchorGp;
-      scrub = null;
-      publish();
-    }
+    // Losing focus/visibility mid-gesture: freeze in place — any motion
+    // behind the user's back reads as a jump when they come back.
+    freezeScrub();
     settlePinnedMode();
   };
 
