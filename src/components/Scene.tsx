@@ -65,6 +65,17 @@ function RendererConfig({ exposure }: { exposure: number }) {
   return null;
 }
 
+function SceneDiagBridge() {
+  const { scene } = useThree();
+  useEffect(() => {
+    (window as unknown as { __scene?: unknown }).__scene = scene;
+    return () => {
+      delete (window as unknown as { __scene?: unknown }).__scene;
+    };
+  }, [scene]);
+  return null;
+}
+
 function PerformanceRegressor({
   slowFrameMs,
   slowFrameLimit,
@@ -381,6 +392,7 @@ export default function Scene() {
             slowFrameLimit={renderProfile.slowFrameLimit}
           />
           <AdaptiveDpr />
+          {import.meta.env.DEV && <SceneDiagBridge />}
           {/* Warm the GPU pipeline while the intro loader still covers the
               screen: gl.compile() every mounted material (glass transmission,
               lottie plane, cards) so the FIRST scrolled frame of each phase
