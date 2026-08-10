@@ -403,6 +403,21 @@ eq(
   157.999,
   "KONZEPTE entrance onset frame",
 );
+// Hold positions sit ≥12px off-canvas (same margin the designer used for
+// UND/ENTWICKELT): at ±1000 the parent assembly transform left a ~1px ink
+// column just inside the canvas whose antialiased alpha straddles the
+// material's alphaTest 0.1 — invisible at texture dpr 1 (desktop), VISIBLE at
+// the phones' ssDpr 2 (supervisor's device/simulator screenshots).
+eq(
+  valueAtPath(disruptiveLayer, ["ks", "p", "k", 0, "s", 0]),
+  -1012,
+  "DISRUPTIVE hold position x",
+);
+eq(
+  valueAtPath(konzepteLayer, ["ks", "p", "k", 0, "s", 0]),
+  1012,
+  "KONZEPTE hold position x",
+);
 const ausgezeichnetesScaleKeys = valueAtPath(ausgezeichnetesLayer, [
   "ks",
   "s",
