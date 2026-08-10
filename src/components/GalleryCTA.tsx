@@ -20,10 +20,13 @@ const ctaWordmark = ctaWordmarkRaw.slice(ctaWordmarkRaw.indexOf("<svg"));
 
 interface Props {
   cardExitRef: MutableRefObject<number>;
-  // Screen fraction (from the top) just below the last card's lowest corner,
+  // CSS px from the viewport top just below the last card's lowest corner,
   // projected by CardStack through the live camera with a 2px guard. The
   // wordmark is clipped BELOW this line, so the rising card uncovers fully
-  // opaque text without the CTA occluding a tilted card corner.
+  // opaque text without the CTA occluding a tilted card corner. Pixels (of
+  // the 100svh canvas) rather than a fraction, because this overlay spans the
+  // DYNAMIC viewport: a % inset resolves against the taller chrome-hidden
+  // height on phones and would drop the reveal line below the card.
   ctaClipRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
@@ -72,8 +75,9 @@ export default function GalleryCTA({
       if (wrap) {
         wrap.style.opacity = String(op);
         // The visible reveal starts below the card's lowest projected corner
-        // and antialiasing guard, at full opacity.
-        wrap.style.clipPath = `inset(${(ctaClipRef.current * 100).toFixed(2)}% 0 0 0)`;
+        // and antialiasing guard, at full opacity. Pixel inset — see the prop
+        // comment: a % here would resolve against the taller dynamic viewport.
+        wrap.style.clipPath = `inset(${ctaClipRef.current.toFixed(1)}px 0 0 0)`;
         wrap.style.pointerEvents = exit > 0.5 ? "auto" : "none";
         wrap.setAttribute("aria-hidden", exit > 0.5 ? "false" : "true");
       }

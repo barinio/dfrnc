@@ -60,10 +60,15 @@ const ENTER_FADE = 0.4;
 interface Props {
   galleryRef: MutableRefObject<number>;
   cardExitRef: MutableRefObject<number>;
-  // Screen fraction (from the top) just below the LAST card's lowest projected
-  // corner (plus a 2px antialiasing guard). GalleryCTA clips to BELOW this line,
-  // so the rising card uncovers already-opaque text without being occluded.
-  // 1 = wordmark fully hidden, 0 = no clipping.
+  // CSS PIXELS from the viewport top just below the LAST card's lowest
+  // projected corner (plus a 2px antialiasing guard). GalleryCTA clips to
+  // BELOW this line, so the rising card uncovers already-opaque text without
+  // being occluded. PIXELS, not a fraction: the fraction is measured against
+  // the 100svh canvas, but the fixed inset:0 CTA overlay spans the DYNAMIC
+  // viewport — taller when mobile browser chrome hides — so a %-based
+  // clip-path lands frac·(dvh−svh) px too LOW there (supervisor: a black
+  // "margin" between the card's bottom edge and the revealed text).
+  // canvasHeight px = fully hidden, 0 = no clipping.
   ctaClipRef: MutableRefObject<number>;
   reducedMotion?: boolean;
 }
@@ -153,7 +158,7 @@ export default function CardStack({
     group.visible = stackOpacity > 0;
     if (!group.visible) {
       cardExitRef.current = 0; // titles stay fully opaque before the card phase
-      ctaClipRef.current = 1; // wordmark fully clipped outside the card phase
+      ctaClipRef.current = size.height; // wordmark fully clipped outside the card phase
       return;
     }
     group.renderOrder = 0;
@@ -300,7 +305,8 @@ export default function CardStack({
         );
       }
     }
-    ctaClipRef.current = THREE.MathUtils.clamp(lastCardBottomFrac, 0, 1);
+    ctaClipRef.current =
+      THREE.MathUtils.clamp(lastCardBottomFrac, 0, 1) * size.height;
   });
 
   return (

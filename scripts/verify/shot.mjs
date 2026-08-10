@@ -112,21 +112,21 @@ if (printCanvasInfo) {
 // KEEP IN SYNC with constants.ts.
 const VID_FLY_END = 0.4;
 const VIDEO_CARD_TRACK_VH = 140;
-const IMAGE_GALLERY_TRACK_VH = 420;
+const GALLERY_PIN_TRACK_PX = 300; // physical pin-release span (px, NOT vh)
 async function scrollToGp(page, gp, track) {
   await page.evaluate(
-    ({ gp, track, VID_FLY_END, VIDEO_CARD_TRACK_VH, IMAGE_GALLERY_TRACK_VH }) => {
+    ({ gp, track, VID_FLY_END, VIDEO_CARD_TRACK_VH, GALLERY_PIN_TRACK_PX }) => {
       const ih = window.innerHeight;
       const animY = ((track - 100) / 100) * ih;
       const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * ih;
-      const imagePx = (IMAGE_GALLERY_TRACK_VH / 100) * ih;
+      const imagePx = GALLERY_PIN_TRACK_PX;
       const s =
         gp <= VID_FLY_END
           ? (gp / VID_FLY_END) * videoCardPx
           : videoCardPx + ((gp - VID_FLY_END) / (1 - VID_FLY_END)) * imagePx;
       window.scrollTo(0, animY + s);
     },
-    { gp, track, VID_FLY_END, VIDEO_CARD_TRACK_VH, IMAGE_GALLERY_TRACK_VH },
+    { gp, track, VID_FLY_END, VIDEO_CARD_TRACK_VH, GALLERY_PIN_TRACK_PX },
   );
 }
 
