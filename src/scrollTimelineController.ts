@@ -130,6 +130,14 @@ const WHEEL_ENVELOPE_DECAY = 0.8;
 // flick's tail refills at most ~one more span). The cooldown bounds the
 // commit cadence so heavy input steps through cards at a readable pace.
 export const WHEEL_COMMIT_COOLDOWN_MS = 160;
+// Boundary crossings absorb wheel input for a short TIME grace instead of
+// burning the whole gesture: burning meant a macOS momentum tail (plus the
+// user's seamlessly continued scrolling — gentle ramps never spike above the
+// tail's envelope) was eaten for seconds after the pin caught (supervisor:
+// "продовжую скролити далі але нічого не відбувається секунди 2"). The grace
+// soaks up the crossing momentum peak; everything after it accumulates, so a
+// continued scroll flows straight into the cards.
+export const WHEEL_ENTRY_GRACE_MS = 250;
 // Settle animation for a FULL remaining span; scaled down by the distance
 // actually left, floored so the tail never pops.
 export const GALLERY_SETTLE_MS = 360;
@@ -322,6 +330,7 @@ export function createScrollTimelineController(
   let wheelBurstConsumed = false;
   let wheelEnvelopePx = 0;
   let lastWheelCommitAt = -Infinity;
+  let wheelEntryGraceUntil = -Infinity;
   // A commit already happened inside the current burst: its remaining tail
   // may keep ACCUMULATING toward further full-span commits (deliberate
   // continuous scrolling flows card by card), but a below-span leftover eases
@@ -442,8 +451,12 @@ export function createScrollTimelineController(
     // A consumed entry must still reach "gallery-idle" on its own: entries
     // driven by a bare scroll event (scrollbar drag, momentum crossing) have
     // no gesture end of their own, and would otherwise leave the pin stuck in
-    // "gallery-transitioning" with keyboard steps dead.
-    if (consumeCurrentGesture) armWheelQuiet();
+    // "gallery-transitioning" with keyboard steps dead. The wheel grace soaks
+    // up the crossing momentum peak; the rest of the tail then accumulates.
+    if (consumeCurrentGesture) {
+      armWheelQuiet();
+      wheelEntryGraceUntil = environment.readNow() + WHEEL_ENTRY_GRACE_MS;
+    }
     movePhysicalScroll(pinY);
     publish();
   };
@@ -566,8 +579,10 @@ export function createScrollTimelineController(
       }
       if (active.totalPx * active.direction >= TOUCH_STEP_PX) {
         scrub = null;
+        // Touch burns the rest of the swipe (finger-lift = natural gesture
+        // end); a wheel tail after a release just scrolls the page natively —
+        // that IS the user continuing in the released direction.
         if (active.source === "touch") touchStepUsed = true;
-        else wheelBurstConsumed = true;
         if (active.result.kind === "release-before") releaseBefore();
         else releaseAfter();
         return;
@@ -711,6 +726,9 @@ export function createScrollTimelineController(
       preventDefault(event);
       wheelBurstActive = true;
       armWheelQuiet();
+      // Absorb the boundary-crossing momentum peak; after the grace the same
+      // physical scroll seamlessly starts scrubbing the first card.
+      if (environment.readNow() < wheelEntryGraceUntil) return;
       let active = scrub;
       if (active !== null && active.source !== "wheel") {
         // A live touch drag owns the card; wheel input stays consumed.
@@ -753,7 +771,6 @@ export function createScrollTimelineController(
       if (direction > 0 && rawY + delta >= seamY) {
         preventDefault(event);
         wheelBurstActive = true;
-        wheelBurstConsumed = true;
         armWheelQuiet();
         enterGallery("before", true);
       }
@@ -763,7 +780,6 @@ export function createScrollTimelineController(
       if (direction < 0 && rawY + delta <= galleryEndY) {
         preventDefault(event);
         wheelBurstActive = true;
-        wheelBurstConsumed = true;
         armWheelQuiet();
         enterGallery("after", true);
       }

@@ -14,6 +14,7 @@ import {
   INPUT_QUIET_MS,
   TOUCH_STEP_PX,
   WHEEL_COMMIT_PX,
+  WHEEL_ENTRY_GRACE_MS,
   createScrollTimelineController,
 } from "../src/scrollTimelineController";
 import type {
@@ -303,8 +304,8 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   controller.dispose();
 }
 
-// The crossing burst is burned at the seam; a fresh burst SCRUBS the card in
-// proportion to its travel and commits only once it goes quiet.
+// The crossing momentum peak is ABSORBED at the seam for a short grace; after
+// it, wheel input SCRUBS the card in proportion to its travel.
 {
   const harness = createHarness(seamY - 40);
   const { environment, latest, controller } = harness;
@@ -313,9 +314,10 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   eq(latest().gp, VID_FLY_END, "entry lands at first photo-ready state");
   eq(latest().galleryStep, 0, "entry does not advance a photo");
   ok(environment.wheel(500), "entry momentum remains cancelled");
-  eq(latest().galleryStep, 0, "entry momentum cannot advance a photo");
+  eq(latest().galleryStep, 0, "in-grace momentum cannot advance a photo");
+  eq(latest().gp, VID_FLY_END, "in-grace momentum does not scrub the card", 1e-9);
 
-  environment.clock.advance(INPUT_QUIET_MS);
+  environment.clock.advance(WHEEL_ENTRY_GRACE_MS);
   ok(environment.wheel(80), "fresh gallery wheel is owned");
   eq(latest().gp, stepGpAt(0, 80), "wheel scrub follows burst travel", 1e-9);
   eq(latest().galleryStep, 0, "scrubbing does not commit mid-burst");
