@@ -21,6 +21,7 @@ import { ACESFilmicToneMapping } from "three";
 import { ScrollToneMapping, ScrollToneMappingEffect } from "./ScrollToneMapping";
 import { Leva, useControls, folder } from "@debug/controls";
 import ArcModel, { figureOpacityLive } from "./ArcModel";
+import { startGyroTilt } from "../gyroTilt";
 import LottiePlane from "./LottiePlane";
 import GradientBackground from "./GradientBackground";
 import VideoPlane from "./VideoPlane";
@@ -216,6 +217,14 @@ export default function Scene() {
   // last frame inside LottiePlane, nothing to animate.
   useEffect(() => {
     if (reducedMotion) setPhase("done");
+  }, [reducedMotion]);
+
+  // Device-orientation tilt for the figures on phones (SPIKE). Started once
+  // here (the ArcModels mount lazily per window) — the iOS permission prompt
+  // is armed on the first touchend/click, Android listens straight away.
+  useEffect(() => {
+    if (reducedMotion) return;
+    return startGyroTilt();
   }, [reducedMotion]);
 
   // Discrete state derived from scroll — flips only when a threshold is crossed,

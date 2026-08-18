@@ -90,6 +90,7 @@ import {
   IDLE_AMP_X,
   IDLE_AMP_Y,
 } from "../src/cursorTilt";
+import { orientationToPointer } from "../src/gyroTilt";
 import {
   browserNeedsConservativeRenderProfile,
   createRenderProfile,
@@ -2329,6 +2330,30 @@ for (const f of FIGURES) {
   ok(ir.x === 0 && ir.y === 0, "reduced motion ⇒ no idle drift");
 
   console.log("✓ cursor tilt");
+}
+
+// ── Gyro tilt (device orientation → the cursor's −1..1 pointer signal) ──
+{
+  const o = orientationToPointer;
+  // Neutral pose (no relative tilt) is dead centre.
+  const z = o(0, 0, 0);
+  ok(z.x === 0 && z.y === 0, "gyro: neutral ⇒ 0,0");
+  // Sub-dead-zone jitter is ignored.
+  const j = o(0.3, -0.3, 0);
+  ok(j.x === 0 && j.y === 0, "gyro: sensor jitter inside the dead zone ⇒ 0");
+  // Portrait: tilt right (+gamma) ⇒ +x (cursor at the right); top away
+  // (−beta) ⇒ +y (cursor at the top).
+  ok(o(0, 10, 0).x > 0 && o(0, 10, 0).y === 0, "gyro portrait: +gamma ⇒ +x");
+  ok(o(-10, 0, 0).y > 0 && o(-10, 0, 0).x === 0, "gyro portrait: −beta ⇒ +y");
+  // Symmetric and clamped to ±1.
+  eq(o(0, 10, 0).x, -o(0, -10, 0).x, "gyro: x is odd-symmetric");
+  eq(o(0, 90, 0).x, 1, "gyro: clamps at +1");
+  eq(o(90, 0, 0).y, -1, "gyro: clamps at −1");
+  // Landscape swaps the physical axes; the two landscapes are mirror images.
+  ok(o(10, 0, 90).x > 0 && o(10, 0, 90).y === 0, "gyro landscape 90: beta drives x");
+  eq(o(10, 0, 90).x, -o(10, 0, 270).x, "gyro: 90° and 270° mirror in x");
+  eq(o(0, 10, 90).y, -o(0, 10, 270).y, "gyro: 90° and 270° mirror in y");
+  console.log("✓ gyro tilt");
 }
 
 console.log("check-playback: all assertions passed");

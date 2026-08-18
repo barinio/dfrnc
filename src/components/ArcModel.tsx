@@ -9,6 +9,7 @@ import type { Phase } from "../playback";
 import { makeArc, FIGURES } from "../arc";
 import type { FigureDef } from "../arc";
 import { figureRectsLive, figureHitTesters } from "../figureHover";
+import { gyroPointer } from "../gyroTilt";
 import type { FigureMaterialMode } from "../renderProfile";
 
 useGLTF.setDecoderPath(
@@ -133,6 +134,9 @@ export default function ArcModel({
   const ptr = useRef({ x: 0, y: 0 });
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
+      // On phones the gyro (gyroPointer) owns the tilt; a scrolling finger's
+      // pointermove must not fight it.
+      if (gyroPointer.active && e.pointerType === "touch") return;
       ptr.current.x = (e.clientX / window.innerWidth) * 2 - 1;
       ptr.current.y = -((e.clientY / window.innerHeight) * 2 - 1);
     };
@@ -498,10 +502,13 @@ export default function ArcModel({
     // Smooth mouse parallax — ~8° max (doubled from 0.07 per supervisor: the
     // cursor reaction on the intro figures read too subtle), framerate-
     // independent lerp toward the window-tracked pointer.
+    // On touch devices the device-orientation source (gyroTilt.ts) feeds the
+    // same −1..1 signal, so phones get the identical lerp/max as the cursor.
     const MOUSE_MAX = 0.14;
     const lerpK = 1 - Math.exp(-delta * 4);
-    mouseRotY.current += (ptr.current.x * MOUSE_MAX - mouseRotY.current) * lerpK;
-    mouseRotX.current += (-ptr.current.y * MOUSE_MAX - mouseRotX.current) * lerpK;
+    const src = gyroPointer.active ? gyroPointer : ptr.current;
+    mouseRotY.current += (src.x * MOUSE_MAX - mouseRotY.current) * lerpK;
+    mouseRotX.current += (-src.y * MOUSE_MAX - mouseRotX.current) * lerpK;
 
     // Apex-centred spin: zero (frontal) exactly at t = 0.5 — the dome apex —
     // edge-on entering and leaving. spinTurns is the total turn across the
