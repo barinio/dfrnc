@@ -172,9 +172,21 @@ ok(
 );
 ok(/position:\s*fixed\s*;/.test(galleryCtaRule), "gallery CTA stays fixed");
 ok(/inset:\s*0\s*;/.test(galleryCtaRule), "gallery CTA covers the viewport");
+// The CTA wrapper must NOT paint its own sheet: it sits above the canvas, and
+// an opaque background (even pure black) falls over the finale title, which is
+// a canvas plane sliding down off the bottom in lockstep with the leaving
+// card — the title then reads as dimming/fading instead of leaving the screen
+// (supervisor, 2026-08-18: "прибереш опасіті? хай просто за межі екрану йде").
 ok(
-  /background-color:\s*#(?:000|000000)\s*;/i.test(galleryCtaRule),
-  "gallery CTA coverage is pure black",
+  /background-color:\s*transparent\s*;/i.test(galleryCtaRule),
+  "gallery CTA wrapper is transparent (no sheet over the sliding title)",
+);
+// The band beyond the 100svh canvas that the sheet once covered on phones is
+// handled by the page background instead — keep it pure black.
+const pageRule = cssRuleBody(indexCss, "body");
+ok(
+  /background:\s*#(?:000|000000)\s*;/i.test(pageRule),
+  "page background is pure black (covers the mobile band beyond 100svh)",
 );
 ok(
   /clip-path:\s*inset\([^;]+\)\s*;/.test(galleryCtaRule),

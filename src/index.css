@@ -167,12 +167,19 @@ body.scroll-locked {
 
 /* Gallery CTA — DOM overlay above the fixed canvas, shown only on the final
    gallery frame (opacity driven imperatively from gallery progress). Reads as a
-   10th "slide": the wordmark on black. GalleryCTA drives the same clip-path to
-   the last card's live bottom edge, so the rising card uncovers both the
-   wordmark and the black coverage underneath it. That coverage also fills the
-   live visual-viewport area beyond the stable 100svh canvas when mobile browser
-   chrome collapses. The visible part stays at FULL opacity ("текст уже повинен
-   бути видимий одразу, а не полупрозорим") — never a translucent fade. */
+   10th "slide": JUST the wordmark on the scene's existing black backdrop.
+   GalleryCTA drives clip-path to the last card's live bottom edge, so the
+   rising card uncovers the wordmark; the visible part stays at FULL opacity
+   ("текст уже повинен бути видимий одразу, а не полупрозорим") — never a
+   translucent fade. The wrapper is TRANSPARENT on purpose: it sits ABOVE
+   .canvas-layer, and the finale title (UND MULTIDISZIPLINÄRE GESTALTUNG) is a
+   canvas plane that SLIDES DOWN off the bottom in lockstep with the leaving
+   card (GalleryTitles). A black sheet here (08-08 → 08-18) fell over that
+   sliding title through the sheet's own opacity ramp — on the phone the text
+   read as DIMMING to grey and vanishing instead of leaving the screen
+   (supervisor: "прибереш опасіті? хай просто за межі екрану йде"). The
+   mobile band beyond the 100svh canvas that the sheet once covered is now
+   handled by the pure-black html/body background above. */
 .gallery-cta {
     position: fixed;
     inset: 0;
@@ -180,7 +187,7 @@ body.scroll-locked {
     display: flex;
     align-items: center;
     justify-content: center;
-    background-color: #000000;
+    background-color: transparent;
     opacity: 0;
     clip-path: inset(100% 0 0 0); /* fully clipped until CardStack drives it */
     pointer-events: none;
