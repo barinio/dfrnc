@@ -222,8 +222,11 @@ export default function Scene() {
   // Device-orientation tilt for the figures on phones (SPIKE). Started once
   // here (the ArcModels mount lazily per window) — the iOS permission prompt
   // is armed on the first touchend/click, Android listens straight away.
+  // GATED behind `?gyro=1` while unapproved: without the flag nothing is
+  // armed, so production shows no sensor prompt. Drop the gate on approval.
   useEffect(() => {
     if (reducedMotion) return;
+    if (!new URLSearchParams(window.location.search).has("gyro")) return;
     return startGyroTilt();
   }, [reducedMotion]);
 
