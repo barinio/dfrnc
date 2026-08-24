@@ -52,6 +52,12 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
   const width = input.width ?? currentWidth();
   const narrow = width < 900;
   const conservative = browserNeedsConservativeRenderProfile(input.userAgent);
+  // Adreno GPUs run mediump as REAL fp16: the glass shader's iridescence /
+  // dispersion math overflows half-float range into NaN — big black blotches
+  // with dithered edges that shimmer frame to frame (seen on a Redmi Note 8;
+  // invisible on desktop where mediump ≥ fp32, and iOS GPUs clamp gracefully).
+  // So Android keeps the lightened profile but computes in highp.
+  const android = /Android/.test(input.userAgent ?? currentUserAgent());
 
   if (conservative) {
     return {
@@ -76,7 +82,7 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
       // it added the most GPU cost for the least extra gain, so dropping it keeps
       // the higher DPR affordable on weaker phones without changing the look.
       antialias: false,
-      precision: "mediump",
+      precision: android ? "highp" : "mediump",
       // Render the Lottie/title canvas at the same higher DPR so the text SOURCE
       // is crisp (otherwise a low-res texture just gets magnified on the 2× canvas).
       maxCanvasTextureDpr: narrow ? 2 : 1.5,

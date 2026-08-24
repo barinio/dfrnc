@@ -81,7 +81,7 @@ eq(firefoxWide.figureMaterialMode, "full", "desktop Firefox keeps color-preservi
 const androidPhone = createRenderProfile({ userAgent: chromeAndroid, width: 412 });
 eq(androidPhone.enablePostFx, false, "Android Chrome skips postprocessing");
 eq(androidPhone.enableEnvironment, false, "Android Chrome skips PMREM environment setup");
-eq(androidPhone.precision, "mediump", "Android Chrome uses the lightweight shader precision");
+eq(androidPhone.precision, "highp", "Android computes in highp — Adreno mediump (real fp16) NaNs the glass iridescence/dispersion into black blotches");
 eq(androidPhone.dpr[1], 2, "Android Chrome renders up to 2x like the other narrow conservative devices");
 eq(androidPhone.figureMaterialMode, "full", "Android Chrome keeps color-preserving figure materials");
 
