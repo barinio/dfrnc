@@ -23,6 +23,10 @@ const chromeDesktop =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 const firefoxDesktop =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.5; rv:127.0) Gecko/20100101 Firefox/127.0";
+const chromeAndroid =
+  "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.6478.71 Mobile Safari/537.36";
+const chromeAndroidTablet =
+  "Mozilla/5.0 (Linux; Android 13; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
 
 ok(
   browserNeedsConservativeRenderProfile(safariIOS),
@@ -39,6 +43,20 @@ ok(
 ok(
   browserNeedsConservativeRenderProfile(firefoxDesktop),
   "desktop Firefox gets the conservative render profile",
+);
+// Android Chrome is a PHONE GPU with a desktop-Chrome user agent string: it used
+// to fall through to the full desktop profile (EffectComposer + PMREM studio HDR
+// + highp), which is exactly the budget a mid-range phone cannot pay while the
+// transmission glass is on screen. Every mobile Android browser (Chrome, Samsung
+// Internet, the WebViews) carries "Android" in the UA, so that single token
+// routes them all to the same lightened profile iOS already gets.
+ok(
+  browserNeedsConservativeRenderProfile(chromeAndroid),
+  "Android Chrome (phone) gets the conservative render profile",
+);
+ok(
+  browserNeedsConservativeRenderProfile(chromeAndroidTablet),
+  "Android Chrome (tablet, no Mobile token) gets the conservative render profile",
 );
 
 const safariPhone = createRenderProfile({ userAgent: safariIOS, width: 390 });
@@ -59,6 +77,13 @@ eq(safariWide.maxCanvasTextureDpr, 1.5, "desktop Safari Lottie upload DPR raised
 const firefoxWide = createRenderProfile({ userAgent: firefoxDesktop, width: 1280 });
 eq(firefoxWide.enablePostFx, false, "desktop Firefox skips postprocessing");
 eq(firefoxWide.figureMaterialMode, "full", "desktop Firefox keeps color-preserving figure materials");
+
+const androidPhone = createRenderProfile({ userAgent: chromeAndroid, width: 412 });
+eq(androidPhone.enablePostFx, false, "Android Chrome skips postprocessing");
+eq(androidPhone.enableEnvironment, false, "Android Chrome skips PMREM environment setup");
+eq(androidPhone.precision, "mediump", "Android Chrome uses the lightweight shader precision");
+eq(androidPhone.dpr[1], 2, "Android Chrome renders up to 2x like the other narrow conservative devices");
+eq(androidPhone.figureMaterialMode, "full", "Android Chrome keeps color-preserving figure materials");
 
 const chromeWide = createRenderProfile({ userAgent: chromeDesktop, width: 1280 });
 eq(chromeWide.dpr[1], 1.5, "desktop Chrome keeps the existing DPR cap");

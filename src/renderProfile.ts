@@ -37,7 +37,15 @@ export function browserNeedsConservativeRenderProfile(
     !/Chrom(e|ium)\//.test(userAgent) &&
     !/CriOS\//.test(userAgent);
   const isIOS = /iP(ad|hone|od)/.test(userAgent);
-  return isFirefox || isSafari || isIOS;
+  // Android Chrome reports a DESKTOP-shaped UA ("Chrome/… Safari/537.36"), so it
+  // used to fall through to the full desktop budget — EffectComposer (SMAA +
+  // Noise + tone-mapping passes) plus a PMREM-convolved studio HDR pulled from a
+  // CDN — on a phone GPU that also has to carry the transmission glass. Routing
+  // every Android browser (Chrome, Samsung Internet, the WebViews all carry
+  // "Android") to the same lightened profile iOS already uses is the point: the
+  // conservative branch is a MOBILE profile, not a Safari/Firefox quirk list.
+  const isAndroid = /Android/.test(userAgent);
+  return isFirefox || isSafari || isIOS || isAndroid;
 }
 
 export function createRenderProfile(input: RenderProfileInput = {}): RenderProfile {
