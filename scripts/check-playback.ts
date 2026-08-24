@@ -1315,7 +1315,11 @@ for (const f of FIGURES) {
   const videoPlaneSource = readFileSync(new URL("../src/components/VideoPlane.tsx", import.meta.url), "utf8");
   ok(
     /FrameSequenceLoader/.test(videoPlaneSource) &&
-      /frameIndexFor\(/.test(videoPlaneSource) &&
+      // The scroll-bound target (float, un-rounded) plus the rate-limited chase
+      // that paints it — see src/frameScrub.ts. Was frameIndexFor() before the
+      // scrub cap; the frame is still an exact function of scroll position.
+      /scrubTargetFrameFor\(/.test(videoPlaneSource) &&
+      /advanceScrubFrame\(/.test(videoPlaneSource) &&
       !/document\.createElement\("video"\)/.test(videoPlaneSource) &&
       !/\.currentTime\s*=/.test(videoPlaneSource),
     "VideoPlane scrubs the frame sequence (no <video> element / currentTime seeking)",

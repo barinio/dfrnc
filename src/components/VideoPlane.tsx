@@ -11,11 +11,11 @@ import {
 import { VID_FLY_END } from "../constants";
 import {
   FrameSequenceLoader,
-  frameIndexFor,
   frameLoaderBudgetFor,
   frameTierForScreen,
   FRAME_COUNT,
 } from "../frames";
+import { advanceScrubFrame, scrubTargetFrameFor } from "../frameScrub";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV clip as an in-scene mesh at z = −3.5, between the
@@ -30,7 +30,7 @@ import type { Phase } from "../playback";
 // In the gallery (gp > 0) the same plane MORPHS into slide #1: it crops from the
 // top, then horizontally, down to an image-card rect (gaining rounded corners via
 // a fragment SDF mask), holds, then flies straight UP off the top FULLY OPAQUE —
-// scrubbing the whole time (videoMasterTimeFor → frameIndexFor). The crop is a
+// scrubbing the whole time (videoMasterTimeFor → scrubTargetFrameFor). The crop is a
 // true texture sub-window of the full-bleed cover image (no squash). While the
 // crop is actively forming a full-screen screen-space clip is used; once the card
 // is formed, the real card mesh takes over. The black GalleryBackdrop sits behind
@@ -71,6 +71,10 @@ export default function VideoPlane({
   const textureRef = useRef<THREE.Texture | null>(null);
   const loaderRef = useRef<FrameSequenceLoader | null>(null);
   const currentImgRef = useRef<HTMLImageElement | null>(null);
+  // Float position of the frame actually being PAINTED. The scroll target is
+  // still an exact function of scroll position; this chases it at a bounded
+  // rate (see frameScrub.ts). null = nothing painted yet ⇒ adopt the target.
+  const displayedFrameRef = useRef<number | null>(null);
   // True once the staged startup barrier has settled (the sequence can render
   // frame 0 or the nearest successfully loaded startup anchor).
   const readyRef = useRef(false);
@@ -183,7 +187,7 @@ export default function VideoPlane({
     };
   }, [notifyReady]);
 
-  useFrame(() => {
+  useFrame((_state, delta) => {
     const texture = textureRef.current;
     const mat = matRef.current;
     const mesh = meshRef.current;
@@ -206,14 +210,29 @@ export default function VideoPlane({
     const opacity = videoStateFor(sp, phase).opacity * morph.opacity;
     mat.opacity = opacity;
 
-    // Pick + upload the scroll-indexed frame. get() returns the nearest loaded
-    // frame, so a fast scroll that outruns the download holds a near frame
-    // instead of going blank; once decoded the exact frame lands next tick.
-    const idx = frameIndexFor(t);
+    // Pick + upload the frame. The scroll target stays an exact function of
+    // scroll position, but the PAINTED frame chases it at a bounded rate
+    // (frameScrub.ts) — a wheel notch that moves the target 10–15 frames in one
+    // tick used to strobe. "done" (reduced motion) never scrubs: it holds the
+    // static last frame, so it snaps rather than animating there.
+    const targetFrame = scrubTargetFrameFor(t);
+    const displayed =
+      phase === "done"
+        ? targetFrame
+        : advanceScrubFrame(displayedFrameRef.current, targetFrame, delta);
+    displayedFrameRef.current = displayed;
+    // get() returns the nearest loaded frame, so a fast scroll that outruns the
+    // download holds a near frame instead of going blank; once decoded the exact
+    // frame lands next tick. Requesting the DISPLAYED index (not the target)
+    // keeps the loader's foreground priority on frames actually being painted.
+    const idx = Math.round(displayed);
     const img = readyRef.current ? loader.get(idx) : null;
     if (import.meta.env.DEV) {
       (window as unknown as { __fp?: unknown }).__fp = {
         idx,
+        target: Math.round(targetFrame),
+        displayed: Math.round(displayed * 1000) / 1000,
+        lag: Math.round((targetFrame - displayed) * 1000) / 1000,
         resolved: loader.lastResolved,
         loadedCount: loader.loadedCount,
         loadedHere: loader.isLoaded(idx),
