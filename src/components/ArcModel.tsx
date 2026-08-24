@@ -66,20 +66,41 @@ const baseLightGlassMaterial = new THREE.MeshPhysicalMaterial({
   depthWrite: false,
 });
 
-// One clone per figure, created lazily and NEVER disposed: disposing on
-// unmount would release the (very expensive) transmission shader program and
-// force a recompile stall on every window-edge remount while scrolling. Four
-// figures ⇒ at most four materials for the session.
+// One clone per figure, NEVER disposed: disposing would release the (very
+// expensive) transmission shader program. Three figures ⇒ three materials for
+// the session.
 const materialPool = new Map<string, THREE.MeshPhysicalMaterial>();
 
-// Live smoothed opacity per figure, written every frame. Scene reads it on
-// scroll events to keep a figure MOUNTED while its temporal fade-out is still
-// decaying — the window-based mount grace alone is a scroll-distance budget
-// and can't cover fast flicks (the fade decays in time, not scroll distance).
-export const figureOpacityLive = new Map<string, number>();
+// The warm-up pass replays BOTH material states a flight goes through, for this
+// many frames each (see the `warmup` prop). Two states, not one, because
+// `material.transparent` is part of three's program cache key (it becomes the
+// OPAQUE define) and the DoubleSide transmission pre-pass flips
+// material.needsUpdate on EVERY frame, so three really does re-derive the
+// program when the fade flips `transparent`. Warming only the opaque state left
+// three ~75 KB glass variants (the fading ones) to compile on the frame the
+// first figure appeared — instrumenting gl.linkProgram caught all three linking
+// at the exact scroll that starts the first flight, inside one stalled frame.
+// Three frames each is margin: one draw per state is enough, and the spare
+// frames cost nothing under the loader while surviving a dropped or resized
+// first frame.
+const WARMUP_FRAMES_PER_STATE = 3;
+const WARMUP_FRAMES = WARMUP_FRAMES_PER_STATE * 2;
+// The mid-fade opacity the warm-up replays: any value in (0, 1) selects the
+// same "transparent" program variant, so keep it far below the eye's floor.
+const WARMUP_FADE_OPACITY = 0.002;
+// Warm-up stand-in size/placement: parked straight in front of the static
+// camera (inside the frustum, so three's frustum cull can't skip the draw) and
+// scaled to well under one device pixel, so the pass allocates the transmission
+// render target and links the shaders without painting anything — and the intro
+// loader's opaque overlay covers the canvas throughout anyway.
+const WARMUP_SCALE = 0.0008;
+const WARMUP_CAMERA_DISTANCE = 3;
 
-// Scratch object for the per-frame screen-rect projection (no allocations in
-// useFrame).
+// Scratch objects for the per-frame curve sample and screen-rect projection.
+// The figures are mounted for the WHOLE session now, so their useFrame runs
+// through the video and gallery phases too — Curve.getPoint's default
+// `new Vector3()` per call would be steady GC churn there for nothing.
+const _curvePoint = new THREE.Vector3();
 const _hoverCorner = new THREE.Vector3();
 
 // The screen AABB of the projected OBB corners still overshoots the glyph
@@ -104,11 +125,43 @@ function materialFor(
   return m;
 }
 
+// Clone every figure's material at module load rather than on first mount: a
+// mid-scroll clone means a fresh uniform block and a program-cache lookup on
+// the exact frame a figure appears. ("light" stays lazy — no current render
+// profile selects it.)
+function primeMaterialPool() {
+  FIGURES.forEach((f) => materialFor(f.name, "full"));
+}
+
+// The three material fields the flight drives off its smoothed opacity. Factored
+// out so the warm-up pass can replay the EXACT states the flight will use — and
+// therefore link the exact program variants three will ask for — instead of
+// warming a state the flight never renders.
+function applyFigureOpacity(
+  material: THREE.MeshPhysicalMaterial,
+  op: number,
+  mode: FigureMaterialMode,
+) {
+  material.transparent = mode === "light" || op < 1;
+  material.depthWrite = mode !== "light" && op >= 1;
+  material.opacity = op * (mode === "light" ? LIGHT_GLASS_OPACITY : 1);
+}
+
 interface ArcModelProps {
   figure: FigureDef;
   scrollRef: MutableRefObject<number>;
   phase: Phase;
   materialMode?: FigureMaterialMode;
+  // True while the intro loader still covers the canvas. The figures are
+  // mounted from the start but invisible, and three only compiles a program /
+  // allocates the transmission render target when a transmissive mesh is
+  // actually DRAWN — gl.compile (drei's <Preload all />) does neither for the
+  // render target. So for WARMUP_FRAMES frames each figure draws a sub-pixel
+  // stand-in in front of the camera, cycling the two opacity states a flight
+  // uses, which pays every ~75 KB glass shader link and the half-float MSAA
+  // transmission target allocation while the loader hides the screen, instead
+  // of mid-flight at ~144vh of scroll.
+  warmup?: boolean;
 }
 
 export default function ArcModel({
@@ -116,11 +169,12 @@ export default function ArcModel({
   scrollRef,
   phase,
   materialMode = "full",
+  warmup = false,
 }: ArcModelProps) {
   const { scene: modelScene } = useGLTF(
     import.meta.env.BASE_URL + figure.url,
   );
-  const { viewport, camera } = useThree();
+  const { viewport, camera, scene } = useThree();
   const modelRef = useRef<THREE.Group>(null);
   // Outer group: carries the curve position + a screen-space roll applied
   // OUTSIDE the spin (so the roll rotates the projected image, not local Z).
@@ -426,18 +480,20 @@ export default function ArcModel({
   // figures pop in mid-flight and judder along the arc. The flight t and the
   // opacity each chase their scroll-driven target with a framerate-independent
   // exponential lerp: position glides, and the opacity — starting from 0 on
-  // every mount — always FADES in/out even when the scroll lands inside the
-  // window in a single jump. (figureVisibleFor's mount grace keeps the
-  // component alive past its window so the fade-out can finish.)
+  // mount — always FADES in/out even when the scroll lands inside the window in
+  // a single jump. The component stays mounted for the whole session, so the
+  // fade-out always runs to completion.
   const smoothTRef = useRef<number | null>(null);
   const smoothOpacityRef = useRef<number>(0);
+  // Frames left in the GPU warm-up pass (see the `warmup` prop), and the
+  // environment map it was last run against.
+  const warmupFramesRef = useRef(WARMUP_FRAMES);
+  const warmupEnvRef = useRef<THREE.Texture | null>(null);
 
-  // Zero the live-opacity report on unmount so a stale value can't keep
-  // re-mounting the figure on later scroll events; drop the hover rect so the
-  // tooltip can't hit-test a figure that no longer exists.
+  // Drop the hover rect on unmount so the tooltip can't hit-test a figure that
+  // no longer exists.
   useEffect(() => {
     return () => {
-      figureOpacityLive.set(figure.name, 0);
       figureRectsLive.delete(figure.name);
     };
   }, [figure.name]);
@@ -463,6 +519,55 @@ export default function ArcModel({
   useFrame((_state, delta: number) => {
     if (!modelRef.current) return;
 
+    // A late-arriving environment map re-derives the program (three compares
+    // materialProperties.envMap every frame), so an <Environment> that resolves
+    // after the first warm-up frames would push a second, equally expensive set
+    // of links onto the first flight. Re-arm the pass whenever it changes while
+    // the loader is still up — on the conservative mobile profile there is no
+    // environment at all and this never fires.
+    if (warmup && scene.environment !== warmupEnvRef.current) {
+      warmupEnvRef.current = scene.environment;
+      warmupFramesRef.current = WARMUP_FRAMES;
+    }
+
+    // GPU warm-up, under the loader: draw a sub-pixel copy of this figure in
+    // front of the camera for a handful of frames. That real draw is what
+    // forces the glass programs to LINK (gl.compile only submits them) and what
+    // makes three allocate the half-float MSAA transmission render target —
+    // both of which otherwise land on the frame the first figure appears. The
+    // pass cycles the two opacity states a flight actually renders (mid-fade
+    // and fully opaque) because `transparent` selects a DIFFERENT program.
+    if (warmup && warmupFramesRef.current > 0) {
+      warmupFramesRef.current -= 1;
+      const roll = rollGroupRef.current;
+      if (roll) {
+        // The camera is static at +Z looking down −Z, so this is dead ahead.
+        roll.position.set(
+          camera.position.x,
+          camera.position.y,
+          camera.position.z - WARMUP_CAMERA_DISTANCE,
+        );
+        roll.rotation.z = 0;
+        roll.scale.setScalar(WARMUP_SCALE);
+      }
+      applyFigureOpacity(
+        material,
+        warmupFramesRef.current >= WARMUP_FRAMES_PER_STATE
+          ? WARMUP_FADE_OPACITY
+          : 1,
+        materialMode,
+      );
+      // three keeps the previously derived program unless the material version
+      // moves, so the state flip above has to be announced to be warmed.
+      material.needsUpdate = true;
+      modelRef.current.visible = true;
+      return;
+    }
+    // First real frame after the warm-up: undo its stand-in scale (the flight
+    // path below drives position/rotation, never scale).
+    if (rollGroupRef.current && rollGroupRef.current.scale.x !== 1)
+      rollGroupRef.current.scale.setScalar(1);
+
     // Drive playback straight from scroll progress (read via ref — no React
     // re-render). Each figure maps its own window of the figures phase.
     const { t: targetT, opacity: targetOpacity } = figureStateFor(
@@ -484,10 +589,9 @@ export default function ArcModel({
       (targetOpacity - smoothOpacityRef.current) * kOp;
     if (Math.abs(targetOpacity - smoothOpacityRef.current) < 0.001)
       smoothOpacityRef.current = targetOpacity;
-    figureOpacityLive.set(figure.name, smoothOpacityRef.current);
 
     const t = easeInOutSine(smoothTRef.current);
-    const pos = curve.getPoint(t);
+    const pos = curve.getPoint(t, _curvePoint);
     // The geometry is re-centered on its bounding-box center inside the group,
     // so the curve point IS the figure's visual center on every axis.
     // peakHeight therefore reads directly as the apex height of the visual center.
@@ -527,9 +631,7 @@ export default function ArcModel({
     const visible = op > 0.001;
     if (modelRef.current.visible !== visible)
       modelRef.current.visible = visible;
-    material.transparent = materialMode === "light" || op < 1;
-    material.depthWrite = materialMode !== "light" && op >= 1;
-    material.opacity = op * (materialMode === "light" ? LIGHT_GLASS_OPACITY : 1);
+    applyFigureOpacity(material, op, materialMode);
 
     // Project the figure's bounds to a screen rect (canvas NDC) for the award
     // tooltip's hover/tap hit-test (FigureTooltip reads figureRectsLive). The
@@ -599,3 +701,4 @@ export default function ArcModel({
 FIGURES.forEach((f) => {
   useGLTF.preload(import.meta.env.BASE_URL + f.url);
 });
+primeMaterialPool();

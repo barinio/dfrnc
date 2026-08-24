@@ -1,8 +1,8 @@
 // Live screen-space rectangles of the airborne award figures. ArcModel writes
 // its figure's projected bounding rect (NDC of the full-screen canvas) every
 // frame; FigureTooltip (a DOM overlay) reads them for hover / tap hit-tests.
-// A Map keyed by figure name — mirrors figureOpacityLive's pattern: written
-// imperatively inside useFrame, never through React state.
+// A Map keyed by figure name, written imperatively inside useFrame, never
+// through React state.
 
 export interface FigureScreenRect {
   // Award label shown in the tooltip (from the figure manifest).

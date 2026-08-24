@@ -141,27 +141,13 @@ export function figureStateFor(
   return { t, opacity };
 }
 
-// Extra phase-units of mount life beyond the window on each side. ArcModel
-// smooths its opacity over time (so fast scroll-jumps fade instead of pop);
-// the grace keeps the component MOUNTED slightly past its window so the
-// temporal fade-out can finish before React unmounts it. The grace is a
-// SCROLL-distance budget while the fade decays in TIME, so it only suffices
-// at moderate scroll speeds — Scene additionally keeps a figure mounted while
-// its live smoothed opacity is still nonzero (see figureOpacityLive), which
-// covers flicks and single-event jumps at any speed.
-const MOUNT_GRACE = 0.04;
-
-// Discrete visibility — used by Scene to mount/unmount each figure, flipped
-// only when the threshold is crossed (never per frame).
-export function figureVisibleFor(
-  sp: number,
-  window: readonly [number, number],
-  phase: Phase,
-): boolean {
-  if (phase === "done") return false;
-  const phaseT = (sp - FIGURES_START) / (FIGURES_END - FIGURES_START);
-  return phaseT > window[0] - MOUNT_GRACE && phaseT < window[1] + MOUNT_GRACE;
-}
+// NOTE: there is deliberately NO mount-visibility function here any more. The
+// figures used to be mounted/unmounted around their windows (a scroll-driven
+// gate with a grace margin), which meant the ~90 KB transmission/dispersion
+// glass shader compiled — and three allocated its transmission render target —
+// at the moment the FIRST figure appeared, mid-screen, mid-scroll: the phone
+// freeze. Scene now mounts all three permanently (they render nothing while
+// their opacity is 0) so the pipeline warms under the intro loader instead.
 
 export interface VideoState {
   // Normalized video time 0..1 across [VIDEO_START, 1].

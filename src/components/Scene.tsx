@@ -20,7 +20,7 @@ import { NoiseEffect } from "postprocessing";
 import { ACESFilmicToneMapping } from "three";
 import { ScrollToneMapping, ScrollToneMappingEffect } from "./ScrollToneMapping";
 import { Leva, useControls, folder } from "@debug/controls";
-import ArcModel, { figureOpacityLive } from "./ArcModel";
+import ArcModel from "./ArcModel";
 import { startGyroTilt } from "../gyroTilt";
 import LottiePlane from "./LottiePlane";
 import GradientBackground from "./GradientBackground";
@@ -32,7 +32,7 @@ import GalleryCTA from "./GalleryCTA";
 import FigureTooltip from "./FigureTooltip";
 import { usePrefersReducedMotion } from "../hooks/usePrefersReducedMotion";
 import { useScrollTimelineRefs } from "../hooks/useScrollProgress";
-import { figureVisibleFor, videoStateFor } from "../playback";
+import { videoStateFor } from "../playback";
 import type { Phase } from "../playback";
 import {
   GALLERY_PIN_TRACK_PX,
@@ -170,9 +170,6 @@ export default function Scene() {
   const ctaClipRef = useRef(1);
   const noiseRef = useRef<NoiseEffect | null>(null);
   const toneMapRef = useRef<ScrollToneMappingEffect | null>(null);
-  const [figuresVisible, setFiguresVisible] = useState<boolean[]>(() =>
-    FIGURES.map(() => false),
-  );
   // Intro sequence: loader (balls) → drop (auto-played DEFT fall, Task 11) →
   // free (scroll-driven experience). Scroll stays locked until "free".
   type IntroStage = "loader" | "drop" | "free";
@@ -220,8 +217,8 @@ export default function Scene() {
   }, [reducedMotion]);
 
   // Device-orientation tilt for the figures on phones (SPIKE). Started once
-  // here (the ArcModels mount lazily per window) — the iOS permission prompt
-  // is armed on the first touchend/click, Android listens straight away.
+  // here rather than inside ArcModel — the iOS permission prompt is armed on
+  // the first touchend/click, Android listens straight away.
   // GATED behind `?gyro=1` while unapproved: without the flag nothing is
   // armed, so production shows no sensor prompt. Drop the gate on approval.
   useEffect(() => {
@@ -229,37 +226,6 @@ export default function Scene() {
     if (!new URLSearchParams(window.location.search).has("gyro")) return;
     return startGyroTilt();
   }, [reducedMotion]);
-
-  // Discrete state derived from scroll — flips only when a threshold is crossed,
-  // so scrolling itself causes no per-frame React renders (the setState calls
-  // bail out when the value is unchanged).
-  useEffect(() => {
-    const update = () => {
-      const sp = scrollRef.current;
-      // A figure stays mounted while inside its (grace-padded) window OR while
-      // its temporal fade-out is still visibly decaying — a fast flick can
-      // leave the window long before the time-based fade reaches zero, and
-      // unmounting then would pop the figure off mid-fade. An invisible
-      // mounted figure costs nothing (three skips visible=false objects), and
-      // the next scroll event after the fade settles unmounts it.
-      const fv = FIGURES.map(
-        (f) =>
-          !reducedMotion &&
-          (figureVisibleFor(sp, f.arc.window, phase) ||
-            (figureOpacityLive.get(f.name) ?? 0) > 0.001),
-      );
-      setFiguresVisible((p) =>
-        fv.length === p.length && fv.every((v, i) => v === p[i]) ? p : fv,
-      );
-    };
-    update();
-    window.addEventListener("scroll", update, { passive: true });
-    window.addEventListener("resize", update);
-    return () => {
-      window.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-    };
-  }, [scrollRef, reducedMotion, phase]);
 
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -473,22 +439,31 @@ export default function Scene() {
               ctaClipRef={ctaClipRef}
               reducedMotion={reducedMotion}
             />
-            {FIGURES.map(
-              (f, i) =>
-                !reducedMotion &&
-                figuresVisible[i] && (
-                  <FigureBoundary key={f.name} name={f.name}>
-                    <Suspense fallback={null}>
-                      <ArcModel
-                        figure={f}
-                        scrollRef={scrollRef}
-                        phase={phase}
-                        materialMode={renderProfile.figureMaterialMode}
-                      />
-                    </Suspense>
-                  </FigureBoundary>
-                ),
-            )}
+            {/* All three figures mount ONCE, for the whole session — they are
+                never mounted/unmounted around their scroll windows any more.
+                Their meshes still start visible={false} and only switch on
+                above opacity 0.001, so a parked figure costs nothing (three
+                skips invisible objects), but existing by the time the intro
+                loader runs is what lets <Preload all /> compile the glass
+                material and lets each ArcModel's `warmup` pass allocate the
+                transmission render target under the loader. Mounting them
+                lazily meant that ~90 KB shader link + render-target allocation
+                landed on the frame the first figure appeared — the mid-screen
+                freeze reported on phones. */}
+            {!reducedMotion &&
+              FIGURES.map((f) => (
+                <FigureBoundary key={f.name} name={f.name}>
+                  <Suspense fallback={null}>
+                    <ArcModel
+                      figure={f}
+                      scrollRef={scrollRef}
+                      phase={phase}
+                      materialMode={renderProfile.figureMaterialMode}
+                      warmup={introStage === "loader"}
+                    />
+                  </Suspense>
+                </FigureBoundary>
+              ))}
           </Suspense>
           <VideoPlane
             scrollRef={scrollRef}

@@ -9,7 +9,6 @@ import {
   lottieDisplayedTimeFor,
   lottieSettledIntroRequiredFor,
   figureStateFor,
-  figureVisibleFor,
   videoStateFor,
   videoMasterTimeFor,
   lottieBleedFor,
@@ -594,14 +593,71 @@ for (let p = 0; p <= 1.0001; p += 0.001) {
 }
 ok(maxAirborne === 2, "two figures airborne somewhere in the cascade");
 
-// Mount grace: figureVisibleFor keeps a figure mounted slightly OUTSIDE its
-// window (so ArcModel's temporal fade-out can finish), but not far outside.
-ok(figureVisibleFor(spFor(0.21), win, "scroll"), "mounted inside window");
-ok(figureVisibleFor(spFor(0.18), win, "scroll"), "mounted in grace before");
-ok(figureVisibleFor(spFor(0.62), win, "scroll"), "mounted in grace after");
-ok(!figureVisibleFor(spFor(0.1), win, "scroll"), "unmounted far before");
-ok(!figureVisibleFor(spFor(0.72), win, "scroll"), "unmounted far after");
-ok(!figureVisibleFor(spFor(0.4), win, "done"), "done: never mounted");
+// ── Figures mount ONCE, under the loader ─────────────────────────────────────
+// The glass material is a transmission + dispersion + iridescence + clearcoat
+// MeshPhysicalMaterial: its shader is ~90 KB of source and three only allocates
+// the transmission render target once a transmissive mesh is actually drawn.
+// Both used to happen at the FIRST flight (~131vh of scroll) — the reported
+// mid-screen freeze on phones. The fix is structural: the ArcModels are mounted
+// unconditionally so drei's <Preload all /> compiles them, and each one draws a
+// sub-pixel warm-up pass while the opaque intro loader still covers the canvas.
+// Nothing may reintroduce a scroll-driven mount gate.
+{
+  const playbackSource = readFileSync(
+    new URL("../src/playback.ts", import.meta.url),
+    "utf8",
+  );
+  const figureSceneSource = readFileSync(
+    new URL("../src/components/Scene.tsx", import.meta.url),
+    "utf8",
+  );
+  const arcModelSource = readFileSync(
+    new URL("../src/components/ArcModel.tsx", import.meta.url),
+    "utf8",
+  );
+  ok(
+    !/figureVisibleFor/.test(playbackSource) &&
+      !/figureVisibleFor/.test(figureSceneSource),
+    "the scroll-driven figure mount gate is gone (no figureVisibleFor)",
+  );
+  ok(
+    !/figuresVisible/.test(figureSceneSource),
+    "Scene keeps no per-figure mount state",
+  );
+  ok(
+    /!reducedMotion\s*&&\s*FIGURES\.map\(\s*\(f\)\s*=>\s*\(/.test(
+      figureSceneSource,
+    ),
+    "Scene mounts every figure permanently (reduced motion is the only gate)",
+  );
+  ok(
+    /warmup=\{introStage === "loader"\}/.test(figureSceneSource),
+    "the figure warm-up pass is armed only while the intro loader covers the canvas",
+  );
+  ok(
+    /WARMUP_FRAMES/.test(arcModelSource) &&
+      /warmupFramesRef/.test(arcModelSource),
+    "ArcModel runs a bounded warm-up pass",
+  );
+  // The warm-up has to replay the material states the FLIGHT renders, not just
+  // whatever the pooled material happens to hold. `material.transparent` is
+  // part of three's program cache key (the OPAQUE define) and the DoubleSide
+  // transmission pre-pass bumps material.version every frame, so the fading and
+  // the fully-opaque figure use DIFFERENT ~75 KB programs. Warming one state
+  // only left the other three variants to link on the first flight frame
+  // (measured: 3 fresh program links at the exact scroll that starts it).
+  ok(
+    /function applyFigureOpacity\(/.test(arcModelSource) &&
+      (arcModelSource.match(/applyFigureOpacity\(/g) ?? []).length >= 3 &&
+      /WARMUP_FRAMES_PER_STATE/.test(arcModelSource),
+    "the warm-up replays BOTH flight opacity states through the flight's own material writer",
+  );
+  ok(
+    /materialPool\.set\(/.test(arcModelSource) &&
+      /primeMaterialPool/.test(arcModelSource),
+    "the per-figure material clones are primed up front, not lazily mid-scroll",
+  );
+}
 
 // Timing invariant: the intro settles before the figures begin, every flight
 // ends before the video fades in, and the Lottie stays held until the final
