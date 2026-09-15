@@ -1,5 +1,6 @@
 import {
   capVirtualY,
+  clampBankPx,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
   timelineProgressForY,
@@ -78,6 +79,9 @@ export interface ScrollTimelinePublication {
   virtualY: number;
   // True while the video zone owns input and the page speed is capped.
   capActive: boolean;
+  // Scroll the user has already asked for and the cap has not paid out yet
+  // (signed, px). Zero outside the zone and the instant a gesture is spent.
+  bankPx: number;
 }
 
 export interface ScrollTimelineControllerOptions {
@@ -182,6 +186,16 @@ export const DECODE_LEAD_FRAMES = 2;
 // Per-event queue clamp, so a Home/End projection (MAX_SAFE_INTEGER) stays a
 // finite number; the cap clamps it to the zone anyway.
 const MAX_QUEUED_DELTA_PX = 1e6;
+// How big a backwards event has to be before it counts as the user CHANGING
+// THEIR MIND rather than noise. A finger leaving the glass wobbles a couple of
+// pixels the other way, and a trackpad's momentum tail flutters around zero;
+// throwing the whole banked swipe away over that would feel like the page
+// randomly refusing a flick. Anything at or above this is a real reversal and
+// takes effect on the very tick it arrives, backlog and all.
+export const BANK_REVERSAL_DEAD_ZONE_PX = 8;
+// Below this the bank is finished, not "nearly finished": leaving a hundredth
+// of a pixel owed would re-arm the ticker forever and creep the document.
+const BANK_SNAP_PX = 0.01;
 // The ticker writes sub-pixel steps (70 px/s is ~1.2 px/frame through the
 // scenic stretches), so the physical write-back uses a much tighter tolerance
 // than the 1 px boundary epsilon or the document would quietly drift off the
@@ -401,7 +415,11 @@ export function createScrollTimelineController(
   // -- Soft-pin state -------------------------------------------------------
   let virtualY = initialY;
   let capActive = false;
+  // pendingDeltaPx is only the INTRA-FRAME accumulator: whatever arrived since
+  // the last tick. bankPx is the standing debt — everything the user has asked
+  // for that the cap has not paid out yet (see the bank section of capTick).
   let pendingDeltaPx = 0;
+  let bankPx = 0;
   let capLastTickAt: number | null = null;
   let capEntryGraceUntil = -Infinity;
   let capFrame: number | null = null;
@@ -428,6 +446,7 @@ export function createScrollTimelineController(
       galleryStep: stepper.index,
       virtualY,
       capActive,
+      bankPx,
     });
   };
 
@@ -493,7 +512,12 @@ export function createScrollTimelineController(
 
   const exitCapZone = () => {
     capActive = false;
+    // Whatever the gesture still owed is DISCARDED at the border. The pinned
+    // gallery has its own gesture semantics on the far side, and native scroll
+    // on the near side has the browser's own momentum: handing either of them a
+    // banked debt would move the page after the zone stopped owning it.
     pendingDeltaPx = 0;
+    bankPx = 0;
     capLastTickAt = null;
     capEntryGraceUntil = -Infinity;
     stopCapTicker();
@@ -512,6 +536,7 @@ export function createScrollTimelineController(
     );
     virtualY = seat;
     pendingDeltaPx = 0;
+    bankPx = 0;
     capActive = true;
     // Seed the tick clock at ENTRY, not at the first frame: a null seed would
     // give the first tick dt = 0, which drops the very wheel event that asked
@@ -580,9 +605,32 @@ export function createScrollTimelineController(
       last === null
         ? 0
         : Math.min(Math.max((now - last) / 1000, 0), MAX_SCRUB_DELTA_S);
-    const requested = previous + pendingDeltaPx;
-    // Everything the cap refuses is DROPPED here, not banked.
+    // ── The bank ───────────────────────────────────────────────────────────
+    // Everything the cap refuses is KEPT here, not dropped, and paid out at the
+    // cap over the following ticks: a flick buys playback instead of
+    // evaporating (the old behaviour cost the user ~150 wheel notches to cross
+    // the zone, because 98.5 px of every 100 px notch was thrown away).
+    const incoming = pendingDeltaPx;
     pendingDeltaPx = 0;
+    if (
+      bankPx !== 0 &&
+      incoming !== 0 &&
+      Math.sign(incoming) !== Math.sign(bankPx)
+    ) {
+      // Changing direction is not "netting off against the backlog": the user
+      // wants to go the other way NOW, so the backlog is dropped and the
+      // reverse applies on this very tick. Except for jitter — see
+      // BANK_REVERSAL_DEAD_ZONE_PX — which is ignored outright.
+      if (Math.abs(incoming) >= BANK_REVERSAL_DEAD_ZONE_PX) bankPx = incoming;
+    } else {
+      bankPx += incoming;
+    }
+    // A bank is a debt in CLIP TIME, so its ceiling is too: one gesture may owe
+    // at most SCROLL_BANK_MAX_CLIP_S seconds of playback. At the zone's edges
+    // that horizon runs out of clip and the ceiling lifts, which is what keeps
+    // the seam hand-off and the native hand-back below firing exactly as before.
+    bankPx = clampBankPx(previous, bankPx, innerHeight);
+    const requested = previous + bankPx;
 
     let next =
       requested === previous
@@ -623,6 +671,12 @@ export function createScrollTimelineController(
       publish();
       return;
     }
+
+    // Only what was actually SPENT leaves the bank: whatever the cap (or the
+    // decode backpressure above) refused is still owed, and the ticker — which
+    // re-arms every frame while the zone is owned — pays it out next frame.
+    bankPx -= next - previous;
+    if (Math.abs(bankPx) < BANK_SNAP_PX) bankPx = 0;
 
     virtualY = next;
     if (virtualY !== previous) {
@@ -1236,9 +1290,12 @@ export function createScrollTimelineController(
     touchStepUsed = false;
     touchStartY = null;
     touchLastY = null;
-    // Queued-but-unspent scroll is abandoned with the gesture, and the tick
-    // clock restarts so a backgrounded tab cannot pay out a multi-second dt.
+    // Queued-but-unspent scroll is abandoned with the gesture — the pending
+    // accumulator AND the bank, so a tab that comes back does not finish a
+    // swipe the user made before they left — and the tick clock restarts so a
+    // backgrounded tab cannot pay out a multi-second dt.
     pendingDeltaPx = 0;
+    bankPx = 0;
     capLastTickAt = null;
     // Losing focus/visibility mid-gesture: freeze in place — any motion
     // behind the user's back reads as a jump when they come back.

@@ -15,8 +15,10 @@ import {
   videoTimelinePositionFor,
 } from "../src/playback";
 import {
+  SCROLL_BANK_MAX_CLIP_S,
   animationEndY,
   capVirtualY,
+  clampBankPx,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
   timelineProgressForY,
@@ -314,6 +316,114 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
   );
 }
 
+// ── Input bank ceiling ───────────────────────────────────────────────────────
+// The cap says how FAST the page may move; the bank says how much of a gesture
+// may still be owed. Its ceiling is in CLIP TIME for the same reason the cap is:
+// one flick buys SCROLL_BANK_MAX_CLIP_S seconds of playback anywhere in the
+// zone, scenic stretch or caption dwell, and never a frame faster than 1×.
+const BANK_BUDGET_T = SCROLL_BANK_MAX_CLIP_S * NATIVE_CLIP_RATE_PER_S;
+const BANK_BUDGET_FRAMES = BANK_BUDGET_T * FRAME_SPAN;
+const HUGE_BANK_PX = 1e6;
+
+eq(
+  BANK_BUDGET_FRAMES,
+  SCROLL_BANK_MAX_CLIP_S * NATIVE_SCRUB_FPS,
+  "the bank ceiling is exactly 4 s of native frames",
+  1e-9,
+);
+eq(BANK_BUDGET_FRAMES, 50, "4 s at 12.5 f/s is 50 sequence frames", 1e-9);
+
+// A scenic stretch (segment 4, the slowest page speed) with four seconds of
+// clip on both sides of it: the ceiling binds in both directions.
+{
+  const t = 0.4;
+  const y = scrollYForVideoTime(t, IH);
+  ok(t + BANK_BUDGET_T < 1 && t - BANK_BUDGET_T > 0, "the scenic probe is mid-clip");
+
+  const forward = clampBankPx(y, HUGE_BANK_PX, IH);
+  const backward = clampBankPx(y, -HUGE_BANK_PX, IH);
+  eq(
+    forward,
+    scrollYForVideoTime(t + BANK_BUDGET_T, IH) - y,
+    "the forward ceiling is the px of exactly 4 s of clip",
+    1e-9,
+  );
+  eq(
+    backward,
+    scrollYForVideoTime(t - BANK_BUDGET_T, IH) - y,
+    "the backward ceiling is the px of exactly 4 s of clip",
+    1e-9,
+  );
+  ok(forward > 0 && backward < 0, "the ceiling keeps the bank's sign");
+  // Symmetric in the only unit that matters — both directions buy 50 frames.
+  eq(
+    videoTimeForY(y + forward, IH) - t,
+    BANK_BUDGET_T,
+    "a full forward bank buys 4 s of clip",
+    1e-12,
+  );
+  eq(
+    t - videoTimeForY(y + backward, IH),
+    BANK_BUDGET_T,
+    "a full backward bank buys 4 s of clip",
+    1e-12,
+  );
+  eq(frameAt(y + forward) - frameAt(y), BANK_BUDGET_FRAMES, "50 frames forward", 1e-6);
+  eq(frameAt(y) - frameAt(y + backward), BANK_BUDGET_FRAMES, "50 frames backward", 1e-6);
+
+  // A bank INSIDE the ceiling is not touched at all.
+  eq(clampBankPx(y, 3, IH), 3, "a small forward bank passes through unchanged");
+  eq(clampBankPx(y, -3, IH), -3, "a small backward bank passes through unchanged");
+  eq(clampBankPx(y, forward * 0.5, IH), forward * 0.5, "half a ceiling is untouched", 1e-9);
+  eq(clampBankPx(y, 0, IH), 0, "an empty bank stays empty");
+}
+
+// NEAR THE SEAM the 4 s horizon runs out of clip: forward becomes UNBOUNDED, so
+// the residue passes free and capTick's `next >= seamY` hand-off still fires.
+// Backwards there is still a full 4 s of clip, so that side stays bounded.
+{
+  const t = 0.9;
+  const y = scrollYForVideoTime(t, IH);
+  ok(t + BANK_BUDGET_T >= 1, "the seam probe has less than 4 s of clip ahead");
+  eq(clampBankPx(y, HUGE_BANK_PX, IH), HUGE_BANK_PX, "forward is unbounded at the seam");
+  const backward = clampBankPx(y, -HUGE_BANK_PX, IH);
+  ok(backward > -HUGE_BANK_PX, "backward is still bounded at the seam");
+  eq(
+    t - videoTimeForY(y + backward, IH),
+    BANK_BUDGET_T,
+    "the seam's backward bank is still 4 s of clip",
+    1e-12,
+  );
+}
+
+// NEAR THE ZONE START, the mirror: backward unbounded (the hand-back to native
+// scrolling must not be held up), forward still bounded.
+{
+  const t = 0.05;
+  const y = scrollYForVideoTime(t, IH);
+  ok(t - BANK_BUDGET_T <= 0, "the start probe has less than 4 s of clip behind");
+  eq(clampBankPx(y, -HUGE_BANK_PX, IH), -HUGE_BANK_PX, "backward is unbounded at the zone start");
+  const forward = clampBankPx(y, HUGE_BANK_PX, IH);
+  ok(forward < HUGE_BANK_PX, "forward is still bounded at the zone start");
+  eq(
+    videoTimeForY(y + forward, IH) - t,
+    BANK_BUDGET_T,
+    "the zone start's forward bank is still 4 s of clip",
+    1e-12,
+  );
+}
+
+// Both edges at once can never happen (the clip is 23.5 s long), but a degenerate
+// viewport must still pass the bank through untouched rather than zero it.
+for (const invalidHeight of [0, -1, Number.NaN]) {
+  eq(
+    clampBankPx(5000, 900, invalidHeight),
+    900,
+    `invalid height ${invalidHeight}: the bank passes through`,
+  );
+}
+eq(clampBankPx(Number.NaN, 900, IH), 900, "a non-finite seat passes the bank through");
+
 // Reported for the record: the page speed each authored segment allows.
 const segmentSpeeds: string[] = [];
 for (let segment = 1; segment < VIDEO_TIME_KNOTS.length; segment += 1) {
@@ -339,4 +449,27 @@ console.log(
   `zone = ${(bounds.endY - bounds.startY).toFixed(1)} px, ` +
     `min traversal = ${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s`,
 );
-console.log("\u2713 scroll governor (mapping + page-speed cap)");
+
+// What one flick may buy, in pixels, where the page is slowest (a scenic knot
+// segment) and where it is fastest (a caption dwell) \u2014 the numbers the client
+// feels: a single notch now carries the page this far instead of ~1.5 px.
+const bankProbes: readonly (readonly [string, number])[] = [
+  ["scenic  (t 0.40)", 0.4],
+  ["dwell   (t 0.20)", 0.2],
+];
+console.log(
+  `bank ceiling = ${SCROLL_BANK_MAX_CLIP_S} s of clip = ` +
+    `${BANK_BUDGET_FRAMES.toFixed(0)} frames:`,
+);
+for (const height of [IH, 1080]) {
+  for (const [label, t] of bankProbes) {
+    const y = scrollYForVideoTime(t, height);
+    const forward = clampBankPx(y, HUGE_BANK_PX, height);
+    const backward = clampBankPx(y, -HUGE_BANK_PX, height);
+    console.log(
+      `  ${height === IH ? "390x844" : "1080p  "} ${label}: ` +
+        `forward ${forward.toFixed(1)} px, backward ${backward.toFixed(1)} px`,
+    );
+  }
+}
+console.log("\u2713 scroll governor (mapping + page-speed cap + input bank)");

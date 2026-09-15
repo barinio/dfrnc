@@ -7,6 +7,7 @@
 // read as back-jumps and fly-aways on a macOS trackpad. Run manually with:
 //   npx tsx scripts/check-scroll-lifecycle.ts
 import {
+  BANK_REVERSAL_DEAD_ZONE_PX,
   GALLERY_COMMIT_FRAC,
   GALLERY_DRAG_DEAD_ZONE_PX,
   GALLERY_SETTLE_MS,
@@ -25,6 +26,7 @@ import type {
   ScrollTimelinePublication,
 } from "../src/scrollTimelineController";
 import {
+  SCROLL_BANK_MAX_CLIP_S,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
   videoGovernorBounds,
@@ -329,8 +331,8 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
   eq(latest().virtualY, zoneStartY + 1200, "the soft pin seats where it found the page");
   eq(latest().scrollY, zoneStartY + 1200, "progress is published from the virtual position");
 
-  // A single violent flick is CAPPED and its excess DROPPED — one tick of
-  // travel, not 4000 px of it.
+  // A single violent flick is CAPPED — its excess is BANKED, never spent at
+  // once: four ticks buy four ticks of clip, not 4000 px of it.
   const startFrame = frameAt(latest().virtualY);
   ok(environment.wheel(4000), "a flick inside the video zone is cancelled");
   environment.clock.advance(TICK_MS * 4);
@@ -338,7 +340,7 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
   ok(flickFrames > 0, "the flick still moves the page forward");
   ok(
     flickFrames <= 1,
-    `a dropped-excess flick advances at most one frame (got ${flickFrames.toFixed(3)})`,
+    `a banked flick still advances at most one frame in four ticks (got ${flickFrames.toFixed(3)})`,
   );
 
   // Sustained maximum input for a full second: still native rate.
@@ -362,7 +364,8 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
   );
   eq(latest().scrollY, latest().virtualY, "published scrollY is the virtual position", 1e-9);
 
-  // One reverse event lowers sp within two ticks — nothing is banked.
+  // One reverse event lowers sp within two ticks: a reversal DISCARDS the
+  // forward backlog instead of queueing behind it.
   const spBefore = latest().sp;
   ok(environment.wheel(-300), "a reverse wheel inside the zone is owned");
   environment.clock.advance(TICK_MS * 2);
@@ -379,6 +382,206 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
   ok(latest().virtualY < seamY, "End cannot teleport past the clip");
   controller.dispose();
   eq(environment.clock.size, 0, "dispose stops the soft-pin ticker");
+}
+
+// ── The video zone BANKS what the cap cannot spend ──────────────────────────
+// The cap used to drop the excess of every tick, so a 100 px notch bought the
+// ~1.5 px a scenic stretch allows and the rest evaporated: crossing the 23.5 s
+// zone took ~150 notches of continuous cranking. The remainder is now banked
+// and paid out at the very same cap after the input stops — bounded by
+// SCROLL_BANK_MAX_CLIP_S seconds of clip, so one flick can never buy the whole
+// zone and never plays it faster than 1×.
+
+// Tick a harness with ZERO further input until the page comes to rest, watching
+// that no single tick ever outruns the clip.
+function coastToRest(harness: Harness, maxTicks = 900) {
+  const { environment, latest } = harness;
+  const fromY = latest().virtualY;
+  const fromFrame = frameAt(fromY);
+  let ticks = 0;
+  let worstTickFrames = 0;
+  for (; ticks < maxTicks; ticks += 1) {
+    const before = latest().virtualY;
+    environment.clock.advance(TICK_MS);
+    const after = latest().virtualY;
+    worstTickFrames = Math.max(
+      worstTickFrames,
+      Math.abs(frameAt(after) - frameAt(before)),
+    );
+    if (after === before) break;
+  }
+  return {
+    ticks,
+    movedPx: latest().virtualY - fromY,
+    movedFrames: frameAt(latest().virtualY) - fromFrame,
+    worstTickFrames,
+  };
+}
+
+// Reported for the record: what a flick actually buys, in the numbers the
+// client feels (px of page, frames of clip, seconds of coasting).
+const bankReport: string[] = [];
+const MAX_TICK_FRAMES = (NATIVE_SCRUB_FPS * TICK_MS) / 1000;
+const BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S * NATIVE_SCRUB_FPS;
+const SCENIC_Y = scrollYForVideoTime(0.4, IH);
+
+// (A) A BURST is banked: input stops, the page keeps running at the clip's own
+// pace until the bank is spent, and the bank is worth 4 s of playback.
+{
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  ok(latest().capActive, "the burst starts inside the soft pin");
+  eq(latest().bankPx, 0, "a fresh seat owes nothing");
+
+  // Ten 100 px notches inside 100 ms — one ordinary trackpad flick.
+  for (let i = 0; i < 10; i += 1) {
+    ok(environment.wheel(100), "each burst event is owned");
+    environment.clock.advance(10);
+  }
+  ok(latest().bankPx > 0, "the unspent burst is banked, not dropped");
+
+  const coast = coastToRest(harness);
+  ok(
+    coast.ticks * TICK_MS >= 2000,
+    `the page kept moving ${(coast.ticks * TICK_MS) / 1000} s after the input stopped`,
+  );
+  ok(
+    Math.abs(coast.movedFrames - BANK_FRAMES) <= 1.5,
+    `a 1000 px burst bought ${coast.movedFrames.toFixed(2)} frames (want ${BANK_FRAMES})`,
+  );
+  ok(
+    coast.worstTickFrames <= MAX_TICK_FRAMES + 1e-9,
+    `a banked tick advanced ${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES})`,
+  );
+  bankReport.push(
+    `  (A) 10x100 px burst at t=0.40: coasted ${coast.movedPx.toFixed(1)} px / ` +
+      `${coast.movedFrames.toFixed(2)} frames over ${coast.ticks} ticks ` +
+      `(${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s), worst tick ` +
+      `${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES})`,
+  );
+  // …and then it STOPS. No residue, no creep.
+  eq(latest().bankPx, 0, "a spent bank is empty");
+  const restY = latest().virtualY;
+  environment.clock.advance(TICK_MS * 60);
+  eq(latest().virtualY, restY, "a spent bank leaves the page still");
+  controller.dispose();
+}
+
+// (E) The bank NEVER buys speed: a single 1e6 px flick still moves at the cap,
+// still for 4 s, and never a frame more per tick than 12.5 f/s allows.
+{
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  ok(environment.wheel(1_000_000), "an absurd flick is owned");
+  environment.clock.advance(TICK_MS);
+  const coast = coastToRest(harness);
+  ok(
+    coast.worstTickFrames <= MAX_TICK_FRAMES + 1e-9,
+    `an absurd bank advanced ${coast.worstTickFrames.toFixed(4)} frames in one tick`,
+  );
+  ok(
+    Math.abs(coast.movedFrames + MAX_TICK_FRAMES - BANK_FRAMES) <= 1.5,
+    `an absurd flick still bought only ${coast.movedFrames.toFixed(2)} frames`,
+  );
+  bankReport.push(
+    `  (E) 1e6 px flick at t=0.40: ${coast.movedFrames.toFixed(2)} frames over ` +
+      `${coast.ticks} ticks, worst tick ${coast.worstTickFrames.toFixed(4)} frames`,
+  );
+  eq(latest().bankPx, 0, "even an absurd bank empties");
+  controller.dispose();
+}
+
+// (B) A REVERSAL is felt on the very next tick and DISCARDS the forward
+// backlog: the page must never owe the user a direction they abandoned.
+{
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  ok(environment.wheel(1000), "the forward flick is owned");
+  environment.clock.advance(TICK_MS * 3);
+  ok(latest().bankPx > 100, "a forward bank is pending");
+  const yBefore = latest().virtualY;
+  ok(environment.wheel(-50), "the reverse event is owned");
+  environment.clock.advance(TICK_MS);
+  ok(latest().virtualY < yBefore, "the reversal moves the page back on the next tick");
+  ok(latest().bankPx < 0, "the bank now owes the reverse direction");
+  ok(latest().bankPx > -50, "the reverse bank is only the reverse event itself");
+  const coast = coastToRest(harness);
+  ok(coast.movedPx < 0, "the discarded forward backlog never comes back");
+  ok(
+    Math.abs(yBefore - latest().virtualY - 50) <= 1.5,
+    `the reversal spent ${(yBefore - latest().virtualY).toFixed(2)} px, not the forward 1000`,
+  );
+  bankReport.push(
+    `  (B) -50 px against a 1000 px bank: back on tick 1, total rewind ` +
+      `${(yBefore - latest().virtualY).toFixed(2)} px over ${coast.ticks + 1} ticks`,
+  );
+  controller.dispose();
+}
+
+// (C) JITTER is not a reversal. A finger lifting off the glass wobbles a few
+// pixels backwards; that must not throw away the swipe the user just made.
+{
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  ok(environment.wheel(1000), "the forward flick is owned");
+  environment.clock.advance(TICK_MS * 3);
+  const bankBefore = latest().bankPx;
+  const yBefore = latest().virtualY;
+  ok(environment.wheel(-3), "the jitter event is still owned");
+  environment.clock.advance(TICK_MS);
+  ok(latest().virtualY > yBefore, "a sub-dead-zone reverse keeps the page going forward");
+  ok(latest().bankPx > 0, "the forward bank survives finger jitter");
+  eq(
+    latest().bankPx,
+    bankBefore - (latest().virtualY - yBefore),
+    "the jitter is IGNORED, not banked against the swipe",
+    1e-9,
+  );
+  // Exactly at the dead zone it IS a reversal.
+  const yJitter = latest().virtualY;
+  ok(environment.wheel(-BANK_REVERSAL_DEAD_ZONE_PX), "a dead-zone-sized reverse is owned");
+  environment.clock.advance(TICK_MS);
+  ok(latest().virtualY < yJitter, "8 px is a real reversal");
+  ok(latest().bankPx < 0, "a real reversal takes the bank with it");
+  bankReport.push(
+    `  (C) -3 px jitter against a ${bankBefore.toFixed(1)} px bank: still forward, ` +
+      `bank ${latest().bankPx.toFixed(1)} px only after the -8 px reversal`,
+  );
+  controller.dispose();
+}
+
+// (D) EDGES: a full bank never fences the zone in. Forward it still hands over
+// to the pinned gallery at the seam; backward it still hands back to native
+// scrolling — and the leftover bank is discarded on the way out, so nothing
+// coasts into a track the soft pin does not own.
+{
+  const harness = createHarness(seamY - 120);
+  const { environment, latest, controller } = harness;
+  ok(environment.wheel(100000), "a huge flick near the seam is owned");
+  for (let tick = 0; tick < 400 && latest().galleryMode === "native-before"; tick += 1) {
+    environment.clock.advance(TICK_MS);
+  }
+  eq(latest().galleryMode, "gallery-transitioning", "a full bank still reaches the seam");
+  ok(!latest().capActive, "the soft pin releases at the seam");
+  eq(latest().bankPx, 0, "leftover bank is discarded at the hand-off");
+  eq(environment.scrollY, seamY, "the hand-off still pins at the seam");
+  eq(latest().clipT, 1, "the clip is still on its last frame at the seam", 1e-9);
+  controller.dispose();
+}
+{
+  const harness = createHarness(zoneStartY + 40);
+  const { environment, latest, controller } = harness;
+  ok(environment.wheel(-5000), "a huge reverse flick is owned");
+  for (let tick = 0; tick < 400 && latest().capActive; tick += 1) {
+    environment.clock.advance(TICK_MS);
+  }
+  ok(!latest().capActive, "the zone still hands back at its front edge");
+  eq(latest().galleryMode, "native-before", "the hand-back stays native");
+  eq(latest().bankPx, 0, "native scrolling inherits no banked momentum");
+  const restY = environment.scrollY;
+  environment.clock.advance(TICK_MS * 60);
+  eq(environment.scrollY, restY, "the discarded bank does not coast the document");
+  controller.dispose();
 }
 
 // Rewinding out of the FRONT of the zone with the finger still down hands back
@@ -924,4 +1127,8 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
   eq(environment.clock.size, 0, "dispose clears timers and frames");
 }
 
-console.log("✓ scroll lifecycle (capped video zone + gesture-follow gallery)");
+console.log(
+  `input bank (ceiling ${SCROLL_BANK_MAX_CLIP_S} s of clip = ${BANK_FRAMES} frames) at 390x844:`,
+);
+console.log(bankReport.join("\n"));
+console.log("✓ scroll lifecycle (capped video zone + banked input + gesture-follow gallery)");

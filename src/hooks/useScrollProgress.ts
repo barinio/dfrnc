@@ -29,6 +29,10 @@ interface ScrollTimelineDiagnostic {
   // following, and clipT against window.__fp to prove the picture is in phase.
   virtualY: number;
   capActive: boolean;
+  // Scroll the user has asked for that the cap has not paid out yet. The probe
+  // reads it to prove a burst is BANKED (the page keeps moving after the input
+  // stops) and that a reversal empties it on the next tick.
+  bankPx: number;
 }
 
 declare global {
@@ -78,6 +82,7 @@ export function useScrollTimelineRefs(
           galleryStep: publication.galleryStep,
           virtualY: publication.virtualY,
           capActive: publication.capActive,
+          bankPx: publication.bankPx,
         };
         window.__sg = diagnostic;
       },

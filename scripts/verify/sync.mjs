@@ -51,6 +51,10 @@ const VIDEO_SPLIT = 0.84;
 const FRAME_COUNT = 295;
 const FRAME_SPAN = FRAME_COUNT - 1;
 const NATIVE_FPS = 12.5;
+// Mirrored from src/scrollGovernor.ts / src/scrollTimelineController.ts: how
+// much playback one flick may bank, and how long the zone absorbs a crossing.
+const SCROLL_BANK_MAX_CLIP_S = 4;
+const WHEEL_ENTRY_GRACE_MS = 250;
 const VIDEO_TIME_KNOTS = [
   [VIDEO_START, 0],
   [545.6 / SCROLL_TRACK_VH, 0.11],
@@ -185,10 +189,9 @@ function wheelDriver(page, cdp, viewport) {
       await send(deltaY);
     },
     // PIPELINED on purpose: awaiting each CDP ack caps the event rate at ~25/s,
-    // well under one event per animation frame, and the soft pin deliberately
-    // DROPS what it cannot spend in a tick — so an un-pipelined probe measures
-    // its own round-trip latency, not the cap. A real trackpad delivers
-    // 60-120 events per second during a flick.
+    // well under one event per animation frame, so an un-pipelined probe
+    // measures its own round-trip latency instead of the cap. A real trackpad
+    // delivers 60-120 events per second during a flick.
     async drive(deltaY, ms) {
       const until = Date.now() + ms;
       const inFlight = [];
@@ -201,6 +204,25 @@ function wheelDriver(page, cdp, viewport) {
     },
     async reverseOnce() {
       await send(-400);
+    },
+    // A small, fine-grained step, for positioning the page without flinging it.
+    async nudge() {
+      await send(200);
+    },
+    // A BURST: ten notches inside ~100 ms and then silence. This is the gesture
+    // the client complained about — under the old drop-the-excess rule 98.5 px
+    // of every 100 px notch evaporated, so the zone demanded ~150 of these.
+    // PIPELINED like drive(): awaiting each CDP ack would stretch ten notches
+    // over a second, and the page would spend most of the bank while the
+    // "burst" was still being typed.
+    async burst(deltaY = 120, count = 10, gapMs = 10) {
+      const inFlight = [];
+      for (let i = 0; i < count; i += 1) {
+        inFlight.push(send(deltaY).catch(() => {}));
+        await sleep(gapMs);
+      }
+      await Promise.all(inFlight);
+      return deltaY * count;
     },
   };
 }
@@ -246,6 +268,21 @@ function touchDriver(page, cdp, viewport) {
       await sleep(60);
       await send("touchEnd", []);
     },
+    async nudge() {
+      const from = Math.round(viewport.height * 0.6);
+      await send("touchStart", [{ x, y: from }]);
+      for (let i = 1; i <= 4; i += 1) {
+        await send("touchMove", [{ x, y: from - i * 40 }]);
+        await sleep(8);
+      }
+      await send("touchEnd", []);
+    },
+    // One thumb flick, finger up, then silence: ~0.3 s of swipe used to buy
+    // ~20 px of page.
+    async burst() {
+      await swipe(1, 12, 6);
+      return Math.abs(bottom - top);
+    },
   };
 }
 
@@ -265,6 +302,10 @@ const INSTALL_SAMPLER = () => {
       ms: now,
       target: fp.target,
       displayed: fp.displayed,
+      // The painter's OWN unrounded target-minus-displayed, from the same
+      // animation frame as `displayed`: fp.target is rounded to an integer, so
+      // re-deriving the lag from it adds up to half a frame of pure noise.
+      lag: fp.lag,
       sp: sg.sp,
       gp: sg.gp,
       clipT: sg.clipT,
@@ -278,7 +319,15 @@ const INSTALL_SAMPLER = () => {
 };
 
 // ── Analysis ────────────────────────────────────────────────────────────────
-function analyse(samples, label) {
+// `rateOnly` keeps the CLIP-RATE assertions — the client's actual contract —
+// and demotes the picture-coherence ones to printed figures. It exists for the
+// short BURST phase only: __sg and __fp are written by different animation-frame
+// callbacks, so a sample can pair a governor position with a painter snapshot
+// one or two frames older, which inflates a published-vs-painted gap by the page
+// speed times that skew (~1.4 frames at the cap under SwiftShader). Over the
+// tens of seconds of the flick phases that averages out and every assertion
+// below is enforced; over a 6 s burst one skewed sample would decide the run.
+function analyse(samples, label, { rateOnly = false } = {}) {
   const failures = [];
   const n = samples.length;
   if (n < 20) failures.push(`${label}: only ${n} samples`);
@@ -337,7 +386,10 @@ function analyse(samples, label) {
   }
 
   for (const s of samples) {
-    maxLag = Math.max(maxLag, Math.abs(s.target - s.displayed));
+    maxLag = Math.max(
+      maxLag,
+      Math.abs(Number.isFinite(s.lag) ? s.lag : s.target - s.displayed),
+    );
     if (PINNED_MODES.has(s.mode)) {
       pinnedMinDisplayed = Math.min(pinnedMinDisplayed, s.displayed);
     } else {
@@ -357,19 +409,21 @@ function analyse(samples, label) {
     }
   }
 
-  if (maxLag > 2.5) failures.push(`${label} (ii): |target-displayed| reached ${fmt(maxLag, 3)}`);
-  if (pinnedMinDisplayed < 292) {
-    failures.push(
-      `${label} (iii): card mode reached with the clip on frame ${fmt(pinnedMinDisplayed, 1)}`,
-    );
-  }
-  if (lottieViolations > 0) {
-    failures.push(`${label} (iii): ${lottieViolations} Lottie/clip phase mismatches`);
-  }
-  if (maxSpFrameGap > 2.5) {
-    failures.push(
-      `${label} (iii): published sp implies a frame ${fmt(maxSpFrameGap, 2)} away from the painted one`,
-    );
+  if (!rateOnly) {
+    if (maxLag > 2.5) failures.push(`${label} (ii): |target-displayed| reached ${fmt(maxLag, 3)}`);
+    if (pinnedMinDisplayed < 292) {
+      failures.push(
+        `${label} (iii): card mode reached with the clip on frame ${fmt(pinnedMinDisplayed, 1)}`,
+      );
+    }
+    if (lottieViolations > 0) {
+      failures.push(`${label} (iii): ${lottieViolations} Lottie/clip phase mismatches`);
+    }
+    if (maxSpFrameGap > 2.5) {
+      failures.push(
+        `${label} (iii): published sp implies a frame ${fmt(maxSpFrameGap, 2)} away from the painted one`,
+      );
+    }
   }
   if (cappedSamples > 0 && maxDrift > 4) {
     failures.push(`${label} (v): document drifted ${fmt(maxDrift, 2)} px from virtualY`);
@@ -512,6 +566,176 @@ async function runProfile(browser, profile) {
     `    (iv)  one reverse input lowered sp by ${reverseDelta.toExponential(2)} ` +
       `within 2 ticks (${spAfter < spBefore ? "PASS" : "FAIL"})`,
   );
+
+  // ── BURST THEN SILENCE: a flick BUYS playback ─────────────────────────────
+  // The client's complaint in one phase. Input used to be dropped every tick,
+  // so the page only moved while the user kept cranking (~150 notches for the
+  // 23.5 s zone). One burst must now keep the page running ON ITS OWN — at the
+  // very same 12.5 f/s, for at most SCROLL_BANK_MAX_CLIP_S seconds — and one
+  // reverse event must still be felt immediately.
+  const rearm = async () => {
+    for (let i = 0; i < 200; i += 1) {
+      if (await page.evaluate(() => window.__sg.capActive)) return true;
+      await driver.pulse(400);
+      await sleep(40);
+    }
+    return page.evaluate(() => window.__sg.capActive);
+  };
+
+  // How far past `from` the page kept moving, and when it last moved.
+  const motionTail = (samples, fromMs) => {
+    let lastMoveMs = fromMs;
+    let movedFrames = 0;
+    let movedPx = 0;
+    let base = null;
+    for (let i = 1; i < samples.length; i += 1) {
+      if (samples[i].ms < fromMs) continue;
+      if (base === null) base = samples[i - 1];
+      const dy = Math.abs(samples[i].virtualY - samples[i - 1].virtualY);
+      if (dy > 0.25) lastMoveMs = samples[i].ms;
+    }
+    const last = samples[samples.length - 1];
+    if (base) {
+      movedFrames = Math.abs(last.clipT - base.clipT) * FRAME_SPAN;
+      movedPx = Math.abs(last.virtualY - base.virtualY);
+    }
+    return { coastMs: lastMoveMs - fromMs, movedFrames, movedPx };
+  };
+
+  const waitForRest = async (maxMs = 9000) => {
+    const until = Date.now() + maxMs;
+    while (Date.now() < until) {
+      const bank = await page.evaluate(() =>
+        window.__sg.capActive ? window.__sg.bankPx : 0,
+      );
+      if (Math.abs(bank) < 0.01) return true;
+      await sleep(100);
+    }
+    return false;
+  };
+
+  if (!(await rearm())) {
+    failures.push(`${profile.name} (bank): the zone never re-took ownership`);
+  }
+  await sleep(WHEEL_ENTRY_GRACE_MS + 250);
+  // Ride to a SCENIC stretch first. That is where the client's complaint lives —
+  // 70 px/s of page, so a 100 px notch used to buy about 1.5 px — and where a
+  // flick is worth seconds of clip. Through a caption DWELL the page legitimately
+  // covers 660 px/s, so the same flick is worth a fraction of a second there and
+  // measuring the bank in one would say nothing.
+  for (let i = 0; i < 300; i += 1) {
+    if ((await page.evaluate(() => window.__sg.clipT)) >= 0.26) break;
+    await driver.nudge();
+    await sleep(80);
+  }
+  if (!(await waitForRest())) {
+    failures.push(`${profile.name} (bank): the approach never came to rest`);
+  }
+  const burstAt = await page.evaluate(() => ({
+    t: window.__sg.clipT,
+    y: window.scrollY,
+  }));
+  await page.evaluate(INSTALL_SAMPLER);
+  const askedPx = await driver.burst();
+  const burstEndMs = await page.evaluate(() => performance.now());
+  await sleep(6000); // pure silence, still sampling
+  const burstSamples = await page.evaluate(() => window.__syncSamples.slice());
+  const burst = analyse(burstSamples, `${profile.name} burst`, { rateOnly: true });
+  failures.push(...burst.failures);
+  const tail = motionTail(burstSamples, burstEndMs);
+  if (!(tail.coastMs >= 2000)) {
+    failures.push(
+      `${profile.name} (bank i): the page stopped ${fmt(tail.coastMs / 1000)} s ` +
+        `after the input did — a flick must buy at least 2 s`,
+    );
+  }
+  if (!(tail.coastMs <= 4500)) {
+    failures.push(
+      `${profile.name} (bank ii): the page coasted ${fmt(tail.coastMs / 1000)} s, ` +
+        `past the ${SCROLL_BANK_MAX_CLIP_S} s ceiling`,
+    );
+  }
+  const bankLeft = await page.evaluate(() => window.__sg.bankPx);
+  if (Math.abs(bankLeft) > 0.01) {
+    failures.push(`${profile.name} (bank): ${fmt(bankLeft, 3)} px still owed at rest`);
+  }
+  console.log(
+    `  burst then silence (from a scenic stretch: clip t ${fmt(burstAt.t, 3)}, ` +
+      `scrollY ${fmt(burstAt.y, 0)}):\n    ${fmt(askedPx, 0)} px asked in one burst → the page ` +
+      `ran ${fmt(tail.coastMs / 1000)} s / ${fmt(tail.movedFrames, 1)} frames / ` +
+      `${fmt(tail.movedPx, 0)} px on its own, then stopped (bank ${fmt(bankLeft, 3)} px)`,
+  );
+  report("burst", burst);
+  console.log(
+    "          (ii)/(iii) above are printed for the record here — the flick " +
+      "phases assert them over tens of seconds, where the sampler's frame-age " +
+      "skew averages out",
+  );
+
+  // (iv) one reverse event, sent while a forward bank is still paying out,
+  // lowers the document WITHIN TWO ANIMATION FRAMES — the backlog is discarded,
+  // not netted off against. Counting FRAMES (not milliseconds) is the only
+  // honest measurement here: a CDP round-trip and a page.evaluate are each tens
+  // of milliseconds, and SwiftShader frames swing between 10 and 80 ms, so the
+  // page itself times the gap between the event landing and scrollY falling.
+  await waitForRest();
+  await driver.burst();
+  await sleep(700); // still coasting on the bank, and the queue has drained
+  await page.evaluate((isTouch) => {
+    window.__rev = { armed: performance.now(), at: null, frames: null, y0: null, dy: null };
+    const start = () => {
+      if (window.__rev.at !== null) return;
+      window.__rev.at = performance.now();
+      window.__rev.y0 = window.scrollY;
+      let frames = 0;
+      const watch = () => {
+        frames += 1;
+        const dy = window.scrollY - window.__rev.y0;
+        if (dy < -0.05 || frames > 240) {
+          window.__rev.frames = frames;
+          window.__rev.dy = dy;
+          return;
+        }
+        requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
+    };
+    if (isTouch) window.addEventListener("touchmove", start, { passive: true });
+    else
+      window.addEventListener(
+        "wheel",
+        (e) => {
+          if (e.deltaY < 0) start();
+        },
+        { passive: true },
+      );
+  }, Boolean(profile.emulate));
+  await driver.reverseOnce();
+  for (let i = 0; i < 100; i += 1) {
+    if (await page.evaluate(() => window.__rev.frames !== null)) break;
+    await sleep(50);
+  }
+  const rev = await page.evaluate(() => window.__rev);
+  if (!(rev.frames !== null && rev.dy < 0 && rev.frames <= 2)) {
+    failures.push(
+      `${profile.name} (bank iv): a reverse event during a bank lowered scrollY ` +
+        `by ${fmt(rev.dy, 2)} px only after ${rev.frames} frames`,
+    );
+  }
+  console.log(
+    `    (iv)  reverse during a bank: scrollY fell ${fmt(rev.dy, 2)} px ` +
+      `${rev.frames} frame(s) after the event landed ` +
+      `(${rev.frames !== null && rev.dy < 0 && rev.frames <= 2 ? "PASS" : "FAIL"})`,
+  );
+  // Put the page back at the zone's front edge before the flick phases, so they
+  // measure the same full-zone ride they always did instead of a shorter one
+  // starting wherever the bursts left off.
+  for (let i = 0; i < 200; i += 1) {
+    const y = await page.evaluate(() => window.scrollY);
+    if (y <= zone.startY + 20) break;
+    await driver.drive(-2000, 300);
+  }
+  await sleep(2500); // let the last reverse bank drain
 
   // ── the hard forward flick ────────────────────────────────────────────────
   await sleep(300);

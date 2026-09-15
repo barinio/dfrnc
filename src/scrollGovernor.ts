@@ -147,3 +147,47 @@ export function capVirtualY(
   const capped = t0 + Math.sign(demand) * budget;
   return scrollYForVideoTime(clampProgress(capped), innerHeight);
 }
+
+// ── Input bank ceiling ───────────────────────────────────────────────────────
+// capVirtualY answers "how fast may the page move". This answers the other half
+// the client complained about: "how much of a gesture may still be OWED". The
+// cap used to DROP whatever it could not spend in a 16 ms tick — a 100 px wheel
+// notch bought the ~1.5 px a scenic stretch allows and the other 98.5 px
+// evaporated, so riding the 23.5 s zone meant ~150 notches of continuous
+// cranking (and on a phone a 0.3 s swipe bought ~20 px). The controller now
+// BANKS the remainder and keeps paying it out at the cap after the input stops.
+//
+// How much playback one flick may buy. In CLIP SECONDS, not pixels, for exactly
+// the reason the cap is: a scenic stretch (70 px/s at 844) and a caption dwell
+// (660 px/s) owe the viewer the same four seconds of PICTURE, not the same
+// number of pixels. The client's spec is untouched by it — the bank only
+// changes how long the page keeps moving, never how fast (never above 1×).
+export const SCROLL_BANK_MAX_CLIP_S = 4;
+
+// Ceiling for a signed bank held at `virtualY`, in pixels. Unbounded on a side
+// whose 4 s horizon has run past the end of the clip: that is what preserves
+// today's edge semantics exactly — the residue passes free, so capTick's
+// `next >= seamY` hand-off to the pinned gallery and its `next < zoneStartY`
+// hand-back to native scrolling both still fire on the very same tick they do
+// now, instead of being fenced in one horizon short of the edge.
+export function clampBankPx(
+  virtualY: number,
+  bankPx: number,
+  innerHeight: number,
+): number {
+  if (!Number.isFinite(bankPx) || bankPx === 0) return bankPx;
+  if (!Number.isFinite(virtualY)) return bankPx;
+  if (!validHeight(innerHeight)) return bankPx;
+
+  const budget = SCROLL_BANK_MAX_CLIP_S * NATIVE_CLIP_RATE_PER_S;
+  const t = videoTimeForY(virtualY, innerHeight);
+
+  if (bankPx > 0) {
+    const horizon = t + budget;
+    if (horizon >= 1) return bankPx;
+    return Math.min(bankPx, scrollYForVideoTime(horizon, innerHeight) - virtualY);
+  }
+  const horizon = t - budget;
+  if (horizon <= 0) return bankPx;
+  return Math.max(bankPx, scrollYForVideoTime(horizon, innerHeight) - virtualY);
+}
