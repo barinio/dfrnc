@@ -108,11 +108,19 @@ export function buildStartupAnchorOrder(
 // Latest demand replaces stale pending demand. Directional neighbours are
 // ordered along travel first; a stationary/first request uses lower-index
 // tie-breaking, matching get()'s nearest-loaded fallback.
+//
+// `hint` overrides the prior-derived direction (+1 forward, −1 backward, 0 =
+// infer). The rate-limited scrub walks the sequence at ~12.5 frames/s, so the
+// ROUNDED request index only changes every few rAF ticks — inferring travel
+// from the previous request would give up the bias on every tick in between.
+// The caller knows where the chase is headed (the sign of target − displayed)
+// and passes it, so the prefetch keeps loading ahead of the frame being painted.
 export function buildDirectionalPriority(
   target: number,
   previous: number,
   count: number,
   radius = 2,
+  hint = 0,
 ): number[] {
   const n = normalizedCount(count);
   if (n === 0) return [];
@@ -123,11 +131,14 @@ export function buildDirectionalPriority(
       : center;
   const r = nonNegativeInteger(radius, 2);
   const candidates = [center];
+  const direction = Number.isFinite(hint) && hint !== 0
+    ? Math.sign(hint)
+    : Math.sign(center - prior);
 
-  if (prior < center) {
+  if (direction > 0) {
     for (let d = 1; d <= r; d++) candidates.push(center + d);
     for (let d = 1; d <= r; d++) candidates.push(center - d);
-  } else if (prior > center) {
+  } else if (direction < 0) {
     for (let d = 1; d <= r; d++) candidates.push(center - d);
     for (let d = 1; d <= r; d++) candidates.push(center + d);
   } else {
@@ -640,7 +651,12 @@ export class FrameSequenceLoader {
 
   // The decoded <img> for `index` if loaded; else the nearest loaded frame within
   // `window` indices; else null. Prioritises queuing the requested frame.
-  get(index: number, window = 32): HTMLImageElement | null {
+  // `window` is the SUBSTITUTION tolerance, and the scrub deliberately keeps it
+  // tiny (±2): a far substitute paints a frame that has nothing to do with the
+  // rate-limited chase, which is seen as a speed-up / tear. Returning null lets
+  // the caller HOLD what it already painted. `direction` is a travel hint for
+  // the prefetch only (see buildDirectionalPriority) — it never widens `window`.
+  get(index: number, window = 32, direction = 0): HTMLImageElement | null {
     if (this.disposed || this.count === 0) {
       this.lastResolved = -1;
       return null;
@@ -653,6 +669,7 @@ export class FrameSequenceLoader {
       this.lastRequested,
       this.count,
       this.neighborRadius,
+      direction,
     );
     this.lastRequested = i;
     this.foregroundDemand = [];

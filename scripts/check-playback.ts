@@ -1380,6 +1380,19 @@ for (const f of FIGURES) {
       !/\.currentTime\s*=/.test(videoPlaneSource),
     "VideoPlane scrubs the frame sequence (no <video> element / currentTime seeking)",
   );
+  // The clip may never play faster than it was shot. Three shapes hold that up:
+  // the chase asks the loader for the DISPLAYED index with a TIGHT substitution
+  // window (a far substitute paints a frame the chase never reached — read as a
+  // speed-up), the prefetch radius is widened so that window stays populated,
+  // and the last painted position survives a remount so a remount cannot snap.
+  ok(
+    /const SCRUB_SUBSTITUTE_WINDOW = 2;/.test(videoPlaneSource) &&
+      /loader\.get\(\s*idx,\s*SCRUB_SUBSTITUTE_WINDOW/.test(videoPlaneSource) &&
+      /neighborRadius: SCRUB_PREFETCH_RADIUS/.test(videoPlaneSource) &&
+      /let lastPaintedScrubFrame: number \| null = null;/.test(videoPlaneSource) &&
+      /useRef<number \| null>\(lastPaintedScrubFrame\)/.test(videoPlaneSource),
+    "VideoPlane holds undecoded frames, prefetches ahead and survives a remount",
+  );
   const scrollHookSrc = readFileSync(
     new URL("../src/hooks/useScrollProgress.ts", import.meta.url),
     "utf8",

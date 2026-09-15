@@ -49,6 +49,27 @@ const PLANE_Z = -3.5;
 // (window right edge = 0.45 + 0.13 = 0.58) — any further left clips it.
 const NARROW_PAN_CENTER_X = 0.45;
 
+// How far from the frame the chase is ASKING for the loader may substitute an
+// already-decoded neighbour (frames.ts get()'s ±window fallback). Kept tiny: the
+// whole point of the rate limit is that the painted frame advances at the clip's
+// native pace, and a substitute 30 frames away paints a picture the chase never
+// asked for — read on screen as a speed-up or a tear. If nothing within ±2 is
+// decoded, get() returns null and the plane simply HOLDS its current texture.
+const SCRUB_SUBSTITUTE_WINDOW = 2;
+
+// How far ahead/behind the painted frame the loader keeps decoding. At the
+// native 12.5 frames/s an 8-frame lead is ~0.64 s of runway, which is what keeps
+// the ±2 substitution window populated instead of starving into holds.
+const SCRUB_PREFETCH_RADIUS = 8;
+
+// The float frame position last painted, kept at MODULE scope so that a
+// VideoPlane remount inside a live session (a Scene re-key, a fast-refresh, a
+// tier swap) resumes the chase where it left off instead of treating itself as
+// a first paint and adopting the scroll target outright — which would be the one
+// remaining way to paint a jump faster than the clip runs. null = nothing has
+// ever been painted in this session, the one legitimate snap.
+let lastPaintedScrubFrame: number | null = null;
+
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
   galleryRef: MutableRefObject<number>;
@@ -72,9 +93,10 @@ export default function VideoPlane({
   const loaderRef = useRef<FrameSequenceLoader | null>(null);
   const currentImgRef = useRef<HTMLImageElement | null>(null);
   // Float position of the frame actually being PAINTED. The scroll target is
-  // still an exact function of scroll position; this chases it at a bounded
-  // rate (see frameScrub.ts). null = nothing painted yet ⇒ adopt the target.
-  const displayedFrameRef = useRef<number | null>(null);
+  // still an exact function of scroll position; this chases it at the clip's
+  // native rate (see frameScrub.ts). null = nothing painted yet ⇒ adopt the
+  // target. Seeded from the module-level survivor so a remount resumes.
+  const displayedFrameRef = useRef<number | null>(lastPaintedScrubFrame);
   // True once the staged startup barrier has settled (the sequence can render
   // frame 0 or the nearest successfully loaded startup anchor).
   const readyRef = useRef(false);
@@ -166,6 +188,10 @@ export default function VideoPlane({
     const tier = frameTierForScreen();
     const loader = new FrameSequenceLoader(tier, FRAME_COUNT, {
       ...frameLoaderBudgetFor(tier),
+      // Wider foreground neighbourhood than the loader default (2). Concurrency
+      // stays on the per-tier budget — this widens the QUEUE, not the number of
+      // simultaneous requests, so phones keep their 4-request ceiling.
+      neighborRadius: SCRUB_PREFETCH_RADIUS,
       onStartupReady: () => {
         readyRef.current = true;
         notifyReady();
@@ -211,9 +237,10 @@ export default function VideoPlane({
     mat.opacity = opacity;
 
     // Pick + upload the frame. The scroll target stays an exact function of
-    // scroll position, but the PAINTED frame chases it at a bounded rate
-    // (frameScrub.ts) — a wheel notch that moves the target 10–15 frames in one
-    // tick used to strobe. "done" (reduced motion) never scrubs: it holds the
+    // scroll position, but the PAINTED frame chases it at the clip's NATIVE rate
+    // (frameScrub.ts) — it can lag arbitrarily far behind a fast scroll and walk
+    // the whole way back at 1×, which is the point: the clip never plays faster
+    // than it was shot. "done" (reduced motion) never scrubs: it holds the
     // static last frame, so it snaps rather than animating there.
     const targetFrame = scrubTargetFrameFor(t);
     const displayed =
@@ -221,12 +248,21 @@ export default function VideoPlane({
         ? targetFrame
         : advanceScrubFrame(displayedFrameRef.current, targetFrame, delta);
     displayedFrameRef.current = displayed;
-    // get() returns the nearest loaded frame, so a fast scroll that outruns the
-    // download holds a near frame instead of going blank; once decoded the exact
-    // frame lands next tick. Requesting the DISPLAYED index (not the target)
-    // keeps the loader's foreground priority on frames actually being painted.
+    lastPaintedScrubFrame = displayed;
+    // Request the DISPLAYED index — the slow, predictable chase — never the raw
+    // scroll target: that keeps both the foreground decode priority and the
+    // directional prefetch on frames that are actually about to be painted.
+    // Substitution is capped at ±SCRUB_SUBSTITUTE_WINDOW; a null result means
+    // nothing that close is decoded yet, and the plane holds its last texture
+    // rather than jumping to a frame the chase never reached.
     const idx = Math.round(displayed);
-    const img = readyRef.current ? loader.get(idx) : null;
+    const img = readyRef.current
+      ? loader.get(
+          idx,
+          SCRUB_SUBSTITUTE_WINDOW,
+          Math.sign(targetFrame - displayed),
+        )
+      : null;
     if (import.meta.env.DEV) {
       (window as unknown as { __fp?: unknown }).__fp = {
         idx,

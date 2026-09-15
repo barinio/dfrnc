@@ -1,38 +1,44 @@
 import { FRAME_COUNT } from "./frames";
+import { FRAME_MANIFEST } from "./frameManifest";
 
 // Rate-limited frame scrub. The clip stays SCROLL-BOUND — the target frame is
 // still a pure function of scroll position (videoMasterTimeFor → t →
 // scrubTargetFrameFor) — but the DISPLAYED frame is only allowed to chase that
-// target at a bounded frame rate. Without a cap a single wheel notch or a
-// trackpad flick moves the target 10–15 frames in one rAF tick, and the plane
-// paints that as a strobing jump (made worse by FrameSequenceLoader's ±32
-// nearest-loaded fallback, which sticks then snaps). Chasing at a fixed rate
-// restores the "cinematic" read: scroll still drives the clip, it just cannot
-// be dragged faster than a film can run.
+// target at the clip's NATIVE playback rate. The contract the client keeps
+// asking for, in one line: the video NEVER plays faster than the source clip.
+// Scroll slower than native ⇒ the frame follows the scroll exactly (it may go
+// arbitrarily slowly, or stop, or run backwards). Scroll faster than native ⇒
+// the frame keeps running at 1× and simply falls behind, catching up after the
+// scroll stops — the "please scroll slower" feel.
 //
-// 25 sequence-frames/s ≈ 2× native speed. The WebP sequence is every SECOND
-// frame of a 25 fps master (589 → 295 frames), so playing all 295 in clip order
-// at native pace is 12.5 sequence-frames/s; 25 is a brisk-but-filmic double.
-// Both directions are separate knobs (both 25 today) so forward and rewind can
-// be tuned independently without touching the call site.
-export const FORWARD_SCRUB_FPS = 25;
-export const BACKWARD_SCRUB_FPS = 25;
+// NATIVE pace is DERIVED, not guessed: the WebP sequence keeps every
+// FRAME_MANIFEST.stride-th frame of a FRAME_MANIFEST.sourceFps master
+// (25 fps, 589 frames → stride 2 → 295 sequence frames), so playing the whole
+// sequence in clip order at real time is sourceFps / stride = 12.5
+// SEQUENCE-frames per second. The old 25 was sequence-frames/s, i.e. exactly 2×
+// real time. Both directions use the same cap — a rewind cannot outrun the clip
+// either.
+function derivedNativeFps(): number {
+  const source = FRAME_MANIFEST.sourceFps as number;
+  const stride = FRAME_MANIFEST.stride as number;
+  if (!Number.isFinite(source) || source <= 0) return 12.5;
+  if (!Number.isFinite(stride) || stride <= 0) return source;
+  return source / stride;
+}
 
-// Anti-tail: how far behind the scroll target the displayed frame may fall.
-// 50 frames at 25 f/s = 2 s of catch-up. A scroll that teleports half the clip
-// away (anchor jump, keyboard End, a violent flick) snaps to the edge of this
-// budget instead of grinding through 12 s of rewind while the page sits still.
-export const MAX_SCRUB_LAG_FRAMES = 50;
+export const NATIVE_SCRUB_FPS = derivedNativeFps();
 
 // Frame-delta clamp. A backgrounded tab (or a long GC pause) hands useFrame a
 // multi-second delta on the next tick; without this the "rate limit" would pay
 // out the whole backlog at once, i.e. exactly the jump it exists to prevent.
-export const MAX_SCRUB_DELTA_S = 0.1;
+// 0.25 s ≈ 3 native frames — generous enough that a phone rendering at 8 fps
+// still gets paid in full, tight enough that a restored tab cannot teleport.
+export const MAX_SCRUB_DELTA_S = 0.25;
 
 export interface ScrubOptions {
-  forwardFps?: number;
-  backwardFps?: number;
-  maxLagFrames?: number;
+  // Symmetric cap (sequence-frames per wall second). Defaults to the clip's
+  // native pace; exposed so tests and tools can drive the chase explicitly.
+  fps?: number;
   maxDeltaSeconds?: number;
   count?: number;
 }
@@ -64,8 +70,12 @@ export function scrubTargetFrameFor(t: number, count = FRAME_COUNT): number {
 }
 
 // One tick of the chase. `displayed` is the float frame position painted last
-// tick (null on the very first tick — then the target is adopted outright, so
-// a deep-link / restored scroll position never animates in from frame 0).
+// tick (null ONLY on genuine first paint — then the target is adopted outright,
+// so a deep-link / restored scroll position never animates in from frame 0).
+// There is deliberately NO lag clamp: a gap of any size is walked at the native
+// rate, in both directions. The previous anti-tail snap re-seated `displayed`
+// near the target whenever the gap passed 50 frames, which cancelled the cap
+// exactly when the user scrolled fast enough to need it.
 // Returns the new float position; the caller rounds it for display.
 export function advanceScrubFrame(
   displayed: number | null,
@@ -82,20 +92,11 @@ export function advanceScrubFrame(
     ? clamp(deltaSeconds, 0, maxDelta)
     : 0;
 
-  let from = clamp(displayed, 0, last);
-  const lagBudget = positive(opts.maxLagFrames, MAX_SCRUB_LAG_FRAMES);
-  let gap = goal - from;
-  if (Math.abs(gap) > lagBudget) {
-    from = clamp(goal - Math.sign(gap) * lagBudget, 0, last);
-    gap = goal - from;
-  }
+  const from = clamp(displayed, 0, last);
+  const gap = goal - from;
   if (gap === 0) return from;
 
-  const fps =
-    gap > 0
-      ? positive(opts.forwardFps, FORWARD_SCRUB_FPS)
-      : positive(opts.backwardFps, BACKWARD_SCRUB_FPS);
-  const step = fps * dt;
+  const step = positive(opts.fps, NATIVE_SCRUB_FPS) * dt;
   if (step >= Math.abs(gap)) return goal;
   return clamp(from + Math.sign(gap) * step, 0, last);
 }

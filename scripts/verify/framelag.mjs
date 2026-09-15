@@ -4,7 +4,12 @@
 // exposed by VideoPlane in DEV). Reports the worst gap = idx − resolved (how
 // many frames the displayed frame lags the scroll) and where it happened — i.e.
 // whether the user outruns the download. Exits nonzero if startup never becomes
-// ready or a resolved frame is farther than the loader's ±32-frame contract.
+// ready or a resolved frame is farther than the scrub's ±2-frame substitution
+// contract. VideoPlane deliberately asks get() for a TIGHT window: a substitute
+// 30 frames away paints a frame the rate-limited chase never reached, which
+// reads as a speed-up. An UNRESOLVED sample is therefore legal — it means the
+// plane held its last texture — so holds are reported, not failed, unless they
+// swallow more than half the ride.
 //   node scripts/verify/framelag.mjs --url http://localhost:5173 --mbps 6 --track 800 --viewport 390x844
 import puppeteer from "puppeteer-core";
 const opt = (k, d) => { const i = process.argv.indexOf(`--${k}`); return i >= 0 ? process.argv[i + 1] : d; };
@@ -148,18 +153,23 @@ try {
   if (!sweepStartedReady) {
     failures.push("startup coverage was not ready when the active sweep began");
   }
-  if (unresolvedSamples.length) {
+  if (unresolvedSamples.length > samples.length / 2) {
     failures.push(
-      `${unresolvedSamples.length} frame diagnostic sample(s) were unresolved`,
+      `${unresolvedSamples.length}/${samples.length} samples held (nothing decoded within ±2)`,
+    );
+  } else if (unresolvedSamples.length) {
+    console.log(
+      `held ${unresolvedSamples.length}/${samples.length} samples ` +
+        `(no decoded frame within ±2 — the plane kept its last texture)`,
     );
   }
   if (!resolvedSamples.length) failures.push("no resolved frame diagnostics were sampled");
-  if (maxAbsGap > 32) failures.push(`resolved frame exceeded ±32 contract (max ${maxAbsGap})`);
+  if (maxAbsGap > 2) failures.push(`resolved frame exceeded ±2 contract (max ${maxAbsGap})`);
   if (failures.length) {
     for (const failure of failures) console.error(`FAIL — ${failure}`);
     process.exitCode = 1;
   } else {
-    console.log("PASS — startup ready and resolved frames stayed within ±32");
+    console.log("PASS — startup ready and resolved frames stayed within ±2");
   }
 } finally {
   await closeBrowserWithin(browser);
