@@ -35,6 +35,15 @@ body {
     scrollbar-width: none;
 }
 
+body {
+    /* The video zone is a SOFT PIN: the controller cancels wheel/touch there
+       and drives window.scrollY itself. Without this, a fast flick that the cap
+       refuses still hands the leftover to the browser as an overscroll / pull-
+       to-refresh / rubber-band, which fights the governor's write-back and (on
+       iOS) can bounce the document off the position the clip is holding. */
+    overscroll-behavior-y: none;
+}
+
 html::-webkit-scrollbar,
 body::-webkit-scrollbar {
     display: none;

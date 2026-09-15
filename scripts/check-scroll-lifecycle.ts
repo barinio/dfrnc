@@ -26,10 +26,14 @@ import type {
 } from "../src/scrollTimelineController";
 import {
   scrollYForTimelineProgress,
+  scrollYForVideoTime,
   videoGovernorBounds,
+  videoTimeForY,
 } from "../src/scrollGovernor";
+import { NATIVE_SCRUB_FPS, scrubTargetFrameFor } from "../src/frameScrub";
+import { FRAME_COUNT } from "../src/frames";
 import { galleryStepTargets } from "../src/galleryGestureStepper";
-import { VID_FLY_END } from "../src/constants";
+import { SCROLL_TRACK_VH, VID_FLY_END } from "../src/constants";
 
 function ok(condition: unknown, label: string): asserts condition {
   if (!condition) throw new Error(label);
@@ -286,6 +290,7 @@ function createHarness(initialY: number, initialReducedMotion = false) {
 }
 
 const IH = 844;
+const zoneStartY = videoGovernorBounds(IH).startY;
 const seamY = videoGovernorBounds(IH).endY;
 const galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, IH);
 const targets = galleryStepTargets();
@@ -294,14 +299,225 @@ const stepGpAt = (index: number, travelPx: number) =>
   targets[index] +
   (targets[index + 1] - targets[index]) * Math.min(travelPx / SPAN, 1);
 const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
+// FakeClock.requestFrame schedules at +16 ms, so one advance(TICK_MS) is
+// exactly one rAF tick of the video-zone soft pin.
+const TICK_MS = 16;
+const frameAt = (y: number) => scrubTargetFrameFor(videoTimeForY(y, IH), FRAME_COUNT);
 
-// Native input remains untouched before the seam.
+type Harness = ReturnType<typeof createHarness>;
+
+// Ride the capped video zone with sustained input until the pinned gallery
+// takes over. Sustained is the point: the cap DROPS the excess of a single
+// event, so one huge flick buys one tick of travel and nothing more.
+function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): number {
+  const { environment, latest } = harness;
+  for (let tick = 0; tick < maxTicks; tick += 1) {
+    if (latest().galleryMode !== "native-before") return tick;
+    environment.wheel(pxPerEvent);
+    environment.clock.advance(TICK_MS);
+  }
+  throw new Error("the capped video zone never reached the seam");
+}
+
+// ── The video zone is a SOFT PIN ────────────────────────────────────────────
+// Input inside [zoneStartY, seamY) is owned by the controller: cancelled,
+// queued, integrated at the clip's own rate and written back to the document.
 {
-  const harness = createHarness(seamY - 500);
+  const harness = createHarness(zoneStartY + 1200);
   const { environment, latest, controller } = harness;
-  ok(!environment.wheel(100), "interior wheel remains native");
-  eq(latest().scrollY, seamY - 400, "native publication follows physical scroll");
-  eq(latest().galleryMode, "native-before", "interior remains native-before");
+  ok(latest().capActive, "a first paint inside the video zone adopts the soft pin");
+  eq(latest().virtualY, zoneStartY + 1200, "the soft pin seats where it found the page");
+  eq(latest().scrollY, zoneStartY + 1200, "progress is published from the virtual position");
+
+  // A single violent flick is CAPPED and its excess DROPPED — one tick of
+  // travel, not 4000 px of it.
+  const startFrame = frameAt(latest().virtualY);
+  ok(environment.wheel(4000), "a flick inside the video zone is cancelled");
+  environment.clock.advance(TICK_MS * 4);
+  const flickFrames = frameAt(latest().virtualY) - startFrame;
+  ok(flickFrames > 0, "the flick still moves the page forward");
+  ok(
+    flickFrames <= 1,
+    `a dropped-excess flick advances at most one frame (got ${flickFrames.toFixed(3)})`,
+  );
+
+  // Sustained maximum input for a full second: still native rate.
+  const before = frameAt(latest().virtualY);
+  for (let tick = 0; tick < 60; tick += 1) {
+    environment.wheel(4000);
+    environment.clock.advance(TICK_MS);
+  }
+  const advanced = frameAt(latest().virtualY) - before;
+  ok(
+    advanced <= NATIVE_SCRUB_FPS + 1,
+    `one second of 4000 px wheel events advanced ${advanced.toFixed(2)} frames`,
+  );
+  ok(advanced > NATIVE_SCRUB_FPS - 2, "sustained input still runs at the clip's pace");
+
+  // The document FOLLOWS the virtual position (physical write-back).
+  ok(environment.scrollToCalls.length > 0, "the soft pin writes back to the document");
+  ok(
+    Math.abs(environment.scrollY - latest().virtualY) < 1,
+    "the document tracks virtualY inside the zone",
+  );
+  eq(latest().scrollY, latest().virtualY, "published scrollY is the virtual position", 1e-9);
+
+  // One reverse event lowers sp within two ticks — nothing is banked.
+  const spBefore = latest().sp;
+  ok(environment.wheel(-300), "a reverse wheel inside the zone is owned");
+  environment.clock.advance(TICK_MS * 2);
+  ok(latest().sp < spBefore, "one reverse event lowers sp within two ticks");
+
+  // Keyboard is owned too, and Home/End projections stay finite.
+  const spBeforeKey = latest().sp;
+  ok(environment.keyDown("PageDown"), "a pinned-zone key is consumed");
+  environment.clock.advance(TICK_MS * 2);
+  ok(latest().sp > spBeforeKey, "a key step advances the capped page");
+  ok(environment.keyDown("End"), "End is consumed inside the zone");
+  environment.clock.advance(TICK_MS);
+  ok(Number.isFinite(latest().virtualY), "an End projection stays finite");
+  ok(latest().virtualY < seamY, "End cannot teleport past the clip");
+  controller.dispose();
+  eq(environment.clock.size, 0, "dispose stops the soft-pin ticker");
+}
+
+// Rewinding out of the FRONT of the zone with the finger still down hands back
+// to native scrolling and BURNS the rest of that swipe. (Left owned, those
+// leftover touchmoves fell through into the gallery scrub, which pinned the
+// gallery from native-before and teleported the page forward to the seam.)
+{
+  const harness = createHarness(zoneStartY + 40);
+  const { environment, latest, controller } = harness;
+  ok(latest().capActive, "the finger starts inside the capped zone");
+  environment.touchStart(200);
+  let fingerY = 200;
+  for (let i = 0; i < 400 && latest().capActive; i += 1) {
+    fingerY += 20; // finger travels DOWN the glass: the page rewinds
+    environment.touchMove(fingerY);
+    environment.clock.advance(TICK_MS);
+  }
+  ok(!latest().capActive, "the zone hands back at its front edge");
+  eq(latest().galleryMode, "native-before", "the hand-back stays native");
+  const handBackY = environment.scrollY;
+  for (let i = 0; i < 40; i += 1) {
+    fingerY += 20;
+    environment.touchMove(fingerY);
+    environment.clock.advance(TICK_MS);
+  }
+  eq(latest().galleryMode, "native-before", "a burned swipe cannot pin the gallery");
+  eq(latest().sp, latest().scrollY / ((SCROLL_TRACK_VH - 100) / 100) / IH, "progress stays physical", 1e-9);
+  ok(environment.scrollY <= handBackY, "the burned swipe never drives the page forward");
+  environment.touchEnd(fingerY);
+  environment.clock.advance(SETTLE_DRAIN_MS);
+  eq(latest().galleryMode, "native-before", "release keeps native scrolling");
+  controller.dispose();
+}
+
+// Native scrolling BEFORE the video zone is untouched, and the crossing
+// wheel event is the one that takes ownership.
+{
+  const harness = createHarness(zoneStartY - 500);
+  const { environment, latest, controller } = harness;
+  ok(!latest().capActive, "the soft pin is idle before the video zone");
+  ok(!environment.wheel(100), "pre-video wheel remains native");
+  eq(latest().scrollY, zoneStartY - 400, "native publication follows physical scroll");
+  eq(latest().galleryMode, "native-before", "pre-video remains native-before");
+  ok(environment.wheel(600), "the wheel that would cross into the zone is cancelled");
+  ok(latest().capActive, "crossing the zone start takes ownership");
+  eq(environment.scrollY, zoneStartY, "the crossing seats exactly at the zone start");
+  controller.dispose();
+}
+
+// Native MOMENTUM carrying the page into the zone (iOS keeps scrolling after
+// touchend with no wheel events at all) is corrected back to the zone start.
+{
+  const harness = createHarness(zoneStartY - 300);
+  const { environment, latest, controller } = harness;
+  environment.scrollY = zoneStartY + 420;
+  environment.windowTarget.dispatch("scroll", {});
+  ok(latest().capActive, "a momentum crossing arms the soft pin");
+  eq(environment.scrollY, zoneStartY, "momentum overshoot is scrolled back to the zone start");
+  eq(latest().virtualY, zoneStartY, "the virtual position starts at the zone start");
+  // The rest of the in-flight tail is absorbed, exactly like the gallery pin's
+  // entry grace, so the crossing costs no clip time.
+  ok(environment.wheel(900), "in-grace momentum is cancelled");
+  environment.clock.advance(TICK_MS * 2);
+  eq(latest().virtualY, zoneStartY, "in-grace momentum buys no clip time", 1e-9);
+  // A further stray scroll event is pulled back to the virtual position.
+  environment.scrollY = zoneStartY + 250;
+  environment.windowTarget.dispatch("scroll", {});
+  eq(environment.scrollY, zoneStartY, "a stray in-zone scroll is corrected back");
+  controller.dispose();
+}
+
+// A position ALREADY inside the zone (restored scroll / deep link) is adopted
+// where it is instead of being yanked to the zone start.
+{
+  const harness = createHarness(zoneStartY + 2000);
+  const { environment, latest, controller } = harness;
+  environment.scrollY = zoneStartY + 2000;
+  environment.windowTarget.dispatch("scroll", {});
+  eq(latest().virtualY, zoneStartY + 2000, "a restored in-zone position is adopted");
+  controller.dispose();
+}
+
+// The zone hands over to the pinned gallery at the seam, with the clip on its
+// LAST frame — the phase coherence the whole change exists for.
+{
+  const harness = createHarness(seamY - 120);
+  const { environment, latest, publications, controller } = harness;
+  ok(latest().capActive, "the last stretch before the seam is capped");
+  const from = publications.length;
+  const ticks = rideCapToSeam(harness);
+  ok(ticks > 0, "the seam is not reached instantly");
+  eq(latest().galleryMode, "gallery-transitioning", "the pin takes the hand-off");
+  ok(!latest().capActive, "the soft pin releases at the seam");
+  eq(environment.scrollY, seamY, "the hand-off pins at the seam");
+  eq(latest().gp, VID_FLY_END, "the hand-off lands at the first photo-ready state");
+  eq(latest().galleryStep, 0, "the hand-off does not advance a photo");
+  eq(latest().clipT, 1, "the clip is on its last frame exactly at the seam", 1e-9);
+  // Nothing in the ride ever outran the clip.
+  let worst = 0;
+  for (let i = from + 1; i < publications.length; i += 1) {
+    worst = Math.max(worst, publications[i].clipT - publications[i - 1].clipT);
+  }
+  ok(
+    worst * (FRAME_COUNT - 1) <= (NATIVE_SCRUB_FPS * TICK_MS) / 1000 + 1e-6,
+    `the ride never published more than one tick of clip time (got ${(worst * (FRAME_COUNT - 1)).toFixed(4)} frames)`,
+  );
+  controller.dispose();
+}
+
+// Reduced motion bypasses the soft pin entirely: raw scroll, no ownership.
+{
+  const harness = createHarness(zoneStartY + 1000);
+  const { environment, latest, controller } = harness;
+  ok(latest().capActive, "the zone is capped under normal motion");
+  harness.setReducedMotion(true);
+  ok(!latest().capActive, "reduced motion drops the soft pin");
+  ok(!environment.wheel(2000), "reduced-motion wheel is native");
+  eq(latest().scrollY, zoneStartY + 3000, "reduced motion publishes raw scroll");
+  harness.setReducedMotion(false);
+  ok(latest().capActive, "restoring motion re-seats the soft pin");
+  eq(latest().virtualY, zoneStartY + 3000, "the re-seat adopts the current position");
+  controller.dispose();
+}
+
+// A rotation re-seats the soft pin by CLIP TIME, not by pixels.
+{
+  const harness = createHarness(zoneStartY + 2500);
+  const { environment, latest, controller } = harness;
+  const clipBefore = latest().clipT;
+  environment.innerWidth = 844;
+  environment.innerHeight = 390;
+  environment.windowTarget.dispatch("resize", {});
+  eq(latest().clipT, clipBefore, "a rotation leaves the video where it was", 1e-9);
+  eq(
+    latest().virtualY,
+    scrollYForVideoTime(clipBefore, 390),
+    "the re-seat is the inverse of the clip time in the new viewport",
+    1e-6,
+  );
   controller.dispose();
 }
 
@@ -310,7 +526,7 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
 {
   const harness = createHarness(seamY - 40);
   const { environment, latest, controller } = harness;
-  ok(environment.wheel(240), "crossing wheel is cancelled before native overshoot");
+  rideCapToSeam(harness);
   eq(environment.scrollY, seamY, "physical scroll lands at seam");
   eq(latest().gp, VID_FLY_END, "entry lands at first photo-ready state");
   eq(latest().galleryStep, 0, "entry does not advance a photo");
@@ -380,7 +596,7 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
 // A scroll-driven entry (scrollbar drag / momentum crossing) settles to idle
 // on its own, so keyboard steps work without any wheel/touch gesture first.
 {
-  const harness = createHarness(seamY - 200);
+  const harness = createHarness(zoneStartY - 200);
   const { environment, latest, controller } = harness;
   environment.scrollY = seamY + 50;
   environment.windowTarget.dispatch("scroll", {});
@@ -400,7 +616,16 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   const harness = createHarness(seamY - 10);
   const { environment, latest, controller } = harness;
   environment.touchStart(500);
-  ok(environment.touchMove(450), "seam-crossing touchmove is cancelled");
+  ok(environment.touchMove(450), "in-zone touchmove is cancelled");
+  // The finger drags the last of the video zone at the capped pace; the seam
+  // hands over to the pin and BURNS the rest of that same swipe.
+  let fingerY = 450;
+  for (let i = 0; i < 200 && latest().galleryMode === "native-before"; i += 1) {
+    fingerY -= 20;
+    environment.touchMove(fingerY);
+    environment.clock.advance(TICK_MS);
+  }
+  eq(latest().galleryMode, "gallery-transitioning", "the finger reaches the pin");
   eq(latest().galleryStep, 0, "entry touch cannot advance a photo");
   ok(environment.touchMove(100), "rest of entry swipe remains cancelled");
   eq(latest().galleryStep, 0, "long entry swipe remains burned");
@@ -487,6 +712,22 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   ok(before.environment.wheel(-80), "reverse at first photo is owned");
   eq(before.latest().galleryMode, "native-before", "reverse releases before gallery");
   eq(before.environment.scrollY, seamY - 1, "reverse release moves one boundary pixel");
+  // One pixel before the seam is still the VIDEO ZONE: the release re-seats the
+  // soft pin there, so the way back up is capped too (the flick that used to
+  // show the first Lottie title while the clip was still on the dome).
+  ok(before.latest().capActive, "the release re-seats the soft pin");
+  eq(before.latest().virtualY, seamY - 1, "the re-seat is the seam edge", 1e-9);
+  const rewindFrom = before.latest().clipT;
+  for (let tick = 0; tick < 30; tick += 1) {
+    before.environment.wheel(-400);
+    before.environment.clock.advance(TICK_MS);
+  }
+  const rewound = (rewindFrom - before.latest().clipT) * (FRAME_COUNT - 1);
+  ok(rewound > 0, "the capped zone rewinds");
+  ok(
+    rewound <= (NATIVE_SCRUB_FPS * 30 * TICK_MS) / 1000 + 1,
+    `a rewind cannot outrun the clip either (got ${rewound.toFixed(2)} frames)`,
+  );
   before.controller.dispose();
 
   const after = createHarness(seamY);
@@ -549,9 +790,8 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
 // fly-away, and never the reported back-slide (card 4 already shown, quiet
 // eases back, card 3 rises again on the next swipe).
 {
-  const harness = createHarness(seamY - 40);
+  const harness = createHarness(seamY);
   const { environment, latest, publications, controller } = harness;
-  environment.wheel(240);
   environment.clock.advance(WHEEL_ENTRY_GRACE_MS);
   const monotonicFrom = publications.length;
 
@@ -684,4 +924,4 @@ const SETTLE_DRAIN_MS = GALLERY_SETTLE_MS + INPUT_QUIET_MS + 64;
   eq(environment.clock.size, 0, "dispose clears timers and frames");
 }
 
-console.log("✓ scroll lifecycle (gesture-follow gallery)");
+console.log("✓ scroll lifecycle (capped video zone + gesture-follow gallery)");

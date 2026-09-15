@@ -23,6 +23,12 @@ interface ScrollTimelineDiagnostic {
   clipT: number;
   galleryMode: GalleryMode;
   galleryStep: number;
+  // Soft-pin bridge for scripts/verify/sync.mjs: the position the governor is
+  // actually driving, and whether the video zone currently owns input. A probe
+  // compares virtualY against the real window.scrollY to prove the document is
+  // following, and clipT against window.__fp to prove the picture is in phase.
+  virtualY: number;
+  capActive: boolean;
 }
 
 declare global {
@@ -70,6 +76,8 @@ export function useScrollTimelineRefs(
           clipT: publication.clipT,
           galleryMode: publication.galleryMode,
           galleryStep: publication.galleryStep,
+          virtualY: publication.virtualY,
+          capActive: publication.capActive,
         };
         window.__sg = diagnostic;
       },

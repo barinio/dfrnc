@@ -28,6 +28,16 @@ function derivedNativeFps(): number {
 
 export const NATIVE_SCRUB_FPS = derivedNativeFps();
 
+// The same native pace expressed in CLIP-TIME units per wall second, which is
+// what the scroll governor caps: t ∈ [0,1] spans FRAME_COUNT − 1 frame steps,
+// so one native frame is 1 / (FRAME_COUNT − 1) of the clip. Deriving it here
+// (rather than in scrollGovernor) keeps ONE definition of "real time" for both
+// the painted-frame chase and the page-speed limiter — they are the same rate
+// by construction, which is why the cap is automatically 12.5 f/s at every
+// VIDEO_TIME_KNOTS slope.
+export const NATIVE_CLIP_RATE_PER_S =
+  NATIVE_SCRUB_FPS / Math.max(FRAME_COUNT - 1, 1);
+
 // Frame-delta clamp. A backgrounded tab (or a long GC pause) hands useFrame a
 // multi-second delta on the next tick; without this the "rate limit" would pay
 // out the whole backlog at once, i.e. exactly the jump it exists to prevent.
@@ -99,4 +109,48 @@ export function advanceScrubFrame(
   const step = positive(opts.fps, NATIVE_SCRUB_FPS) * dt;
   if (step >= Math.abs(gap)) return goal;
   return clamp(from + Math.sign(gap) * step, 0, last);
+}
+
+// ── Painted-frame bridge ─────────────────────────────────────────────────────
+// The float frame position VideoPlane last PAINTED, at module scope so that a
+// VideoPlane remount inside a live session (a Scene re-key, a fast-refresh, a
+// tier swap) resumes the chase where it left off instead of treating itself as
+// a first paint and adopting the scroll target outright — which would be the one
+// remaining way to paint a jump faster than the clip runs.
+//
+// It lives HERE rather than inside the component so the scroll governor can read
+// it for decode BACKPRESSURE without importing three/R3F: the page refuses to
+// run more than a couple of frames ahead of what the loader has actually
+// decoded, so on a slow connection the page literally waits for the picture.
+// null = nothing has ever been painted in this session (the one legitimate
+// snap) — and also, deliberately, whenever the last paint is STALE: a paused or
+// throttled render loop (hidden tab, lost context) must never be able to
+// deadlock the page.
+export const PAINTED_FRAME_STALE_MS = 500;
+
+let lastPaintedScrubFrame: number | null = null;
+let lastPaintedScrubAtMs = 0;
+
+export function setLastPaintedScrubFrame(frame: number, atMs: number): void {
+  if (!Number.isFinite(frame)) return;
+  lastPaintedScrubFrame = frame;
+  lastPaintedScrubAtMs = Number.isFinite(atMs) ? atMs : 0;
+}
+
+// `nowMs` omitted → no staleness test (the plain survivor used for remounts).
+export function getLastPaintedScrubFrame(nowMs?: number): number | null {
+  if (lastPaintedScrubFrame === null) return null;
+  if (nowMs === undefined || !Number.isFinite(nowMs)) {
+    return lastPaintedScrubFrame;
+  }
+  const age = nowMs - lastPaintedScrubAtMs;
+  if (!Number.isFinite(age) || age < 0 || age > PAINTED_FRAME_STALE_MS) {
+    return null;
+  }
+  return lastPaintedScrubFrame;
+}
+
+export function resetLastPaintedScrubFrame(): void {
+  lastPaintedScrubFrame = null;
+  lastPaintedScrubAtMs = 0;
 }

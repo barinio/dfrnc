@@ -19,7 +19,12 @@ import {
   FRAME_COUNT,
 } from "../frames";
 import type { SourceWindow } from "../frames";
-import { advanceScrubFrame, scrubTargetFrameFor } from "../frameScrub";
+import {
+  advanceScrubFrame,
+  getLastPaintedScrubFrame,
+  setLastPaintedScrubFrame,
+  scrubTargetFrameFor,
+} from "../frameScrub";
 import type { Phase } from "../playback";
 
 // VideoPlane renders the FPV clip as an in-scene mesh at z = −3.5, between the
@@ -75,13 +80,9 @@ const SCRUB_SUBSTITUTE_WINDOW = 2;
 // the ±2 substitution window populated instead of starving into holds.
 const SCRUB_PREFETCH_RADIUS = 8;
 
-// The float frame position last painted, kept at MODULE scope so that a
-// VideoPlane remount inside a live session (a Scene re-key, a fast-refresh, a
-// tier swap) resumes the chase where it left off instead of treating itself as
-// a first paint and adopting the scroll target outright — which would be the one
-// remaining way to paint a jump faster than the clip runs. null = nothing has
-// ever been painted in this session, the one legitimate snap.
-let lastPaintedScrubFrame: number | null = null;
+// The float frame position last painted lives in frameScrub.ts (module scope,
+// so a remount resumes the chase instead of snapping) — the scroll governor
+// reads the same value for decode backpressure, and must not import three.
 
 interface VideoPlaneProps {
   scrollRef: MutableRefObject<number>;
@@ -109,7 +110,7 @@ export default function VideoPlane({
   // still an exact function of scroll position; this chases it at the clip's
   // native rate (see frameScrub.ts). null = nothing painted yet ⇒ adopt the
   // target. Seeded from the module-level survivor so a remount resumes.
-  const displayedFrameRef = useRef<number | null>(lastPaintedScrubFrame);
+  const displayedFrameRef = useRef<number | null>(getLastPaintedScrubFrame());
   // True once the staged startup barrier has settled (the sequence can render
   // frame 0 or the nearest successfully loaded startup anchor).
   const readyRef = useRef(false);
@@ -266,7 +267,10 @@ export default function VideoPlane({
         ? targetFrame
         : advanceScrubFrame(displayedFrameRef.current, targetFrame, delta);
     displayedFrameRef.current = displayed;
-    lastPaintedScrubFrame = displayed;
+    // Publish the painted position for the scroll governor's decode
+    // backpressure (and for a future remount). The timestamp is what lets a
+    // paused render loop be recognised as STALE instead of freezing the page.
+    setLastPaintedScrubFrame(displayed, performance.now());
     // Request the DISPLAYED index — the slow, predictable chase — never the raw
     // scroll target: that keeps both the foreground decode priority and the
     // directional prefetch on frames that are actually about to be painted.

@@ -1,8 +1,17 @@
 import {
+  capVirtualY,
   scrollYForTimelineProgress,
+  scrollYForVideoTime,
   timelineProgressForY,
   videoGovernorBounds,
+  videoTimeForY,
 } from "./scrollGovernor";
+import {
+  MAX_SCRUB_DELTA_S,
+  getLastPaintedScrubFrame,
+  scrubTargetFrameFor,
+} from "./frameScrub";
+import { FRAME_COUNT } from "./frames";
 import { videoMasterTimeFor } from "./playback";
 import {
   createGalleryStepperState,
@@ -64,6 +73,11 @@ export interface ScrollTimelinePublication {
   clipT: number;
   galleryMode: GalleryMode;
   galleryStep: number;
+  // The soft pin's authoritative position inside the video zone. Outside the
+  // zone it simply tracks the document, so it is always a valid seat.
+  virtualY: number;
+  // True while the video zone owns input and the page speed is capped.
+  capActive: boolean;
 }
 
 export interface ScrollTimelineControllerOptions {
@@ -145,6 +159,35 @@ export const WHEEL_ENTRY_GRACE_MS = 250;
 // actually left, floored so the tail never pops.
 export const GALLERY_SETTLE_MS = 360;
 export const GALLERY_SETTLE_MIN_MS = 120;
+
+// -- Video-zone soft pin -----------------------------------------------------
+// Inside videoGovernorBounds the controller owns input exactly like the pinned
+// gallery does: wheel/touch/keys are cancelled and queued as px, a rAF ticker
+// integrates them through capVirtualY (clip-time limited) and WRITES the result
+// back to the document. The page therefore cannot outrun the clip - the video,
+// the Lottie titles, the 3D figures and the card morph all read the SAME
+// published progress, so they stay in phase by construction instead of by a
+// per-consumer lag. "Please scroll slower" is enforced, not requested.
+//
+// Excess input is DROPPED, never banked: a banked backlog would keep the page
+// creeping after the finger stopped and, worse, a reversal would first have to
+// pay off the forward debt before anything moved. Dropping means one reverse
+// event lowers sp on the very next tick.
+//
+// How far the requested frame may run ahead of the frame actually PAINTED
+// before the page itself waits (decode backpressure). With the chase running at
+// the same 12.5 f/s this is normally a no-op; it only bites when the loader is
+// starved, and then the page slows down instead of showing a stale picture.
+export const DECODE_LEAD_FRAMES = 2;
+// Per-event queue clamp, so a Home/End projection (MAX_SAFE_INTEGER) stays a
+// finite number; the cap clamps it to the zone anyway.
+const MAX_QUEUED_DELTA_PX = 1e6;
+// The ticker writes sub-pixel steps (70 px/s is ~1.2 px/frame through the
+// scenic stretches), so the physical write-back uses a much tighter tolerance
+// than the 1 px boundary epsilon or the document would quietly drift off the
+// virtual position.
+const CAP_WRITE_TOLERANCE_PX = 0.25;
+const CLIP_FRAME_SPAN = Math.max(FRAME_COUNT - 1, 1);
 
 const PASSIVE_EVENT_OPTIONS = { passive: true } as const;
 const CANCELLABLE_EVENT_OPTIONS = { passive: false } as const;
@@ -309,6 +352,7 @@ export function createScrollTimelineController(
   const { environment, reducedMotion, onPublish } = options;
   let innerHeight = validViewportHeight(environment.readInnerHeight());
   let lastWidth = environment.readInnerWidth();
+  let zoneStartY = videoGovernorBounds(innerHeight).startY;
   let seamY = videoGovernorBounds(innerHeight).endY;
   let galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, innerHeight);
 
@@ -354,9 +398,24 @@ export function createScrollTimelineController(
   let expectedScrollY: number | null = null;
   let disposed = false;
 
+  // -- Soft-pin state -------------------------------------------------------
+  let virtualY = initialY;
+  let capActive = false;
+  let pendingDeltaPx = 0;
+  let capLastTickAt: number | null = null;
+  let capEntryGraceUntil = -Infinity;
+  let capFrame: number | null = null;
+
   const publish = () => {
     if (disposed) return;
-    const scrollY = finiteScrollY(environment.readScrollY());
+    const rawY = finiteScrollY(environment.readScrollY());
+    // While the soft pin owns the video zone the VIRTUAL position is the truth
+    // (the document chases it, not the other way round), so progress is
+    // published from virtualY and NEVER from readScrollY(). Outside the zone
+    // virtualY just tracks the document, which keeps a later zone entry seated
+    // on a real position - and makes "did we cross in?" answerable.
+    if (!capActive) virtualY = isPinnedMode(mode) ? pinY : rawY;
+    const scrollY = capActive ? virtualY : rawY;
     const progress = isPinnedMode(mode)
       ? { sp: 1, gp: galleryGp }
       : timelineProgressForY(scrollY, innerHeight);
@@ -367,6 +426,8 @@ export function createScrollTimelineController(
       clipT: videoMasterTimeFor(progress.sp, progress.gp, "scroll"),
       galleryMode: mode,
       galleryStep: stepper.index,
+      virtualY,
+      capActive,
     });
   };
 
@@ -394,14 +455,181 @@ export function createScrollTimelineController(
     transition = null;
   };
 
-  const movePhysicalScroll = (targetY: number) => {
+  const movePhysicalScroll = (
+    targetY: number,
+    tolerancePx = BOUNDARY_TOLERANCE_PX,
+  ) => {
     const target = finiteScrollY(targetY);
     expectedScrollY = target;
-    if (Math.abs(environment.readScrollY() - target) < BOUNDARY_TOLERANCE_PX) {
+    if (Math.abs(environment.readScrollY() - target) < tolerancePx) {
       expectedScrollY = null;
       return;
     }
     environment.scrollTo({ top: target, behavior: "auto" });
+  };
+
+  // ── Video-zone soft pin ──────────────────────────────────────────────────
+  // Ownership is decided by POSITION, not by gesture: anywhere inside
+  // [zoneStartY, seamY) while scrolling natively forward-of-the-gallery, the
+  // controller drives the document itself. The zone ends exactly where the
+  // gallery pin begins, so the two hand over at one shared coordinate and
+  // videoMasterTimeFor already clamps to clip time 1 for every pinned step.
+  const capShouldOwn = (y: number): boolean =>
+    !reducedMotion() &&
+    mode === "native-before" &&
+    y >= zoneStartY &&
+    y < seamY;
+
+  const stopCapTicker = () => {
+    if (capFrame === null) return;
+    environment.cancelFrame(capFrame);
+    capFrame = null;
+  };
+
+  const startCapTicker = () => {
+    if (disposed || !capActive || capFrame !== null) return;
+    capFrame = environment.requestFrame(capTick);
+  };
+
+  const exitCapZone = () => {
+    capActive = false;
+    pendingDeltaPx = 0;
+    capLastTickAt = null;
+    capEntryGraceUntil = -Infinity;
+    stopCapTicker();
+  };
+
+  // `absorbMomentum` mirrors the gallery pin's entry grace: a crossing that was
+  // driven by inertia (a macOS wheel tail, an iOS fling that kept scrolling
+  // after touchend) has its remaining peak soaked up for WHEEL_ENTRY_GRACE_MS
+  // instead of being paid out as free clip time. A finger still on the glass,
+  // or a keyboard step, gets no grace - there is no momentum to absorb and the
+  // gesture must keep driving immediately.
+  const enterCapZone = (seatY: number, absorbMomentum: boolean) => {
+    const seat = Math.min(
+      Math.max(finiteScrollY(seatY), zoneStartY),
+      Math.max(seamY - BOUNDARY_TOLERANCE_PX, zoneStartY),
+    );
+    virtualY = seat;
+    pendingDeltaPx = 0;
+    capActive = true;
+    // Seed the tick clock at ENTRY, not at the first frame: a null seed would
+    // give the first tick dt = 0, which drops the very wheel event that asked
+    // for the entry.
+    capLastTickAt = environment.readNow();
+    capEntryGraceUntil = absorbMomentum
+      ? environment.readNow() + WHEEL_ENTRY_GRACE_MS
+      : -Infinity;
+    movePhysicalScroll(virtualY);
+    startCapTicker();
+    publish();
+  };
+
+  const queueCapDelta = (px: number) => {
+    if (!Number.isFinite(px) || px === 0) return;
+    pendingDeltaPx += Math.min(Math.max(px, -MAX_QUEUED_DELTA_PX), MAX_QUEUED_DELTA_PX);
+    startCapTicker();
+  };
+
+  // Decode backpressure. The rate cap keeps the REQUESTED frame at the clip's
+  // native pace, but on a starved connection the painted frame can still fall
+  // behind it - and a page whose progress has run past the picture is exactly
+  // the desync this whole change exists to remove. So the virtual position is
+  // additionally clamped to stay within DECODE_LEAD_FRAMES of what was actually
+  // painted: the page literally waits for frames. A stale/never-set painted
+  // frame (paused render loop, loader still up) disables it, so nothing here
+  // can deadlock scrolling.
+  const decodeBackpressuredY = (
+    fromY: number,
+    toY: number,
+    nowMs: number,
+  ): number => {
+    if (toY === fromY) return toY;
+    const painted = getLastPaintedScrubFrame(nowMs);
+    if (painted === null) return toY;
+    const forward = toY > fromY;
+    const limitFrame = forward
+      ? painted + DECODE_LEAD_FRAMES
+      : painted - DECODE_LEAD_FRAMES;
+    const requestedFrame = scrubTargetFrameFor(videoTimeForY(toY, innerHeight));
+    if (forward ? requestedFrame <= limitFrame : requestedFrame >= limitFrame) {
+      return toY;
+    }
+    const limitY = scrollYForVideoTime(
+      Math.min(Math.max(limitFrame / CLIP_FRAME_SPAN, 0), 1),
+      innerHeight,
+    );
+    // Backpressure may only SLOW a move, never reverse it.
+    return forward
+      ? Math.max(fromY, Math.min(toY, limitY))
+      : Math.min(fromY, Math.max(toY, limitY));
+  };
+
+  const capTick = (now: number) => {
+    capFrame = null;
+    if (disposed || !capActive) return;
+    if (!capShouldOwn(virtualY)) {
+      exitCapZone();
+      return;
+    }
+
+    const previous = virtualY;
+    const last = capLastTickAt;
+    capLastTickAt = now;
+    const dtSec =
+      last === null
+        ? 0
+        : Math.min(Math.max((now - last) / 1000, 0), MAX_SCRUB_DELTA_S);
+    const requested = previous + pendingDeltaPx;
+    // Everything the cap refuses is DROPPED here, not banked.
+    pendingDeltaPx = 0;
+
+    let next =
+      requested === previous
+        ? previous
+        : capVirtualY(previous, requested, dtSec, innerHeight);
+    next = finiteScrollY(decodeBackpressuredY(previous, next, now));
+
+    // STRICTLY at or past the seam. A boundary-epsilon threshold here would
+    // hand back to the pin the instant releaseBefore re-seated the soft pin one
+    // pixel short of it — an unbreakable ping-pong at the seam. capVirtualY
+    // lands EXACTLY on seamY when the clip runs out (clip time clamps to 1,
+    // whose inverse is the seam), so the exact comparison is always reachable.
+    if (next >= seamY) {
+      // The clip reached its last frame exactly at the seam: hand the same
+      // gesture over to the pinned gallery, which owns everything past it.
+      virtualY = seamY;
+      exitCapZone();
+      // A finger already on the glass must not also step cards with the
+      // remainder of the same swipe (the seam-entry rule).
+      if (touchOwned) touchStepUsed = true;
+      enterGallery("before", true);
+      return;
+    }
+    if (next < zoneStartY) {
+      // Rewound out of the front of the zone: hand back to free native scroll.
+      // A finger still on the glass has to be let go of here, and its swipe
+      // BURNED: the browser already cancelled this gesture's scroll on the
+      // first preventDefault, so the remainder can never move the page again —
+      // and leaving it owned fed it to the gallery scrub, which pinned the
+      // gallery from native-before and teleported the page to the seam.
+      if (touchOwned) {
+        touchOwned = false;
+        touchStepUsed = true;
+      }
+      virtualY = next;
+      exitCapZone();
+      movePhysicalScroll(virtualY);
+      publish();
+      return;
+    }
+
+    virtualY = next;
+    if (virtualY !== previous) {
+      movePhysicalScroll(virtualY, CAP_WRITE_TOLERANCE_PX);
+      publish();
+    }
+    startCapTicker();
   };
 
   const settlePinnedMode = () => {
@@ -442,6 +670,7 @@ export function createScrollTimelineController(
   };
 
   const enterGallery = (side: PinSide, consumeCurrentGesture: boolean) => {
+    exitCapZone();
     clearTransition();
     scrub = null;
     pinSide = side;
@@ -509,7 +738,16 @@ export function createScrollTimelineController(
   const releaseBefore = () => {
     clearTransition();
     mode = "native-before";
-    movePhysicalScroll(Math.max(seamY - BOUNDARY_TOLERANCE_PX, 0));
+    const target = Math.max(seamY - BOUNDARY_TOLERANCE_PX, 0);
+    // One pixel before the seam is the far end of the VIDEO ZONE, so the pin
+    // does not release into free scrolling: it releases into the soft pin, and
+    // the clip rewinds at its own pace. No entry grace - the gesture that asked
+    // for the release is the one that should keep driving.
+    if (capShouldOwn(target)) {
+      enterCapZone(target, false);
+      return;
+    }
+    movePhysicalScroll(target);
     publish();
   };
 
@@ -705,6 +943,19 @@ export function createScrollTimelineController(
       }
     }
 
+    if (capActive) {
+      // A stray native scroll INSIDE the zone - inertia that was already in
+      // flight when the soft pin caught, a browser scroll restore, an anchor
+      // jump - is corrected back to the virtual position exactly the way the
+      // gallery pin corrects back to pinY. The entry grace soaks up the rest of
+      // the tail, so the crossing costs the user no clip time.
+      if (Math.abs(rawY - virtualY) > BOUNDARY_TOLERANCE_PX) {
+        movePhysicalScroll(virtualY);
+      }
+      publish();
+      return;
+    }
+
     if (isPinnedMode(mode)) {
       if (Math.abs(rawY - pinY) > BOUNDARY_TOLERANCE_PX) {
         movePhysicalScroll(pinY);
@@ -721,6 +972,18 @@ export function createScrollTimelineController(
       enterGallery("after", true);
       return;
     }
+    if (mode === "native-before" && rawY >= zoneStartY) {
+      // Native momentum (iOS keeps scrolling after touchend with no wheel
+      // events at all) carried the page into the video zone. Take ownership:
+      // a crossing IN from before the zone re-seats at zoneStartY and scrolls
+      // back, because the distance inertia stole is precisely the free clip
+      // time the cap exists to refuse. A position that was ALREADY inside -
+      // a restored scroll, a deep link, the first publish - is adopted where
+      // it is, so nothing yanks.
+      const crossedIn = virtualY < zoneStartY;
+      enterCapZone(crossedIn ? zoneStartY : rawY, crossedIn);
+      return;
+    }
     publish();
   };
 
@@ -729,6 +992,13 @@ export function createScrollTimelineController(
     const delta = wheelDeltaPx(event, innerHeight);
     const direction = directionFor(delta);
     if (direction === 0) return;
+    if (capActive) {
+      // Soft pin: the wheel never moves the document directly, it only asks.
+      preventDefault(event);
+      if (environment.readNow() < capEntryGraceUntil) return;
+      queueCapDelta(delta);
+      return;
+    }
     const magnitude = Math.abs(delta);
     // Fresh-impulse test BEFORE the envelope absorbs this event: a new human
     // swipe spikes far above the decaying momentum tail it interrupts.
@@ -803,6 +1073,11 @@ export function createScrollTimelineController(
         wheelBurstActive = true;
         armWheelQuiet();
         enterGallery("before", true);
+        return;
+      }
+      if (direction > 0 && rawY + delta >= zoneStartY) {
+        preventDefault(event);
+        enterCapZone(zoneStartY, true);
       }
       return;
     }
@@ -823,7 +1098,7 @@ export function createScrollTimelineController(
     if (y === null) return;
     clearTouchQuiet();
     touchActive = true;
-    touchOwned = isPinnedMode(mode);
+    touchOwned = isPinnedMode(mode) || capActive;
     touchStepUsed = false;
     touchStartY = y;
     touchLastY = y;
@@ -846,6 +1121,16 @@ export function createScrollTimelineController(
         enterGallery("before", true);
         return;
       }
+      if (mode === "native-before" && delta > 0 && rawY + delta >= zoneStartY) {
+        // The finger crosses into the video zone: own it from here, but do NOT
+        // burn the swipe - unlike the gallery pin the zone wants the finger to
+        // keep driving, just slower. No grace either: nothing is coasting while
+        // a finger is down.
+        preventDefault(event);
+        touchOwned = true;
+        enterCapZone(zoneStartY, false);
+        return;
+      }
       if (mode === "native-after" && delta < 0 && rawY + delta <= galleryEndY) {
         preventDefault(event);
         touchOwned = true;
@@ -856,6 +1141,14 @@ export function createScrollTimelineController(
     }
 
     preventDefault(event);
+    if (capActive) {
+      queueCapDelta(delta);
+      return;
+    }
+    // Everything below scrubs the pinned GALLERY. Ownership can outlive the
+    // pin (the soft pin hands back mid-swipe), and running this path outside
+    // it would re-pin the gallery from native scrolling.
+    if (!isPinnedMode(mode)) return;
     if (touchStepUsed) return;
     if (transition !== null) return;
     let active = scrub;
@@ -901,10 +1194,21 @@ export function createScrollTimelineController(
     const projectedDelta = keyProjectedDelta(event, innerHeight);
     const rawY = finiteScrollY(environment.readScrollY());
 
+    if (capActive) {
+      preventDefault(event);
+      queueCapDelta(projectedDelta);
+      return;
+    }
+
     if (mode === "native-before") {
       if (direction > 0 && rawY + projectedDelta >= seamY) {
         preventDefault(event);
         enterGallery("before", false);
+        return;
+      }
+      if (direction > 0 && rawY + projectedDelta >= zoneStartY) {
+        preventDefault(event);
+        enterCapZone(zoneStartY, false);
       }
       return;
     }
@@ -932,6 +1236,10 @@ export function createScrollTimelineController(
     touchStepUsed = false;
     touchStartY = null;
     touchLastY = null;
+    // Queued-but-unspent scroll is abandoned with the gesture, and the tick
+    // clock restarts so a backgrounded tab cannot pay out a multi-second dt.
+    pendingDeltaPx = 0;
+    capLastTickAt = null;
     // Losing focus/visibility mid-gesture: freeze in place — any motion
     // behind the user's back reads as a jump when they come back.
     freezeScrub();
@@ -949,12 +1257,27 @@ export function createScrollTimelineController(
       return;
     }
     lastWidth = width;
+    const clipBefore = capActive ? videoTimeForY(virtualY, innerHeight) : null;
     innerHeight = validViewportHeight(environment.readInnerHeight(), innerHeight);
+    zoneStartY = videoGovernorBounds(innerHeight).startY;
     seamY = videoGovernorBounds(innerHeight).endY;
     galleryEndY = scrollYForTimelineProgress({ sp: 1, gp: 1 }, innerHeight);
     if (isPinnedMode(mode)) {
       pinY = pinSide === "before" ? seamY : galleryEndY;
       movePhysicalScroll(pinY);
+    } else if (capActive) {
+      // Re-seat by CLIP TIME rather than pixels: a rotation must leave the
+      // video exactly where it was, and the whole zone just moved under it.
+      const reseated =
+        clipBefore === null
+          ? virtualY
+          : scrollYForVideoTime(clipBefore, innerHeight);
+      if (capShouldOwn(reseated)) {
+        enterCapZone(reseated, false);
+        return;
+      }
+      exitCapZone();
+      movePhysicalScroll(Math.min(Math.max(reseated, 0), seamY));
     }
     publish();
   };
@@ -962,6 +1285,9 @@ export function createScrollTimelineController(
   const syncReducedMotion = () => {
     resetInputOwnership();
     clearTransition();
+    // Reduced motion bypasses the governor entirely: raw scroll, no soft pin,
+    // no pinned gallery, no cap - exactly as before this change.
+    exitCapZone();
     const rawY = finiteScrollY(environment.readScrollY());
     if (reducedMotion()) {
       mode = rawY < seamY ? "native-before" : "native-after";
@@ -971,6 +1297,10 @@ export function createScrollTimelineController(
     const progress = timelineProgressForY(rawY, innerHeight);
     if (rawY < seamY - BOUNDARY_TOLERANCE_PX) {
       mode = "native-before";
+      if (capShouldOwn(rawY)) {
+        enterCapZone(rawY, false);
+        return;
+      }
     } else if (rawY >= galleryEndY - BOUNDARY_TOLERANCE_PX) {
       mode = "native-after";
     } else {
@@ -1022,7 +1352,10 @@ export function createScrollTimelineController(
     onVisibilityChange,
   );
 
-  publish();
+  // A first paint that already sits inside the video zone (restored scroll,
+  // deep link, fast-refresh) adopts the soft pin where it is - no yank.
+  if (capShouldOwn(initialY)) enterCapZone(initialY, false);
+  else publish();
 
   return {
     syncReducedMotion,
@@ -1032,6 +1365,7 @@ export function createScrollTimelineController(
       clearWheelQuiet();
       clearTouchQuiet();
       clearTransition();
+      stopCapTicker();
       environment.windowTarget.removeEventListener(
         "scroll",
         onScroll,

@@ -2,6 +2,10 @@
 // this project — run manually with:  npx tsx scripts/check-playback.ts
 import "./check-scroll-lifecycle";
 import { readFileSync } from "node:fs";
+import {
+  NATIVE_CLIP_RATE_PER_S,
+  NATIVE_SCRUB_FPS,
+} from "../src/frameScrub";
 import { createHash } from "node:crypto";
 import {
   lottieFrameForTime,
@@ -1385,14 +1389,43 @@ for (const f of FIGURES) {
   // window (a far substitute paints a frame the chase never reached — read as a
   // speed-up), the prefetch radius is widened so that window stays populated,
   // and the last painted position survives a remount so a remount cannot snap.
+  // The survivor now lives in frameScrub.ts (module scope, same lifetime) so
+  // the scroll governor can read it for decode BACKPRESSURE without importing
+  // three/R3F — VideoPlane publishes it, the controller consumes it.
   ok(
     /const SCRUB_SUBSTITUTE_WINDOW = 2;/.test(videoPlaneSource) &&
       /loader\.get\(\s*idx,\s*SCRUB_SUBSTITUTE_WINDOW/.test(videoPlaneSource) &&
       /neighborRadius: SCRUB_PREFETCH_RADIUS/.test(videoPlaneSource) &&
-      /let lastPaintedScrubFrame: number \| null = null;/.test(videoPlaneSource) &&
-      /useRef<number \| null>\(lastPaintedScrubFrame\)/.test(videoPlaneSource),
+      /useRef<number \| null>\(getLastPaintedScrubFrame\(\)\)/.test(videoPlaneSource) &&
+      /setLastPaintedScrubFrame\(displayed, performance\.now\(\)\)/.test(videoPlaneSource),
     "VideoPlane holds undecoded frames, prefetches ahead and survives a remount",
   );
+  {
+    const frameScrubSource = readFileSync(
+      new URL("../src/frameScrub.ts", import.meta.url),
+      "utf8",
+    );
+    ok(
+      /let lastPaintedScrubFrame: number \| null = null;/.test(frameScrubSource) &&
+        /export function setLastPaintedScrubFrame\(/.test(frameScrubSource) &&
+        /export function getLastPaintedScrubFrame\(/.test(frameScrubSource),
+      "the painted-frame survivor lives in frameScrub (shared with the governor)",
+    );
+    // Staleness is what keeps decode backpressure from deadlocking the page
+    // when the render loop is paused (hidden tab, lost context).
+    ok(
+      /PAINTED_FRAME_STALE_MS/.test(frameScrubSource),
+      "the painted-frame survivor expires so a paused render loop cannot freeze scrolling",
+    );
+  }
+  {
+    // The rate the governor caps the PAGE with must be the very rate the chase
+    // paints at — one definition, derived, never a second hardcoded number.
+    ok(
+      NATIVE_CLIP_RATE_PER_S === NATIVE_SCRUB_FPS / 294,
+      "the page cap and the paint chase share one native rate",
+    );
+  }
   const scrollHookSrc = readFileSync(
     new URL("../src/hooks/useScrollProgress.ts", import.meta.url),
     "utf8",
@@ -2281,14 +2314,45 @@ for (const f of FIGURES) {
     "gallery transitions use the browser frame clock with a bounded duration",
   );
   ok(
-    !/\bvirtualY\b/.test(scrollControllerCode + scrollHookCode) &&
-      !/discardedForwardPx/.test(scrollControllerCode + scrollHookCode) &&
+    !/discardedForwardPx/.test(scrollControllerCode + scrollHookCode) &&
       !/\breanchor\b/i.test(scrollControllerCode + scrollHookCode) &&
+      !/\b(?:backlog|tokenBalance|debt)\b/.test(scrollControllerCode) &&
       !/createScrollGovernorState|applyScrollSample|syncRawScrollPosition/.test(
         scrollGovernorCode + scrollControllerCode,
       ),
-    "no divergent cursor, discarded-distance debt, or reanchor path remains",
+    "no discarded-distance debt or reanchor path remains",
   );
+  // The video zone's soft pin DOES keep a virtual cursor — moving the limiter
+  // UPSTREAM of the published progress is the whole point of it — but that
+  // cursor is a POSITION, never a backlog. Every tick spends what the clip's
+  // native rate allows and then ZEROES the queue, so a reversal answers on the
+  // next frame instead of first paying off a forward debt; and the document is
+  // written back to it, so the DOM and the governor can never disagree.
+  {
+    const capTickBody = sourceBlock(
+      scrollControllerCode,
+      "const capTick =",
+      "video-zone cap tick",
+    );
+    ok(
+      /capVirtualY\(previous, requested, dtSec, innerHeight\)/.test(capTickBody) &&
+        /pendingDeltaPx = 0;/.test(capTickBody) &&
+        /decodeBackpressuredY\(previous, next, now\)/.test(capTickBody) &&
+        /movePhysicalScroll\(virtualY, CAP_WRITE_TOLERANCE_PX\)/.test(capTickBody),
+      "the soft pin caps, drops the excess, waits for decoded frames, and writes back",
+    );
+    ok(
+      /const scrollY = capActive \? virtualY : rawY;/.test(scrollControllerCode) &&
+        /export function capVirtualY\(/.test(scrollGovernorCode) &&
+        /NATIVE_CLIP_RATE_PER_S/.test(scrollGovernorCode),
+      "progress is published from the virtual position, capped in clip time",
+    );
+    ok(
+      /virtualY:\s*publication\.virtualY/.test(scrollHookCode) &&
+        /capActive:\s*publication\.capActive/.test(scrollHookCode),
+      "the DEV bridge exposes the soft pin for scripts/verify/sync.mjs",
+    );
+  }
   ok(
     /scrollY:\s*publication\.scrollY/.test(scrollHookCode) &&
       /galleryMode:\s*publication\.galleryMode/.test(scrollHookCode) &&
