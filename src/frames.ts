@@ -1,4 +1,4 @@
-import { FRAME_MANIFEST } from "./frameManifest";
+import { FRAME_MANIFEST, PORTRAIT_TIER } from "./frameManifest";
 
 // Frame-sequence scrub: the FPV clip is pre-extracted to a numbered WebP
 // sequence (public/frames/<tier>/NNNN.webp, see scripts/extract-frames.mjs) and
@@ -14,23 +14,112 @@ function clamp01(x: number): number {
   return Math.min(Math.max(x, 0), 1);
 }
 
+// A tier is a directory name under public/frames/. The width tiers are numbers
+// (1280 | 1920); the portrait phone tier is a named crop (see PORTRAIT_TIER).
+export type FrameTier = number | string;
+
 // Responsive tier by viewport width — matches the OLD video source breakpoint
 // (≤899.98px got the 720p file), so phones get the lighter 1280px sequence and
 // wider screens the crisp 1920px one. tiers = [mobile, desktop].
 export const SMALL_SCREEN_MAX = 899.98;
 
-export function frameTierFor(width: number): number {
+// Above this viewport aspect a "small screen" is a tablet in portrait (~0.75) or
+// a phone on its side, and the full-width window it asks for no longer fits
+// inside the portrait crop — those keep the 1280 tier. Phones in portrait are
+// 0.42…0.56 (390×844 = 0.462, 430×932 = 0.461, 360×640 = 0.5625), so 0.67 is a
+// wide margin under the 768/1080 = 0.7111 aspect at which the sampled window
+// exactly fills the crop.
+export const PORTRAIT_TIER_MAX_ASPECT = 0.67;
+
+// Tier for a viewport. Height is optional and defaults to a square viewport
+// (aspect 1) so a width-only caller can never be mistaken for a portrait phone.
+export function frameTierFor(width: number, height = width): FrameTier {
   const [mobile, desktop] = FRAME_MANIFEST.tiers;
-  return width <= SMALL_SCREEN_MAX ? mobile : desktop;
+  if (width > SMALL_SCREEN_MAX) return desktop;
+  const aspect = height > 0 ? width / height : 1;
+  return aspect <= PORTRAIT_TIER_MAX_ASPECT ? PORTRAIT_TIER.dir : mobile;
 }
 
-export function frameTierForScreen(): number {
-  const w = typeof window === "undefined" ? 1024 : window.innerWidth;
-  return frameTierFor(w);
+export function frameTierForScreen(): FrameTier {
+  if (typeof window === "undefined") return frameTierFor(1024, 1024);
+  return frameTierFor(window.innerWidth, window.innerHeight);
+}
+
+export function isPortraitTier(tier: FrameTier): boolean {
+  return tier === PORTRAIT_TIER.dir;
+}
+
+// ── Source-UV windows ────────────────────────────────────────────────────────
+// The plane samples a sub-window of the 16:9 source frame. Everything below is
+// expressed in FULL-SOURCE u,v (0 = left/bottom edge of the uncropped frame), so
+// the framing math is identical on every tier; applyPortraitCrop() is the last
+// step that rebases a finished window into the portrait tier's own texture space.
+export const FRAME_SOURCE_ASPECT = 16 / 9;
+
+export interface SourceWindow {
+  repeatX: number;
+  repeatY: number;
+  offsetX: number;
+  offsetY: number;
+}
+
+// Full-bleed cover-crop: maps the 16:9 source frame onto the WHOLE screen.
+// Landscape stays centered; narrow viewports bias the window toward panCenterX
+// (a constant shift — no mid-clip pan) so the baked captions stay readable on
+// phones. Writes into `out` so the render loop stays allocation-free.
+export function coverSourceWindow(
+  aspect: number,
+  panCenterX: number,
+  out: SourceWindow,
+): SourceWindow {
+  if (aspect < FRAME_SOURCE_ASPECT) {
+    // Viewport narrower than the frame (portrait phones): crop the sides,
+    // window centred on panCenterX (clamped inside the frame).
+    out.repeatX = aspect / FRAME_SOURCE_ASPECT;
+    out.repeatY = 1;
+    out.offsetX = Math.min(
+      Math.max(panCenterX - out.repeatX / 2, 0),
+      1 - out.repeatX,
+    );
+    out.offsetY = 0;
+  } else {
+    // Viewport wider/flatter (landscape): crop top/bottom, centered.
+    out.repeatX = 1;
+    out.repeatY = FRAME_SOURCE_ASPECT / aspect;
+    out.offsetX = 0;
+    out.offsetY = (1 - out.repeatY) / 2;
+  }
+  return out;
+}
+
+// Rebase a full-source window into the portrait tier's texture space:
+//   u' = (u − cropX0) / (cropX1 − cropX0)
+// The tier only CONTAINS u ∈ [cropX0, cropX1], so a window that reaches past
+// either edge (the phone was rotated to landscape after load — the tier is
+// chosen once and never swapped mid-session) is first CLAMPED inside the crop.
+// Clamping shrinks repeatY by the same factor about the window's centre, so the
+// result is an aspect-preserving zoom-in rather than a horizontal squash, and
+// the sampled u can never leave the pixels the tier actually has. Mutates and
+// returns `win`.
+export function applyPortraitCrop(win: SourceWindow): SourceWindow {
+  const { cropX0, cropX1 } = PORTRAIT_TIER;
+  const span = cropX1 - cropX0;
+  if (win.repeatX > span) {
+    const scale = span / win.repeatX;
+    const cy = win.offsetY + win.repeatY / 2;
+    win.repeatX = span;
+    win.repeatY *= scale;
+    win.offsetY = cy - win.repeatY / 2;
+  }
+  win.offsetX = Math.min(Math.max(win.offsetX, cropX0), cropX1 - win.repeatX);
+  win.offsetY = Math.min(Math.max(win.offsetY, 0), Math.max(1 - win.repeatY, 0));
+  win.offsetX = (win.offsetX - cropX0) / span;
+  win.repeatX /= span;
+  return win;
 }
 
 // public-relative URL for a 0-based frame index (files are 1-indexed, zero-padded).
-export function frameUrl(tier: number, index0: number): string {
+export function frameUrl(tier: FrameTier, index0: number): string {
   const base = typeof import.meta !== "undefined" && import.meta.env
     ? import.meta.env.BASE_URL
     : "/";
@@ -161,9 +250,10 @@ export interface FrameLoaderBudget {
   backgroundBatchSize: number;
 }
 
-export function frameLoaderBudgetFor(tier: number): FrameLoaderBudget {
+export function frameLoaderBudgetFor(tier: FrameTier): FrameLoaderBudget {
   const mobileTier = FRAME_MANIFEST.tiers[0];
-  if (tier === mobileTier) {
+  // The portrait tier is a phone tier too — same request ceiling as 1280.
+  if (tier === mobileTier || isPortraitTier(tier)) {
     return {
       concurrency: 4,
       backgroundConcurrency: 2,
@@ -221,7 +311,7 @@ function reportLoaderCallbackError(error: unknown): void {
 // the latest visible neighbourhood owns foreground capacity, and the remaining
 // sequence fills in small yielded background batches. get() never blocks.
 export class FrameSequenceLoader {
-  readonly tier: number;
+  readonly tier: FrameTier;
   readonly count: number;
   private images: (HTMLImageElement | null)[];
   private loaded: boolean[];
@@ -272,7 +362,7 @@ export class FrameSequenceLoader {
     return this.loaded[i] ?? false;
   }
 
-  constructor(tier: number, count: number, opts: FrameLoaderOptions = {}) {
+  constructor(tier: FrameTier, count: number, opts: FrameLoaderOptions = {}) {
     this.tier = tier;
     this.count = normalizedCount(count);
     this.images = new Array(this.count).fill(null);

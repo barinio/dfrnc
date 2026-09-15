@@ -8,10 +8,22 @@
         <!-- Warm the FIRST frame of the scrubbed clip during HTML parse so the
              intro loader can release as soon as it decodes (the rest of the
              sequence streams in over the ~440vh runway before the reveal at
-             sp=0.63). Media-scoped to match frames.ts's tier breakpoint (≤899.98px
-             → 1280px tier, else 1920px) so the preload is reused, not double-
-             fetched. fetchpriority=low yields to the JS/loader assets. -->
-        <link rel="preload" as="image" href="./frames/1280/0001.webp" type="image/webp" media="(max-width: 899.98px)" fetchpriority="low" />
+             sp=0.63). Media-scoped to match frames.ts's tier rules exactly
+             (≤899.98px + aspect ≤0.67 → portrait768 crop tier; ≤899.98px wider
+             → 1280px; else 1920px) so the preload is reused, not double-fetched.
+             The three queries are mutually EXCLUSIVE: a portrait phone must not
+             also warm the 1280 frame it will never request. The 1280 query's
+             6701/10000 floor is PORTRAIT_TIER_MAX_ASPECT nudged one ten-
+             thousandth up — level-3 min/max-aspect-ratio are inclusive on both
+             sides, and this beats `aspect-ratio > 67/100` range syntax here
+             because an old browser that cannot parse the range would drop the
+             whole query and warm nothing at all. hrefs stay RELATIVE and
+             public-less (./frames/…) — the form that does NOT resolve to a file
+             from the project root, so Vite leaves them alone instead of
+             bundling a hashed copy of the JPEG into dist/assets.
+             fetchpriority=low yields to the JS/loader assets. -->
+        <link rel="preload" as="image" href="./frames/portrait768/0001.webp" type="image/webp" media="(max-width: 899.98px) and (max-aspect-ratio: 67/100)" fetchpriority="low" />
+        <link rel="preload" as="image" href="./frames/1280/0001.webp" type="image/webp" media="(max-width: 899.98px) and (min-aspect-ratio: 6701/10000)" fetchpriority="low" />
         <link rel="preload" as="image" href="./frames/1920/0001.webp" type="image/webp" media="(min-width: 900px)" fetchpriority="low" />
     </head>
     <body>

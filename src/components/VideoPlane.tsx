@@ -13,8 +13,12 @@ import {
   FrameSequenceLoader,
   frameLoaderBudgetFor,
   frameTierForScreen,
+  isPortraitTier,
+  coverSourceWindow,
+  applyPortraitCrop,
   FRAME_COUNT,
 } from "../frames";
+import type { SourceWindow } from "../frames";
 import { advanceScrubFrame, scrubTargetFrameFor } from "../frameScrub";
 import type { Phase } from "../playback";
 
@@ -48,6 +52,15 @@ const PLANE_Z = -3.5;
 // ("WIR SIND EIN KLEINES…", right edge ≈58%) fully inside the portrait window
 // (window right edge = 0.45 + 0.13 = 0.58) — any further left clips it.
 const NARROW_PAN_CENTER_X = 0.45;
+
+// Scratch for the per-frame source-UV window (frames.ts writes into it) so the
+// render loop allocates nothing. Module scope: there is only ever one VideoPlane.
+const SOURCE_WINDOW: SourceWindow = {
+  repeatX: 1,
+  repeatY: 1,
+  offsetX: 0,
+  offsetY: 0,
+};
 
 // How far from the frame the chase is ASKING for the loader may substitute an
 // already-decoded neighbour (frames.ts get()'s ±window fallback). Kept tiny: the
@@ -100,6 +113,10 @@ export default function VideoPlane({
   // True once the staged startup barrier has settled (the sequence can render
   // frame 0 or the nearest successfully loaded startup anchor).
   const readyRef = useRef(false);
+  // Whether this session is scrubbing the PORTRAIT crop tier. Decided ONCE with
+  // the loader's tier (never swapped mid-session), so the UV remap below can
+  // never disagree with the pixels actually being downloaded.
+  const portraitTierRef = useRef(false);
   // Latest onReady kept in a ref so the loader effect never re-runs on identity
   // change (it would recreate the whole frame loader).
   const onReadyRef = useRef(onReady);
@@ -186,6 +203,7 @@ export default function VideoPlane({
     textureRef.current = texture;
 
     const tier = frameTierForScreen();
+    portraitTierRef.current = isPortraitTier(tier);
     const loader = new FrameSequenceLoader(tier, FRAME_COUNT, {
       ...frameLoaderBudgetFor(tier),
       // Wider foreground neighbourhood than the loader default (2). Concurrency
@@ -315,29 +333,18 @@ export default function VideoPlane({
     const cardScaleX = (r - l) * fullW;
     const cardScaleY = (cropTop - b) * fullH; // = (placeT - placeB): rise is a translation
 
-    // Full-bleed cover-crop: maps the 16:9 source frame onto the WHOLE screen.
-    // Landscape stays centered; narrow viewports bias the window toward
-    // NARROW_PAN_CENTER_X (a constant shift — no mid-clip pan) so the baked
-    // captions stay readable on phones.
-    const frameAspect = 16 / 9;
-    let repeatX: number, repeatY: number, offsetX: number, offsetY: number;
-    if (aspect < frameAspect) {
-      // Viewport narrower than the frame (portrait phones): crop the sides,
-      // window centred on NARROW_PAN_CENTER_X (clamped inside the frame).
-      repeatX = aspect / frameAspect;
-      repeatY = 1;
-      offsetX = Math.min(
-        Math.max(NARROW_PAN_CENTER_X - repeatX / 2, 0),
-        1 - repeatX,
-      );
-      offsetY = 0;
-    } else {
-      // Viewport wider/flatter (landscape): crop top/bottom, centered.
-      repeatX = 1;
-      repeatY = frameAspect / aspect;
-      offsetX = 0;
-      offsetY = (1 - repeatY) / 2;
-    }
+    // Full-bleed cover-crop of the 16:9 SOURCE frame onto the whole screen
+    // (coverSourceWindow in frames.ts — shared with the tier assertions so the
+    // sampled range can be proved, not eyeballed). On the portrait tier the
+    // texture only holds u ∈ [cropX0, cropX1] of that source, so the finished
+    // window is rebased into the crop's own UV space (and clamped inside it, for
+    // a phone rotated to landscape after load). Every consumer of the window
+    // below — full-bleed, screen-clip morph, card-mesh fly-up — composes with
+    // these numbers, so this is the single remap point. The SDF mask reads
+    // vMaskUv (raw geometry uv, plane space) and is untouched by it.
+    const win = coverSourceWindow(aspect, NARROW_PAN_CENTER_X, SOURCE_WINDOW);
+    if (portraitTierRef.current) applyPortraitCrop(win);
+    const { repeatX, repeatY, offsetX, offsetY } = win;
 
     if (screenClip) {
       // During the active morph, leave the frame full-screen and let the shader
