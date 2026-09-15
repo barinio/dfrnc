@@ -2,6 +2,10 @@ export type FigureMaterialMode = "full" | "light";
 
 export interface RenderProfile {
   dpr: [number, number];
+  // Whether R3F's quality-regression loop (<AdaptiveDpr /> + the frame-time
+  // regressor) is allowed to move the canvas DPR at runtime. False = the dpr
+  // range's max is simply what the device renders at, forever.
+  adaptiveDpr: boolean;
   performanceMin: number;
   performanceDebounce: number;
   slowFrameMs: number;
@@ -61,27 +65,41 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
 
   if (conservative) {
     return {
-      // Render at up to 2× (phones) / 1.5× (desktop Safari/FF) — capped well below
-      // the phone's native 3× to stay light, but far above 1× so the Lottie
+      // Render at a FIXED 2× (phones) / 1.5× (desktop Safari/FF) — capped well
+      // below the phone's native 3× to stay light, but far above 1× so the Lottie
       // typography + glass figures aren't staircased on a high-DPR screen. The
-      // range is ADAPTIVE: R3F + PerformanceRegressor scale it down toward 1×
-      // on a struggling device, so capable phones get the crisp pass for free
-      // while weaker ones self-optimize.
+      // range is NOT adaptive on mobile: with adaptiveDpr false the max below is
+      // what the phone renders at for the whole session.
       dpr: [1, narrow ? 2 : 1.5],
+      // The regression loop is OFF here. It was the phone bug, not the cure: the
+      // transmission glass trips the slow-frame counter, R3F clamps
+      // performance.current to performanceMin, and <AdaptiveDpr /> multiplies it
+      // into the dpr — 0.45 × 2 = 0.9 device pixels, a ~351×684 backbuffer
+      // smeared ×3.3 across an iPhone panel (pixelated Lottie type, pixelated
+      // glass, pixelated video stills, all at once). Worse, it restores after the
+      // debounce, re-trips, and oscillates — and every flip reallocates the
+      // drawing buffer, which is a hitch of its own. A phone that can't hold 60
+      // should drop FRAMES, not RESOLUTION.
+      adaptiveDpr: false,
+      // Inert while adaptiveDpr is false (nothing calls regress(), nothing reads
+      // performance.current) — kept so every profile has the same shape.
       performanceMin: 0.45,
       performanceDebounce: 700,
-      // Tolerant regressor: only scale the DPR down after SUSTAINED slowness, not
-      // on a brief dip — so a weaker phone HOLDS the crisp 2× pass (far nicer than
-      // a jagged 1×) instead of twitching down. R3F still drops it if a device
-      // genuinely can't keep up over time.
       slowFrameMs: 28,
       slowFrameLimit: 10,
       enablePostFx: false,
-      // Antialiasing comes from the 2× supersampling (DPR above) — that already
-      // smooths both the typography and the glass-figure edges. MSAA is left OFF:
-      // it added the most GPU cost for the least extra gain, so dropping it keeps
-      // the higher DPR affordable on weaker phones without changing the look.
-      antialias: false,
+      // MSAA ON — on mobile it is the ONLY edge antialiasing in the pipeline.
+      // The title planes must stay OPAQUE + alphaTest (a transmissive material
+      // only refracts opaque geometry, and the glass has to refract the type), so
+      // their letterforms end at a hard alpha cut. alphaToCoverage turns that cut
+      // into coverage — but coverage needs samples, and with enablePostFx false
+      // there is no SMAA to fall back on. Without MSAA every letter is a binary
+      // staircase at any DPR; 2× supersampling alone never fixed it. The cost is
+      // affordable now that the DPR no longer thrashes.
+      // (No transmission-RT relief to pair with it: three 0.170's WebGLRenderer
+      // has no transmissionResolutionScale — that knob landed in r171 — so the
+      // transmission pass keeps rendering at full drawing-buffer size.)
+      antialias: true,
       precision: android ? "highp" : "mediump",
       // Render the Lottie/title canvas at the same higher DPR so the text SOURCE
       // is crisp (otherwise a low-res texture just gets magnified on the 2× canvas).
@@ -94,6 +112,9 @@ export function createRenderProfile(input: RenderProfileInput = {}): RenderProfi
 
   return {
     dpr: [1, narrow ? 1.25 : 1.5],
+    // Desktop keeps the adaptive loop: the DPR ceiling is low (1.25–1.5), so a
+    // regression costs far less visually than it does on a 3× phone panel.
+    adaptiveDpr: true,
     performanceMin: 0.65,
     performanceDebounce: 500,
     slowFrameMs: 24,

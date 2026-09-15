@@ -365,11 +365,24 @@ export default function Scene() {
           camera={{ fov: 60, near: 0.1, far: 100, position: [0, 0, 8] }}
           style={{ width: "100%", height: "100%", background: "#000000" }}
         >
-          <PerformanceRegressor
-            slowFrameMs={renderProfile.slowFrameMs}
-            slowFrameLimit={renderProfile.slowFrameLimit}
-          />
-          <AdaptiveDpr />
+          {/* Quality regression is DESKTOP-ONLY (renderProfile.adaptiveDpr).
+              On phones <AdaptiveDpr /> multiplied performance.current
+              (clamped to performanceMin 0.45) into the 2× dpr and rendered
+              the whole scene — Lottie type, glass, video stills — into a
+              0.9× backbuffer stretched over a 3× panel, then flip-flopped
+              back and forth every debounce, reallocating the drawing buffer
+              on each flip. Mobile now holds a fixed DPR and drops frames
+              instead of resolution; mounting neither component also keeps
+              the per-frame regressor loop off the phone's main thread. */}
+          {renderProfile.adaptiveDpr && (
+            <>
+              <PerformanceRegressor
+                slowFrameMs={renderProfile.slowFrameMs}
+                slowFrameLimit={renderProfile.slowFrameLimit}
+              />
+              <AdaptiveDpr />
+            </>
+          )}
           {import.meta.env.DEV && <SceneDiagBridge />}
           {/* Warm the GPU pipeline while the intro loader still covers the
               screen: gl.compile() every mounted material (glass transmission,

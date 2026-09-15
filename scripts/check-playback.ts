@@ -2320,10 +2320,11 @@ for (const f of FIGURES) {
     "desktop Chrome keeps the full render profile",
   );
   const safariProfile = createRenderProfile({ userAgent: safariIOS, width: 390 });
-  eq(safariProfile.dpr[1], 2, "iOS Safari renders up to 2x (crisp typography/figures); adaptive floor still 1x");
-  eq(safariProfile.dpr[0], 1, "iOS Safari can drop to 1x under load");
+  eq(safariProfile.dpr[1], 2, "iOS Safari renders at a fixed 2x (crisp typography/figures)");
+  eq(safariProfile.dpr[0], 1, "iOS Safari keeps 1x as the range floor");
+  eq(safariProfile.adaptiveDpr ? 1 : 0, 0, "mobile never regresses the DPR — a 0.9x backbuffer on a 3x panel pixelated type, glass and video at once");
   eq(safariProfile.enablePostFx ? 1 : 0, 0, "Safari skips postprocessing");
-  eq(safariProfile.antialias ? 1 : 0, 0, "Safari relies on 2x supersampling (not MSAA) for AA — lighter on weaker phones");
+  eq(safariProfile.antialias ? 1 : 0, 1, "Safari enables MSAA — with no SMAA pass it is the only edge AA the alpha-tested titles get");
   ok(safariProfile.precision === "mediump", "Safari uses the lightweight shader precision");
   eq(safariProfile.maxCanvasTextureDpr, 2, "Safari renders the Lottie text canvas at 2x for crisp letters");
   eq(safariProfile.textureFrameRate, 30, "Safari caps texture upload rate");
@@ -2336,7 +2337,11 @@ for (const f of FIGURES) {
   const sceneSource = readFileSync(new URL("../src/components/Scene.tsx", import.meta.url), "utf8");
   const lottiePlaneSource = readFileSync(new URL("../src/components/LottiePlane.tsx", import.meta.url), "utf8");
   const galleryTitlesSource = readFileSync(new URL("../src/components/GalleryTitles.tsx", import.meta.url), "utf8");
-  ok(/dpr=\{renderProfile\.dpr\}/.test(sceneSource), "Scene uses an adaptive DPR profile");
+  ok(/dpr=\{renderProfile\.dpr\}/.test(sceneSource), "Scene takes its DPR range from the render profile");
+  ok(
+    /\{renderProfile\.adaptiveDpr\s*&&\s*\(/.test(sceneSource),
+    "Scene mounts the DPR regression loop only for profiles that opt into it",
+  );
   ok(!/dpr=\{\[1,\s*2\]\}/.test(sceneSource), "Scene no longer hard-caps DPR at 2 for every browser");
   ok(/antialias:\s*renderProfile\.antialias/.test(sceneSource), "Scene uses profile-controlled WebGL antialiasing");
   ok(/precision:\s*renderProfile\.precision/.test(sceneSource), "Scene uses profile-controlled shader precision");

@@ -60,10 +60,11 @@ ok(
 );
 
 const safariPhone = createRenderProfile({ userAgent: safariIOS, width: 390 });
-eq(safariPhone.dpr[1], 2, "iOS Safari renders up to 2x so the typography/figures aren't staircased (adaptive floor stays 1x)");
-eq(safariPhone.dpr[0], 1, "iOS Safari can still drop to 1x under load (adaptive floor)");
+eq(safariPhone.dpr[1], 2, "iOS Safari renders at a FIXED 2x so the typography/figures aren't staircased");
+eq(safariPhone.dpr[0], 1, "iOS Safari keeps 1x as the range floor (inert: nothing regresses the DPR on mobile)");
+eq(safariPhone.adaptiveDpr, false, "iOS Safari never regresses the DPR — 0.45x2 = 0.9 device pixels on a 3x panel was the pixelated-phone bug");
 eq(safariPhone.enablePostFx, false, "Safari skips postprocessing");
-eq(safariPhone.antialias, false, "Safari relies on 2x supersampling (not MSAA) for AA — keeps the higher DPR affordable on weaker phones");
+eq(safariPhone.antialias, true, "Safari turns MSAA on — with no post-FX it is the only thing that antialiases the alpha-tested title edges");
 eq(safariPhone.precision, "mediump", "Safari uses the lightweight shader precision");
 eq(safariPhone.figureMaterialMode, "full", "Safari keeps color-preserving figure materials");
 eq(safariPhone.enableEnvironment, false, "Safari skips PMREM environment setup");
@@ -82,13 +83,16 @@ const androidPhone = createRenderProfile({ userAgent: chromeAndroid, width: 412 
 eq(androidPhone.enablePostFx, false, "Android Chrome skips postprocessing");
 eq(androidPhone.enableEnvironment, false, "Android Chrome skips PMREM environment setup");
 eq(androidPhone.precision, "highp", "Android computes in highp — Adreno mediump (real fp16) NaNs the glass iridescence/dispersion into black blotches");
-eq(androidPhone.dpr[1], 2, "Android Chrome renders up to 2x like the other narrow conservative devices");
+eq(androidPhone.dpr[1], 2, "Android Chrome renders at a fixed 2x like the other narrow conservative devices");
+eq(androidPhone.adaptiveDpr, false, "Android Chrome also holds its DPR instead of collapsing it under load");
+eq(androidPhone.antialias, true, "Android Chrome turns MSAA on for the alpha-tested title edges");
 eq(androidPhone.figureMaterialMode, "full", "Android Chrome keeps color-preserving figure materials");
 
 const chromeWide = createRenderProfile({ userAgent: chromeDesktop, width: 1280 });
 eq(chromeWide.dpr[1], 1.5, "desktop Chrome keeps the existing DPR cap");
 eq(chromeWide.enablePostFx, true, "desktop Chrome keeps postprocessing");
 eq(chromeWide.antialias, false, "desktop Chrome uses SMAA instead of MSAA");
+eq(chromeWide.adaptiveDpr, true, "desktop keeps the adaptive DPR loop — its 1.5x ceiling makes a regression cheap to look at");
 eq(chromeWide.figureMaterialMode, "full", "desktop Chrome keeps full figure materials");
 eq(chromeWide.enableEnvironment, true, "desktop Chrome keeps PMREM environment");
 eq(chromeWide.maxCanvasTextureDpr, 1.5, "desktop Chrome caps Lottie upload DPR");
@@ -102,7 +106,15 @@ const videoPlaneSource = readFileSync(
   new URL("../src/components/VideoPlane.tsx", import.meta.url),
   "utf8",
 );
-ok(/<AdaptiveDpr\s*\/>/.test(sceneSource), "R3F performance regression drives DPR");
+ok(/<AdaptiveDpr\s*\/>/.test(sceneSource), "R3F performance regression drives DPR where it is enabled");
+ok(
+  /\{renderProfile\.adaptiveDpr\s*&&\s*\(/.test(sceneSource),
+  "the DPR regression loop (<AdaptiveDpr /> + PerformanceRegressor) is mounted only when the profile allows it",
+);
+ok(
+  sceneSource.indexOf("renderProfile.adaptiveDpr") < sceneSource.indexOf("<AdaptiveDpr"),
+  "the adaptiveDpr gate wraps <AdaptiveDpr />, it does not follow it",
+);
 ok(
   !/<AdaptiveDpr[^>]*\bpixelated\b/.test(sceneSource),
   "adaptive DPR keeps temporary reduced resolution filtered",
