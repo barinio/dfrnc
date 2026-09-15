@@ -5,5 +5,7 @@
   "tiers": [
     1280,
     1920
-  ]
+  ],
+  "sourceFps": 25,
+  "stride": 2
 }
