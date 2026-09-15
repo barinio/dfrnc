@@ -7,5 +7,12 @@
     1920
   ],
   "sourceFps": 25,
-  "stride": 2
+  "stride": 2,
+  "portraitTier": {
+    "dir": "portrait768",
+    "cropX0": 0.25,
+    "cropX1": 0.65,
+    "width": 768,
+    "height": 1080
+  }
 }

@@ -11,3 +11,27 @@ export const FRAME_MANIFEST = {
   sourceFps: 25,
   stride: 2,
 } as const;
+
+// PORTRAIT phone tier — the ONE definition of the crop, shared by the runtime
+// (src/frames.ts remaps every texture window into it), by
+// scripts/crop-portrait-tier.mjs (which derives the tier from the 1920 stills)
+// and by scripts/extract-frames.mjs (which re-emits this block verbatim and
+// mirrors it into public/frames/manifest.json). Both generators PARSE this
+// literal — keep the numbers here and nowhere else.
+//
+// Why it exists: a portrait phone only ever shows a narrow vertical slice of the
+// 16:9 frame (repeatX = aspect / (16/9) ≈ 0.26 at 390×844, windowed on
+// NARROW_PAN_CENTER_X = 0.45). Shipping the full-width 1280 tier spends ~74% of
+// every decoded bitmap on pixels no phone can see, and stretches the remaining
+// 333 source px across 780 device px. cropX0/cropX1 bound every window the
+// plane can ask for at aspect ≤ 768/1080 = 0.7111 (the gate is 0.67, with
+// headroom), so a 768×1080 crop is visually identical — 499 source px across
+// that same width instead of 333 (1.5× linear, ≈2.25× the source pixels per
+// screen pixel) for a SMALLER decoded bitmap than the 1280 tier's.
+export const PORTRAIT_TIER = {
+  dir: "portrait768",
+  cropX0: 0.25,
+  cropX1: 0.65,
+  width: 768,
+  height: 1080,
+} as const;

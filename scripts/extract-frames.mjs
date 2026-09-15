@@ -18,19 +18,28 @@
 // 25fps/589 frames; stride 2 ⇒ ~295 frames ≈ 12.5fps, the "~300 frames" choice).
 // Writes:
 //   public/frames/<W>/0001.webp …            (one dir per tier width)
-//   public/frames/manifest.json              { count, digits, ext, tiers, sourceFps, stride }
+//   public/frames/<PORTRAIT_TIER.dir>/0001.webp …   (the phone crop tier)
+//   public/frames/manifest.json              { count, digits, ext, tiers, sourceFps, stride, portraitTier }
 //   src/frameManifest.ts                      (bundled count/tiers/pace for the runtime)
 // sourceFps + stride are recorded because the RUNTIME needs them: the scrub caps
 // the painted frame at the clip's NATIVE pace, which is sourceFps / stride
 // (25 / 2 = 12.5 sequence-frames/s here) — see src/frameScrub.ts. The master's
 // rate is detected with ffprobe when available; override with --source-fps N.
 // Tiers match VideoPlane's responsive source breakpoint (≤899.98px → mobile).
+//
+// PORTRAIT tier: phones in portrait only ever show a narrow vertical slice of
+// the 16:9 frame, so they additionally get a cropped tier (PORTRAIT_TIER in
+// src/frameManifest.ts — the ONE definition of the crop, parsed here and by
+// scripts/crop-portrait-tier.mjs). It is cut straight from the full-res PNG, so
+// it carries 1.5× the linear resolution (≈2.25× the source pixels) per screen
+// pixel that the 1280 tier gives a phone, for a smaller decoded bitmap.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, rmSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readPortraitTier, readPortraitTierBlock } from "./crop-portrait-tier.mjs";
 
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`);
@@ -46,6 +55,10 @@ const quality = Number(arg("q", "80"));
 const TIERS = [1280, 1920];
 const DIGITS = 4;
 const outRoot = join(ROOT, "public/frames");
+// Read BEFORE src/frameManifest.ts is regenerated below — the crop literal there
+// is the single source of truth and this script only ever round-trips it.
+const portraitTier = readPortraitTier(ROOT);
+const portraitBlock = readPortraitTierBlock(ROOT);
 
 // Frame rate of the MASTER clip. The sequence keeps every `stride`-th frame, so
 // the native pace of the extracted sequence is sourceFps / stride — the runtime
@@ -128,8 +141,46 @@ try {
     console.log(`  tier ${w}px done (${count} frames)`);
   }
 
+  // 2b) PORTRAIT crop tier, cut from the SAME full-res PNGs (no intermediate
+  //     re-encode). -crop runs before -resize, so the pixels land 1:1.
+  {
+    const probe = execFileSync(
+      "ffprobe",
+      ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", join(tmp, pngs[0])],
+      { encoding: "utf8" },
+    ).trim();
+    const [srcW, srcH] = probe.split(",").map(Number);
+    const cropX = Math.round(srcW * portraitTier.cropX0);
+    const cropW = Math.round(srcW * (portraitTier.cropX1 - portraitTier.cropX0));
+    const dir = join(outRoot, portraitTier.dir);
+    rmSync(dir, { recursive: true, force: true });
+    mkdirSync(dir, { recursive: true });
+    console.log(
+      `→ cwebp portrait tier ${portraitTier.dir} (crop ${cropW}×${srcH} @${cropX} → ` +
+        `${portraitTier.width}×${portraitTier.height}) …`,
+    );
+    pngs.forEach((p, i) => {
+      const name = String(i + 1).padStart(DIGITS, "0");
+      execFileSync("cwebp", [
+        "-quiet", "-q", String(quality),
+        "-crop", String(cropX), "0", String(cropW), String(srcH),
+        "-resize", String(portraitTier.width), String(portraitTier.height),
+        join(tmp, p), "-o", join(dir, `${name}.webp`),
+      ]);
+    });
+    console.log(`  tier ${portraitTier.dir} done (${count} frames)`);
+  }
+
   // 3) manifest the runtime reads (frame count is data, not a hardcoded const).
-  const manifest = { count, digits: DIGITS, ext: "webp", tiers: TIERS, sourceFps, stride };
+  const manifest = {
+    count,
+    digits: DIGITS,
+    ext: "webp",
+    tiers: TIERS,
+    sourceFps,
+    stride,
+    portraitTier: { ...portraitTier },
+  };
   writeFileSync(join(outRoot, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
   // Bundled, type-safe copy imported by src/frames.ts (no resolveJsonModule needed).
   const ts =
@@ -140,9 +191,16 @@ try {
     `// hardcoding it — see src/frameScrub.ts.\n` +
     `export const FRAME_MANIFEST = {\n` +
     `  count: ${count},\n  digits: ${DIGITS},\n  ext: "webp",\n  tiers: [${TIERS.join(", ")}],\n` +
-    `  sourceFps: ${sourceFps},\n  stride: ${stride},\n} as const;\n`;
+    `  sourceFps: ${sourceFps},\n  stride: ${stride},\n} as const;\n\n` +
+    // Round-tripped verbatim: the crop literal is hand-maintained (it is the ONE
+    // definition both generators parse), so regenerating the sequence must never
+    // silently drop or change it.
+    portraitBlock;
   writeFileSync(join(ROOT, "src/frameManifest.ts"), ts);
-  console.log(`✓ wrote ${count} frames × ${TIERS.length} tiers + manifest.json + src/frameManifest.ts`);
+  console.log(
+    `✓ wrote ${count} frames × ${TIERS.length + 1} tiers (+${portraitTier.dir}) ` +
+      `+ manifest.json + src/frameManifest.ts`,
+  );
 } finally {
   rmSync(tmp, { recursive: true, force: true });
 }
