@@ -177,13 +177,30 @@ export function capVirtualY(
 // 2026-09-16 — 4 s → 1.2 s: "a flick moves a bit and stops". A native Android
 // fling coasts ~0.4–1.1 s, and 4 s of clip (plus the old caption half-rate,
 // which doubled it in WALL seconds) is what the client saw as the page
-// scrolling by itself for 2–4 s after every swipe. 1.2 s of clip is 15 frames
-// ≈ 345 px at innerHeight 844 — a 400 px finger swipe is worth ~1.4 s of clip
-// here, so most of it is paid DURING the gesture and just after it, and the
-// remainder is dropped rather than replayed at the user.
-export const SCROLL_BANK_MAX_CLIP_S = 1.2;
+// scrolling by itself for 2–4 s after every swipe.
+//
+// TWO CEILINGS, one per input source, because the two devices deliver the same
+// gesture in opposite SHAPES — the user tried both (a phone and a MacBook
+// trackpad) and picked these numbers by hand:
+//
+//   FINGER — one burst, then nothing at all. Inside the zone every touchmove is
+//   preventDefault-ed, so the browser's own fling never runs; the backlog IS
+//   the coast, and without it a flick dies dead on touchend ("зависає").
+//   1.2 s of clip is 15 frames ≈ 345 px at innerHeight 844 — a 400 px swipe is
+//   worth ~1.4 s of clip here, so most of it is paid DURING the gesture and the
+//   remainder is a short, native-looking glide.
+//
+//   TRACKPAD / WHEEL — the OS keeps FEEDING momentum wheel events for 1–2 s
+//   after the fingers lift, and every one of them is fresh input that refills
+//   the bank. A 1.2 s backlog standing on top of that tail is still being paid
+//   out long after the hand stopped, which is exactly the overshoot the user
+//   felt on the MacBook. So this backlog must be SHORT: 0.4 s of clip, 5 frames
+//   ≈ 115 px at 844, i.e. the page comes to rest within half a second of the
+//   OS's own momentum stream running dry.
+export const SCROLL_BANK_MAX_CLIP_S_TOUCH = 1.2;
+export const SCROLL_BANK_MAX_CLIP_S_WHEEL = 0.4;
 
-// ── Coast ease-out ──────────────────────────────────────────────────────────
+// ── Coast ease-out (OFF by default since 2026-09-16) ────────────────────────
 // A bank that runs out at full speed stops DEAD, which is the one thing no
 // native fling does. So while the page is coasting — nothing under the finger,
 // no input for INPUT_QUIET_MS — the controller scales the per-tick budget by
@@ -191,11 +208,21 @@ export const SCROLL_BANK_MAX_CLIP_S = 1.2;
 // of it, then proportionally down to BANK_EASE_OUT_FLOOR, which keeps the tail
 // finite instead of asymptotic. Smoothing the INPUT, never the pixels: no frame
 // is ever blended, the clip simply arrives a little slower at the very end.
-export const BANK_EASE_OUT_CLIP_S = 0.3;
+//
+// Tested on a phone and a trackpad, the client chose NO ease: a 0.3 s window
+// stretches into ~0.87 s of WALL time (the ramp plays the last 0.3 s of clip at
+// a falling rate), which reads as the page still creeping long after the
+// gesture is obviously over — the very complaint the short ceilings above exist
+// to answer. So the window ships at 0, which coastRateScale reads as "no ease":
+// a constant capped speed and then a stop. The mechanism and the ?ease= dial
+// stay exactly as they are, one number away from coming back.
+export const BANK_EASE_OUT_CLIP_S = 0;
 export const BANK_EASE_OUT_FLOOR = 0.15;
 
 // Seconds of clip still owed → the fraction of the cap this tick may spend.
 // Pure, so the deceleration curve is a unit test and not a screen recording.
+// A window of 0 — the shipped default — returns 1 for every bank: no ease, and
+// no division by zero.
 export function coastRateScale(
   bankClipS: number,
   windowClipS = BANK_EASE_OUT_CLIP_S,
@@ -230,13 +257,17 @@ export function bankClipSeconds(
 // `next >= seamY` hand-off to the pinned gallery and its `next < zoneStartY`
 // hand-back to native scrolling both still fire on the very same tick they do
 // now, instead of being fenced in one horizon short of the edge.
-// `maxClipS` is a parameter so the URL dial (?bank=) can move it without this
-// module knowing anything about the page it runs in.
+// `maxClipS` is a parameter so the caller can pass the ceiling belonging to
+// whichever input last filled the bank (touch vs wheel, above) and so the URL
+// dials (?bank= / ?bankw=) can move either of them without this module knowing
+// anything about the page it runs in. The default is the TOUCH ceiling — the
+// permissive one — so a caller that does not care is never clamped harder than
+// the product's most generous gesture.
 export function clampBankPx(
   virtualY: number,
   bankPx: number,
   innerHeight: number,
-  maxClipS = SCROLL_BANK_MAX_CLIP_S,
+  maxClipS = SCROLL_BANK_MAX_CLIP_S_TOUCH,
 ): number {
   if (!Number.isFinite(bankPx) || bankPx === 0) return bankPx;
   if (!Number.isFinite(virtualY)) return bankPx;

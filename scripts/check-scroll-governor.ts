@@ -17,7 +17,8 @@ import {
 import {
   BANK_EASE_OUT_CLIP_S,
   BANK_EASE_OUT_FLOOR,
-  SCROLL_BANK_MAX_CLIP_S,
+  SCROLL_BANK_MAX_CLIP_S_TOUCH,
+  SCROLL_BANK_MAX_CLIP_S_WHEEL,
   animationEndY,
   bankClipSeconds,
   capVirtualY,
@@ -329,36 +330,51 @@ ok(
   }
 }
 
-// ── coastRateScale: the ease-out curve ──────────────────────────────────────
+// ── coastRateScale: the ease-out curve, SHIPPED OFF ─────────────────────────
 // A bank that runs out at the cap stops DEAD; a native fling decelerates. The
-// scale is 1 while more than BANK_EASE_OUT_CLIP_S of clip is still owed, then
-// falls linearly to BANK_EASE_OUT_FLOOR, which keeps the tail finite.
-eq(BANK_EASE_OUT_CLIP_S, 0.3, "the ease window is 0.3 s of clip");
-eq(BANK_EASE_OUT_FLOOR, 0.15, "the ease floor is 0.15 of the cap");
-eq(coastRateScale(1.2), 1, "a full bank coasts at the cap");
-eq(coastRateScale(BANK_EASE_OUT_CLIP_S), 1, "the window's top edge is still full rate");
-eq(coastRateScale(BANK_EASE_OUT_CLIP_S + 1e-9), 1, "just above the window is full rate");
-eq(coastRateScale(0), BANK_EASE_OUT_FLOOR, "an empty bank sits on the floor");
-eq(coastRateScale(BANK_EASE_OUT_CLIP_S / 2), 0.5, "half the window is half the cap");
-eq(coastRateScale(0.15), 0.5, "linear between the floor and 1");
-eq(coastRateScale(0.09), 0.3, "linear at 0.09 s of clip owed");
-eq(
-  coastRateScale(BANK_EASE_OUT_CLIP_S * BANK_EASE_OUT_FLOOR),
-  BANK_EASE_OUT_FLOOR,
-  "the floor takes over exactly where the ramp reaches it",
-);
-eq(coastRateScale(0.001), BANK_EASE_OUT_FLOOR, "below the floor's knee it clamps");
-eq(coastRateScale(-0.5), 1, "a REWIND bank eases on its magnitude", 1e-12);
-eq(coastRateScale(-0.15), 0.5, "a rewind halfway through the window is half the cap", 1e-12);
-eq(coastRateScale(Number.NaN), 1, "a non-finite bank never brakes the page");
-eq(coastRateScale(0.15, 0), 1, "a zero window disables the ease-out");
-eq(coastRateScale(0.5, 1), 0.5, "the window is a parameter (the ?ease= dial)");
+// mechanism is still here — and still a pure function behind the ?ease= dial —
+// but the user tested both on a phone and on a MacBook trackpad and chose the
+// constant capped speed: a 0.3 s window stretches into ~0.87 s of WALL time,
+// which reads as the page creeping on after the gesture ended. So the SHIPPED
+// window is 0, and 0 has to mean "no ease", never a division by zero.
+eq(BANK_EASE_OUT_CLIP_S, 0, "the ease window ships at 0 — the ease is disabled");
+eq(BANK_EASE_OUT_FLOOR, 0.15, "the ease floor is still 0.15 of the cap");
+for (const owed of [0, 1e-12, 0.001, 0.05, 0.15, 0.3, 1.2, 4, -0.001, -0.15, -1.2]) {
+  const shipped = coastRateScale(owed);
+  eq(shipped, 1, `the shipped window coasts ${owed} s of debt at the full cap`);
+  ok(Number.isFinite(shipped), `window 0 is finite at ${owed} s owed`);
+  eq(coastRateScale(owed, 0), 1, `an explicit 0 window is full rate at ${owed} s`);
+}
+// A broken window is the same "no ease", never a NaN leaking into the budget.
+for (const badWindow of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  eq(coastRateScale(0.15, badWindow), 1, `window ${badWindow} disables the ease-out`);
+}
 
-// Monotonic, and never above 1 or below the floor.
+// The CURVE itself, exercised through the dial. W is what `?ease=0.3` would set.
 {
+  const W = 0.3;
+  eq(coastRateScale(1.2, W), 1, "a full bank coasts at the cap");
+  eq(coastRateScale(W, W), 1, "the window's top edge is still full rate");
+  eq(coastRateScale(W + 1e-9, W), 1, "just above the window is full rate");
+  eq(coastRateScale(0, W), BANK_EASE_OUT_FLOOR, "an empty bank sits on the floor");
+  eq(coastRateScale(W / 2, W), 0.5, "half the window is half the cap");
+  eq(coastRateScale(0.15, W), 0.5, "linear between the floor and 1");
+  eq(coastRateScale(0.09, W), 0.3, "linear at 0.09 s of clip owed");
+  eq(
+    coastRateScale(W * BANK_EASE_OUT_FLOOR, W),
+    BANK_EASE_OUT_FLOOR,
+    "the floor takes over exactly where the ramp reaches it",
+  );
+  eq(coastRateScale(0.001, W), BANK_EASE_OUT_FLOOR, "below the floor's knee it clamps");
+  eq(coastRateScale(-0.5, W), 1, "a REWIND bank eases on its magnitude", 1e-12);
+  eq(coastRateScale(-0.15, W), 0.5, "a rewind halfway through is half the cap", 1e-12);
+  eq(coastRateScale(Number.NaN, W), 1, "a non-finite bank never brakes the page");
+  eq(coastRateScale(0.5, 1), 0.5, "the window is a parameter (the ?ease= dial)");
+
+  // Monotonic, and never above 1 or below the floor.
   let previous = -1;
   for (let owed = 0; owed <= 0.6; owed += 0.005) {
-    const scale = coastRateScale(owed);
+    const scale = coastRateScale(owed, W);
     ok(scale >= previous - 1e-12, `coastRateScale monotonic at ${owed.toFixed(3)}`);
     ok(scale >= BANK_EASE_OUT_FLOOR - 1e-12 && scale <= 1, "scale stays in range");
     previous = scale;
@@ -401,21 +417,30 @@ eq(coastRateScale(0.5, 1), 0.5, "the window is a parameter (the ?ease= dial)");
   eq(bankClipSeconds(y, 100, 0), 0, "an invalid viewport owes nothing");
 }
 
-// ── URL dials (?bank= / ?fling= / ?ease=) ───────────────────────────────────
+// ── URL dials (?bank= / ?bankw= / ?fling= / ?ease=) ─────────────────────────
 {
   const none = parseScrubDials("");
-  ok(none.bankMaxClipS === null, "no query: no bank override");
+  ok(none.touchBankMaxClipS === null, "no query: no touch bank override");
+  ok(none.wheelBankMaxClipS === null, "no query: no wheel bank override");
   ok(none.flingTauMs === null, "no query: no fling override");
   ok(none.easeWindowClipS === null, "no query: no ease override");
 
-  const all = parseScrubDials("?bank=2.5&fling=220&ease=0.5");
-  eq(all.bankMaxClipS ?? -1, 2.5, "?bank= parses");
+  const all = parseScrubDials("?bank=2.5&bankw=0.7&fling=220&ease=0.5");
+  eq(all.touchBankMaxClipS ?? -1, 2.5, "?bank= parses (the TOUCH ceiling)");
+  eq(all.wheelBankMaxClipS ?? -1, 0.7, "?bankw= parses (the WHEEL ceiling)");
   eq(all.flingTauMs ?? -1, 220, "?fling= parses");
   eq(all.easeWindowClipS ?? -1, 0.5, "?ease= parses");
 
+  // The two ceilings are INDEPENDENT: setting one never moves the other.
+  ok(parseScrubDials("?bank=3").wheelBankMaxClipS === null, "?bank= alone leaves the wheel default");
+  ok(parseScrubDials("?bankw=3").touchBankMaxClipS === null, "?bankw= alone leaves the touch default");
+
   // Validation: finite, and inside the published ranges, or the default wins.
   for (const query of ["?bank=0", "?bank=-1", "?bank=11", "?bank=abc", "?bank="]) {
-    ok(parseScrubDials(query).bankMaxClipS === null, `${query} is refused`);
+    ok(parseScrubDials(query).touchBankMaxClipS === null, `${query} is refused`);
+  }
+  for (const query of ["?bankw=0", "?bankw=-1", "?bankw=11", "?bankw=abc", "?bankw="]) {
+    ok(parseScrubDials(query).wheelBankMaxClipS === null, `${query} is refused`);
   }
   for (const query of ["?fling=-1", "?fling=1001", "?fling=NaN", "?fling=x"]) {
     ok(parseScrubDials(query).flingTauMs === null, `${query} is refused`);
@@ -425,7 +450,7 @@ eq(coastRateScale(0.5, 1), 0.5, "the window is a parameter (the ?ease= dial)");
   }
   eq(parseScrubDials("?fling=0").flingTauMs ?? -1, 0, "fling=0 (no fling at all) is legal");
   eq(parseScrubDials("?ease=0").easeWindowClipS ?? -1, 0, "ease=0 (no ease) is legal");
-  eq(parseScrubDials("?gyro=1&bank=1.5").bankMaxClipS ?? -1, 1.5, "other flags are ignored");
+  eq(parseScrubDials("?gyro=1&bank=1.5").touchBankMaxClipS ?? -1, 1.5, "other flags are ignored");
 }
 
 // Symmetry: rewinding is metered exactly like running forward.
@@ -521,24 +546,35 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
   );
 }
 
-// ── Input bank ceiling ───────────────────────────────────────────────────────
+// ── Input bank ceiling, ONE PER INPUT SOURCE ─────────────────────────────────
 // The cap says how FAST the page may move; the bank says how much of a gesture
-// may still be owed. Its ceiling is in CLIP TIME for the same reason the cap is:
-// one flick buys SCROLL_BANK_MAX_CLIP_S seconds of playback anywhere in the
-// zone, and never a frame faster than 1×. 2026-09-16: 4 s → 1.2 s — "a flick
-// moves a bit and stops".
-const BANK_BUDGET_T = SCROLL_BANK_MAX_CLIP_S * NATIVE_CLIP_RATE_PER_S;
+// may still be owed. Its ceiling is in CLIP TIME for the same reason the cap is,
+// and since 2026-09-16 there are TWO of them, because the devices deliver a
+// gesture in opposite shapes: a FINGER gives one burst and nothing after, so its
+// backlog IS the coast (1.2 s of clip = 15 frames); a TRACKPAD keeps feeding OS
+// momentum wheel events for another 1-2 s, so its backlog has to be short or the
+// page overshoots the hand (0.4 s = 5 frames). The pure function takes the
+// ceiling as a parameter and defaults to the permissive, touch one.
+const BANK_BUDGET_T = SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_CLIP_RATE_PER_S;
 const BANK_BUDGET_FRAMES = BANK_BUDGET_T * FRAME_SPAN;
+const WHEEL_BUDGET_T = SCROLL_BANK_MAX_CLIP_S_WHEEL * NATIVE_CLIP_RATE_PER_S;
+const WHEEL_BUDGET_FRAMES = WHEEL_BUDGET_T * FRAME_SPAN;
 const HUGE_BANK_PX = 1e6;
 
-eq(SCROLL_BANK_MAX_CLIP_S, 1.2, "the bank ceiling is 1.2 s of clip");
+eq(SCROLL_BANK_MAX_CLIP_S_TOUCH, 1.2, "the TOUCH bank ceiling is 1.2 s of clip");
+eq(SCROLL_BANK_MAX_CLIP_S_WHEEL, 0.4, "the WHEEL bank ceiling is 0.4 s of clip");
+ok(
+  SCROLL_BANK_MAX_CLIP_S_WHEEL < SCROLL_BANK_MAX_CLIP_S_TOUCH,
+  "a trackpad may owe LESS than a finger — the OS keeps feeding its momentum",
+);
 eq(
   BANK_BUDGET_FRAMES,
-  SCROLL_BANK_MAX_CLIP_S * NATIVE_SCRUB_FPS,
-  "the bank ceiling is exactly 1.2 s of native frames",
+  SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_SCRUB_FPS,
+  "the touch ceiling is exactly 1.2 s of native frames",
   1e-9,
 );
 eq(BANK_BUDGET_FRAMES, 15, "1.2 s at 12.5 f/s is 15 sequence frames", 1e-9);
+eq(WHEEL_BUDGET_FRAMES, 5, "0.4 s at 12.5 f/s is 5 sequence frames", 1e-9);
 
 // PARAMETERISED: the pure function takes the ceiling, so the ?bank= dial moves
 // it without this module (or these tests) knowing about a URL.
@@ -555,11 +591,47 @@ eq(BANK_BUDGET_FRAMES, 15, "1.2 s at 12.5 f/s is 15 sequence frames", 1e-9);
   }
   eq(
     clampBankPx(y, HUGE_BANK_PX, IH),
-    clampBankPx(y, HUGE_BANK_PX, IH, SCROLL_BANK_MAX_CLIP_S),
-    "the default parameter is the shipped constant",
+    clampBankPx(y, HUGE_BANK_PX, IH, SCROLL_BANK_MAX_CLIP_S_TOUCH),
+    "the default parameter is the shipped TOUCH constant",
     1e-12,
   );
   eq(clampBankPx(y, HUGE_BANK_PX, IH, Number.NaN), HUGE_BANK_PX, "a broken dial passes through");
+
+  // The two shipped ceilings, in the unit the thumb feels: the wheel's is a
+  // strict subset of the finger's, in both directions.
+  const touchFwd = clampBankPx(y, HUGE_BANK_PX, IH, SCROLL_BANK_MAX_CLIP_S_TOUCH);
+  const wheelFwd = clampBankPx(y, HUGE_BANK_PX, IH, SCROLL_BANK_MAX_CLIP_S_WHEEL);
+  const touchBack = clampBankPx(y, -HUGE_BANK_PX, IH, SCROLL_BANK_MAX_CLIP_S_TOUCH);
+  const wheelBack = clampBankPx(y, -HUGE_BANK_PX, IH, SCROLL_BANK_MAX_CLIP_S_WHEEL);
+  ok(wheelFwd > 0 && wheelFwd < touchFwd, "the wheel owes fewer forward px than the finger");
+  ok(wheelBack < 0 && wheelBack > touchBack, "…and fewer backward px too");
+  eq(
+    frameAt(y + wheelFwd) - frameAt(y),
+    WHEEL_BUDGET_FRAMES,
+    "the wheel ceiling is 5 frames forward",
+    1e-6,
+  );
+  eq(
+    frameAt(y) - frameAt(y + wheelBack),
+    WHEEL_BUDGET_FRAMES,
+    "the wheel ceiling is 5 frames backward",
+    1e-6,
+  );
+  // A touch-sized bank that a wheel event then claims is RE-CLAMPED, not kept:
+  // clamping is idempotent per source, so the controller may re-apply it every
+  // tick with whichever source last touched the bank.
+  eq(
+    clampBankPx(y, touchFwd, IH, SCROLL_BANK_MAX_CLIP_S_WHEEL),
+    wheelFwd,
+    "a finger-sized bank re-clamps to the wheel ceiling",
+    1e-9,
+  );
+  eq(
+    clampBankPx(y, wheelFwd, IH, SCROLL_BANK_MAX_CLIP_S_TOUCH),
+    wheelFwd,
+    "…and a wheel-sized bank is NOT inflated by the touch ceiling",
+    1e-9,
+  );
 }
 
 // A scenic stretch (segment 4, the slowest page speed) with four seconds of
@@ -679,16 +751,25 @@ console.log(
     `min traversal = ${EXPECTED_TRAVERSAL_S.toFixed(2)} s (uniform: no dwells)`,
 );
 console.log(
-  `bank ceiling = ${SCROLL_BANK_MAX_CLIP_S} s of clip = ` +
-    `${BANK_BUDGET_FRAMES.toFixed(0)} frames; ease-out ${BANK_EASE_OUT_CLIP_S} s ` +
-    `of clip down to ${BANK_EASE_OUT_FLOOR}x:`,
+  `bank ceilings: finger ${SCROLL_BANK_MAX_CLIP_S_TOUCH} s of clip = ` +
+    `${BANK_BUDGET_FRAMES.toFixed(0)} frames, trackpad/wheel/keys ` +
+    `${SCROLL_BANK_MAX_CLIP_S_WHEEL} s = ${WHEEL_BUDGET_FRAMES.toFixed(0)} frames; ` +
+    `ease-out ${BANK_EASE_OUT_CLIP_S} s of clip (0 = OFF, floor ` +
+    `${BANK_EASE_OUT_FLOOR}x kept for the ?ease= dial):`,
 );
 for (const height of [IH, 1080]) {
   const y = scrollYForVideoTime(0.4, height);
+  const label = height === IH ? "390x844" : "1080p  ";
+  const cell = (clipS: number) =>
+    `forward ${clampBankPx(y, HUGE_BANK_PX, height, clipS).toFixed(1)} px, ` +
+    `backward ${clampBankPx(y, -HUGE_BANK_PX, height, clipS).toFixed(1)} px`;
   console.log(
-    `  ${height === IH ? "390x844" : "1080p  "} at t=0.40: forward ` +
-      `${clampBankPx(y, HUGE_BANK_PX, height).toFixed(1)} px, backward ` +
-      `${clampBankPx(y, -HUGE_BANK_PX, height).toFixed(1)} px`,
+    `  ${label} at t=0.40  finger ${SCROLL_BANK_MAX_CLIP_S_TOUCH}s: ` +
+      `${cell(SCROLL_BANK_MAX_CLIP_S_TOUCH)}`,
+  );
+  console.log(
+    `  ${label} at t=0.40  wheel  ${SCROLL_BANK_MAX_CLIP_S_WHEEL}s: ` +
+      `${cell(SCROLL_BANK_MAX_CLIP_S_WHEEL)}`,
   );
 }
-console.log("\u2713 scroll governor (uniform mapping + page-speed cap + bank + ease-out)");
+console.log("\u2713 scroll governor (uniform mapping + page-speed cap + per-source bank)");

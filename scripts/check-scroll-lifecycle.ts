@@ -32,7 +32,8 @@ import type {
 import {
   BANK_EASE_OUT_CLIP_S,
   BANK_EASE_OUT_FLOOR,
-  SCROLL_BANK_MAX_CLIP_S,
+  SCROLL_BANK_MAX_CLIP_S_TOUCH,
+  SCROLL_BANK_MAX_CLIP_S_WHEEL,
   clampBankPx,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
@@ -398,9 +399,10 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
 // The cap used to drop the excess of every tick, so a 100 px notch bought the
 // ~1.5 px a scenic stretch allows and the rest evaporated: crossing the 23.5 s
 // zone took ~150 notches of continuous cranking. The remainder is now banked
-// and paid out at the very same cap after the input stops — bounded by
-// SCROLL_BANK_MAX_CLIP_S seconds of clip, so one flick can never buy the whole
-// zone and never plays it faster than 1×.
+// and paid out at the very same cap after the input stops — bounded by the
+// ceiling of whichever input last fed it (finger 1.2 s of clip, trackpad/keys
+// 0.4 s), so one flick can never buy the whole zone and never plays it faster
+// than 1×.
 
 // Tick a harness with ZERO further input until the page comes to rest, watching
 // that no single tick ever outruns the clip.
@@ -438,57 +440,71 @@ function coastToRest(harness: Harness, maxTicks = 900) {
 // client feels (px of page, frames of clip, seconds of coasting).
 const bankReport: string[] = [];
 const MAX_TICK_FRAMES = (NATIVE_SCRUB_FPS * TICK_MS) / 1000;
-const BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S * NATIVE_SCRUB_FPS;
+// TWO ceilings since 2026-09-16, one per input source: a finger delivers one
+// burst and nothing after (its backlog IS the coast), a trackpad keeps being
+// fed OS momentum for another 1-2 s (so its backlog must be short).
+const TOUCH_BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_SCRUB_FPS;
+const WHEEL_BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S_WHEEL * NATIVE_SCRUB_FPS;
 const SCENIC_Y = scrollYForVideoTime(0.4, IH);
-// What the ceiling is worth in PIXELS mid-clip at 390x844 — the number the
-// thumb feels: one flick can never owe more page than this.
-const CEILING_PX = clampBankPx(SCENIC_Y, 1e6, IH);
+// What each ceiling is worth in PIXELS mid-clip at 390x844 — the number the
+// hand feels: one gesture can never owe more page than its own ceiling.
+const TOUCH_CEILING_PX = clampBankPx(
+  SCENIC_Y,
+  1e6,
+  IH,
+  SCROLL_BANK_MAX_CLIP_S_TOUCH,
+);
+const WHEEL_CEILING_PX = clampBankPx(
+  SCENIC_Y,
+  1e6,
+  IH,
+  SCROLL_BANK_MAX_CLIP_S_WHEEL,
+);
 
-// (G3) A BURST is banked: input stops, the page keeps running at the clip's own
-// pace until the bank is spent — at most 1.2 s of playback — and then EASES to
-// rest instead of stopping dead.
+// (H1) A TRACKPAD BURST is banked — briefly. Ten 100 px notches inside 100 ms is
+// one ordinary trackpad flick, and macOS will keep feeding momentum notches for
+// another second or two after the fingers lift; whatever the page still owes is
+// paid out UNDERNEATH that tail, so the wheel's backlog is capped at 0.4 s of
+// clip (5 frames). Input stops → the page carries about 0.4 s and stops.
 {
   const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
   ok(latest().capActive, "the burst starts inside the soft pin");
   eq(latest().bankPx, 0, "a fresh seat owes nothing");
 
-  // Ten 100 px notches inside 100 ms — one ordinary trackpad flick.
   for (let i = 0; i < 10; i += 1) {
     ok(environment.wheel(100), "each burst event is owned");
     environment.clock.advance(10);
   }
   ok(latest().bankPx > 0, "the unspent burst is banked, not dropped");
+  ok(
+    latest().bankPx <= WHEEL_CEILING_PX + 1e-6,
+    `a 1000 px wheel burst owes ${latest().bankPx.toFixed(1)} px, past the ` +
+      `${WHEEL_CEILING_PX.toFixed(1)} px WHEEL ceiling`,
+  );
 
   const coast = coastToRest(harness);
   const coastS = (coast.ticks * TICK_MS) / 1000;
-  ok(coastS >= 1.0, `the page kept moving only ${coastS.toFixed(2)} s after the input stopped`);
+  ok(coastS >= 0.25, `the page kept moving only ${coastS.toFixed(2)} s after the input stopped`);
   ok(
-    coastS <= 1.8,
-    `the page kept moving ${coastS.toFixed(2)} s after the input stopped (want ≤ 1.8)`,
+    coastS <= 0.55,
+    `a WHEEL burst kept the page moving ${coastS.toFixed(2)} s (want ≈0.40, ≤ 0.55)`,
   );
   ok(
-    Math.abs(coast.movedFrames - BANK_FRAMES) <= 1.5,
-    `a 1000 px burst bought ${coast.movedFrames.toFixed(2)} frames (want ${BANK_FRAMES})`,
+    Math.abs(coast.movedFrames - WHEEL_BANK_FRAMES) <= 1,
+    `a 1000 px wheel burst bought ${coast.movedFrames.toFixed(2)} frames ` +
+      `(want ${WHEEL_BANK_FRAMES})`,
   );
   ok(
     coast.worstTickFrames <= MAX_TICK_FRAMES + 1e-9,
     `a banked tick advanced ${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES})`,
   );
-  // It eases out: the last tick is a fraction of the cruising speed.
-  const burstTail = coast.stepsPx[coast.stepsPx.length - 1];
-  const burstCruise = Math.max(...coast.stepsPx);
-  ok(
-    burstTail < burstCruise * 0.5,
-    `the burst stopped dead (${burstTail.toFixed(3)} px after cruising ` +
-      `${burstCruise.toFixed(3)} px/tick)`,
-  );
   bankReport.push(
-    `  (G3) 10x100 px wheel burst at t=0.40: coasted ${coast.movedPx.toFixed(1)} px / ` +
+    `  (H1) 10x100 px WHEEL burst at t=0.40: coasted ${coast.movedPx.toFixed(1)} px / ` +
       `${coast.movedFrames.toFixed(2)} frames over ${coast.ticks} ticks ` +
       `(${coastS.toFixed(2)} s), worst tick ` +
-      `${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES}), ` +
-      `eased ${burstCruise.toFixed(2)} → ${burstTail.toFixed(2)} px/tick`,
+      `${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES}); ` +
+      `ceiling ${WHEEL_CEILING_PX.toFixed(1)} px = ${WHEEL_BANK_FRAMES} frames`,
   );
   // …and then it STOPS. No residue, no creep.
   eq(latest().bankPx, 0, "a spent bank is empty");
@@ -498,8 +514,9 @@ const CEILING_PX = clampBankPx(SCENIC_Y, 1e6, IH);
   controller.dispose();
 }
 
-// (G3b) The bank NEVER buys speed: a single 1e6 px flick still moves at the cap,
-// still for only the ceiling, and never a frame more per tick than 12.5 f/s.
+// (G3b) The bank NEVER buys speed: a single 1e6 px WHEEL flick still moves at
+// the cap, still for only the wheel ceiling, and never a frame more per tick
+// than 12.5 f/s.
 {
   const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
@@ -511,11 +528,12 @@ const CEILING_PX = clampBankPx(SCENIC_Y, 1e6, IH);
     `an absurd bank advanced ${coast.worstTickFrames.toFixed(4)} frames in one tick`,
   );
   ok(
-    Math.abs(coast.movedFrames + MAX_TICK_FRAMES - BANK_FRAMES) <= 1.5,
-    `an absurd flick still bought only ${coast.movedFrames.toFixed(2)} frames`,
+    Math.abs(coast.movedFrames + MAX_TICK_FRAMES - WHEEL_BANK_FRAMES) <= 1,
+    `an absurd wheel flick still bought only ${coast.movedFrames.toFixed(2)} ` +
+      `frames (wheel ceiling ${WHEEL_BANK_FRAMES})`,
   );
   bankReport.push(
-    `  (G3b) 1e6 px flick at t=0.40: ${coast.movedFrames.toFixed(2)} frames over ` +
+    `  (G3b) 1e6 px WHEEL flick at t=0.40: ${coast.movedFrames.toFixed(2)} frames over ` +
       `${coast.ticks} ticks (${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s), ` +
       `worst tick ${coast.worstTickFrames.toFixed(4)} frames`,
   );
@@ -530,7 +548,7 @@ const CEILING_PX = clampBankPx(SCENIC_Y, 1e6, IH);
   const { environment, latest, controller } = harness;
   ok(environment.wheel(1000), "the forward flick is owned");
   environment.clock.advance(TICK_MS * 3);
-  ok(latest().bankPx > 100, "a forward bank is pending");
+  ok(latest().bankPx > 50, "a forward bank is pending (clamped to the wheel ceiling)");
   const yBefore = latest().virtualY;
   ok(environment.wheel(-50), "the reverse event is owned");
   environment.clock.advance(TICK_MS);
@@ -620,14 +638,19 @@ const CEILING_PX = clampBankPx(SCENIC_Y, 1e6, IH);
   controller.dispose();
 }
 
-// ── A FLICK MOVES A BIT AND STOPS (G1-G4) ───────────────────────────────────
+// ── A FLICK MOVES A BIT AND STOPS (G1-G4, H1-H4) ────────────────────────────
 // Round three of the client's notes: the captions "дьоргаються" (the 6.25 f/s
 // caption half-rate, now deleted) and the page "scrolls by itself for 2-4 s"
 // after every swipe. The second one had three causes — the 4 s bank, the 500 ms
 // iOS-like fling, and above all the 9× knot-slope asymmetry that made a 400 px
-// swipe worth 5.7 s of clip in a scenic stretch and 0.6 s in a dwell. All three
-// are gone: uniform slope, a 1.2 s ceiling, a 150 ms Android-like fling, and a
-// coast that EASES OUT instead of stopping dead.
+// swipe worth 5.7 s of clip in a scenic stretch and 0.6 s in a dwell.
+//
+// Round four, after the user drove it on a phone AND on a MacBook trackpad: the
+// finger was right and the trackpad overshot, because macOS keeps posting
+// momentum wheel events for a second or two after the hand lifts and every one
+// of them refilled a 1.2 s backlog. So the ceiling is now per input source
+// (finger 1.2 s, trackpad/keys 0.4 s), the fling tau is 300 ms, and the coast
+// ease-out is OFF — a constant capped speed, then a stop.
 
 // One finger stroke through the capped zone: `steps` touchmoves of `pxPerStep`
 // (positive = the finger travels UP the glass, i.e. the page goes forward),
@@ -661,12 +684,14 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   return latest().bankPx - bankBefore + (latest().virtualY - yBefore);
 }
 
-// (G1) A real thumb flick: 400 px in 250 ms (≈1.6 px/ms), mid-clip. It must buy
-// AT MOST the 1.2 s-of-clip ceiling, never outrun the clip, come to rest inside
-// a couple of seconds — and DECELERATE on the way, the way a native fling does.
+// (H2) A real thumb flick: 400 px in 250 ms (≈1.6 px/ms), mid-clip. A FINGER
+// gets the long ceiling — 1.2 s of clip — because inside the zone every
+// touchmove is preventDefault-ed, so the backlog is the only coast there is.
+// It must buy AT MOST that ceiling, never outrun the clip, and stop inside
+// ~1.2 s with NO ease-out tail (see H4).
 {
   const harness = createHarness(SCENIC_Y);
-  const { environment, latest, controller } = harness;
+  const { latest, controller } = harness;
   ok(latest().capActive, "the flick starts inside the soft pin");
   eq(latest().bankPx, 0, "a fresh seat owes nothing");
 
@@ -679,20 +704,25 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   const bankBeforeLift = latest().bankPx;
   ok(bankBeforeLift > 0, "the unpaid finger travel is still owed at the lift");
   const fling = liftFlingPx(harness, fingerY);
-  const wanted = velocity * TOUCH_FLING_TAU_MS;
   ok(fling > 0, "a release above the threshold queues a fling");
-  // The fling arithmetic itself — Android's reference numbers, not iOS's glide.
-  eq(TOUCH_FLING_TAU_MS, 150, "the fling tau is 150 ms");
-  eq(2 * TOUCH_FLING_TAU_MS, 300, "a 2 px/ms release travels 300 px");
-  eq(1.6 * TOUCH_FLING_TAU_MS, 240, "a 1.6 px/ms release travels 240 px");
-  eq(2.5 * TOUCH_FLING_TAU_MS, 375, "a violent 2.5 px/ms release travels 375 px");
-  // A 400 px swipe is already worth ~1.4 s of clip here, so the swipe PLUS its
-  // ${wanted.toFixed(0)} px fling saturates the 1.2 s ceiling and the rest is
-  // dropped: a hard flick and a firm one answer almost identically.
+  // The fling arithmetic itself. 300 ms is the value the user picked on the
+  // phone: every ordinary throw now reaches the ceiling, so the CEILING — not
+  // the tau — is what decides where a flick ends.
+  eq(TOUCH_FLING_TAU_MS, 300, "the fling tau is 300 ms");
+  eq(2 * TOUCH_FLING_TAU_MS, 600, "a 2 px/ms release travels 600 px");
+  eq(1.6 * TOUCH_FLING_TAU_MS, 480, "a 1.6 px/ms release travels 480 px");
   ok(
-    Math.abs(latest().bankPx - CEILING_PX) <= 6, // one tick of payout
-    `a 400 px flick should owe exactly the ceiling ${CEILING_PX.toFixed(1)} px ` +
-      `(owes ${latest().bankPx.toFixed(1)})`,
+    1.6 * TOUCH_FLING_TAU_MS > TOUCH_CEILING_PX,
+    "an ordinary thumb flick alone already saturates the touch ceiling",
+  );
+  ok(
+    Math.abs(latest().bankPx - TOUCH_CEILING_PX) <= 6, // one tick of payout
+    `a 400 px flick should owe exactly the TOUCH ceiling ` +
+      `${TOUCH_CEILING_PX.toFixed(1)} px (owes ${latest().bankPx.toFixed(1)})`,
+  );
+  ok(
+    latest().bankPx > WHEEL_CEILING_PX * 2,
+    "a finger owes far more than a trackpad ever may",
   );
 
   const coast = coastToRest(harness);
@@ -700,11 +730,12 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   // The ceiling, in the unit it is written in: one flick owes at most 1.2 s of
   // clip, whatever it asked for.
   ok(
-    coast.movedFrames <= BANK_FRAMES + 1,
-    `the flick bought ${coast.movedFrames.toFixed(2)} frames (ceiling ${BANK_FRAMES})`,
+    coast.movedFrames <= TOUCH_BANK_FRAMES + 1,
+    `the flick bought ${coast.movedFrames.toFixed(2)} frames ` +
+      `(ceiling ${TOUCH_BANK_FRAMES})`,
   );
   ok(
-    coast.movedFrames > BANK_FRAMES - 2,
+    coast.movedFrames > TOUCH_BANK_FRAMES - 2,
     `a real flick should still spend the whole ceiling (got ${coast.movedFrames.toFixed(2)})`,
   );
   // The hard client rule, unchanged: never faster than the clip.
@@ -713,48 +744,129 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
     `a coasting tick advanced ${coast.worstTickFrames.toFixed(4)} frames ` +
       `(cap ${MAX_TICK_FRAMES})`,
   );
-  // …and it STOPS, soon. 1.2 s of clip at the cap plus the ease-out tail
-  // (0.3 s window down to a 0.15× floor ⇒ 0.3·ln(1/0.15) + 0.3 ≈ 0.87 s).
+  // …and it STOPS, soon: 1.2 s of clip at the cap, and nothing after it now
+  // that the ease-out window is 0.
   ok(
-    coastS <= 1.8,
-    `the page kept moving ${coastS.toFixed(2)} s after touchend (want ≤ 1.8)`,
+    coastS <= 1.35,
+    `the page kept moving ${coastS.toFixed(2)} s after touchend (want ~1.20, <= 1.35)`,
   );
   ok(coastS >= 1.0, `the flick coasted only ${coastS.toFixed(2)} s`);
-  // Deceleration: over the LAST 0.3 s no tick may be faster than the one
-  // before it. (Before the ease-out the page ran at the cap until the bank hit
-  // zero and then stopped dead — a hard stop, the opposite of a fling.)
-  const tailTicks = Math.round(300 / TICK_MS);
-  const tail = coast.stepsPx.slice(-tailTicks);
-  let monotonic = true;
-  for (let i = 1; i < tail.length; i += 1) {
-    if (tail[i] > tail[i - 1] + 1e-9) monotonic = false;
-  }
-  ok(monotonic, `the last 0.3 s does not decelerate monotonically: ${tail.map((v) => v.toFixed(2)).join(" ")}`);
-  ok(
-    tail[0] > tail[tail.length - 1] + 1e-6,
-    "the last 0.3 s is slower at its end than at its start",
-  );
-  const easedFrom = Math.max(...coast.stepsPx);
-  ok(
-    tail[tail.length - 1] < easedFrom * 0.5,
-    `the final tick (${tail[tail.length - 1].toFixed(3)} px) is not an ease-out ` +
-      `of the cruising ${easedFrom.toFixed(3)} px`,
-  );
   eq(latest().bankPx, 0, "the flick's bank empties");
   bankReport.push(
-    `  (G1) 400 px / 250 ms touch flick at t=0.40: lift queued ` +
+    `  (H2) 400 px / 250 ms TOUCH flick at t=0.40: lift queued ` +
       `${fling.toFixed(0)} px on top of ${bankBeforeLift.toFixed(0)} px owed, ` +
       `coasted ${coast.movedPx.toFixed(0)} px / ${coast.movedFrames.toFixed(2)} ` +
       `frames over ${coastS.toFixed(2)} s, worst tick ` +
       `${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES}); ` +
-      `last 0.3 s ${tail[0].toFixed(2)} → ${tail[tail.length - 1].toFixed(2)} px/tick`,
+      `ceiling ${TOUCH_CEILING_PX.toFixed(1)} px = ${TOUCH_BANK_FRAMES} frames`,
+  );
+  controller.dispose();
+}
+
+// (H3) The ceiling belongs to the LAST input that reached the bank, and it is
+// re-applied EVERY tick — not only on the tick that input arrived. A finger's
+// 1.2 s backlog is right for a finger; the moment a trackpad joins in, the OS is
+// about to keep feeding momentum on top of it, so the standing debt has to
+// shrink to the wheel's 0.4 s straight away or the page overshoots the hand.
+{
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  const fingerY = fingerStroke(harness, 16, 25, 16);
+  liftFlingPx(harness, fingerY);
+  const touchBank = latest().bankPx;
+  ok(
+    Math.abs(touchBank - TOUCH_CEILING_PX) <= 6,
+    `the finger's bank should sit on the touch ceiling (owes ${touchBank.toFixed(1)})`,
+  );
+  ok(
+    touchBank > WHEEL_CEILING_PX + 50,
+    `the finger's ${touchBank.toFixed(1)} px is far past the wheel ceiling ` +
+      `${WHEEL_CEILING_PX.toFixed(1)} px`,
+  );
+
+  // ONE small FORWARD wheel notch. Same direction, so this is not a reversal —
+  // it is a trackpad taking over a finger's backlog.
+  ok(environment.wheel(4), "the wheel notch is owned");
+  environment.clock.advance(TICK_MS);
+  ok(
+    latest().bankPx <= WHEEL_CEILING_PX + 1e-6,
+    `a wheel notch left ${latest().bankPx.toFixed(1)} px owed — the bank did not ` +
+      `re-clamp to the ${WHEEL_CEILING_PX.toFixed(1)} px wheel ceiling`,
+  );
+  ok(latest().bankPx > 0, "…and it did not throw the gesture away either");
+  const reclaimed = touchBank - latest().bankPx;
+  const coast = coastToRest(harness);
+  const coastS = (coast.ticks * TICK_MS) / 1000;
+  ok(
+    coastS <= 0.55,
+    `after the wheel claimed it the page still coasted ${coastS.toFixed(2)} s ` +
+      `(want <= 0.55)`,
+  );
+  ok(
+    Math.abs(coast.movedFrames - WHEEL_BANK_FRAMES) <= 1,
+    `the re-clamped bank bought ${coast.movedFrames.toFixed(2)} frames ` +
+      `(want ${WHEEL_BANK_FRAMES})`,
+  );
+  eq(latest().bankPx, 0, "the re-clamped bank empties");
+  bankReport.push(
+    `  (H3) touch flick owed ${touchBank.toFixed(0)} px, then one +4 px wheel ` +
+      `notch: ${reclaimed.toFixed(0)} px dropped on that tick, page coasted ` +
+      `${coastS.toFixed(2)} s / ${coast.movedFrames.toFixed(2)} frames ` +
+      `(wheel ceiling ${WHEEL_CEILING_PX.toFixed(1)} px)`,
+  );
+  controller.dispose();
+}
+
+// (H4) EASE OFF: with BANK_EASE_OUT_CLIP_S at 0 a coast runs at a CONSTANT
+// capped speed and then stops — no deceleration tail at all. The mechanism is
+// still there behind ?ease=, but the user tested both and chose this: a 0.3 s
+// window stretched into ~0.87 s of wall time and read as the page creeping on
+// after the gesture was over.
+{
+  eq(BANK_EASE_OUT_CLIP_S, 0, "the shipped ease window is 0");
+  const harness = createHarness(SCENIC_Y);
+  const { latest, controller } = harness;
+  const fingerY = fingerStroke(harness, 16, 25, 16);
+  liftFlingPx(harness, fingerY);
+  const coast = coastToRest(harness);
+  const steps = coast.stepsPx;
+  ok(steps.length > 60, `only ${steps.length} coasting ticks to judge the profile`);
+  // Every tick but the last is the SAME length: the cap, unscaled.
+  const cruise = steps.slice(0, -1);
+  const fastest = Math.max(...cruise);
+  const slowest = Math.min(...cruise);
+  ok(
+    fastest - slowest <= 1e-6,
+    `the coast is not a constant speed: ${slowest.toFixed(4)} ... ` +
+      `${fastest.toFixed(4)} px/tick`,
+  );
+  // No ease-out tail: the last 0.3 s is flat right up to the final remainder.
+  const tailTicks = Math.round(300 / TICK_MS);
+  for (const step of steps.slice(-tailTicks, -1)) {
+    ok(
+      Math.abs(step - fastest) <= 1e-6,
+      `a tail tick decelerated to ${step.toFixed(4)} px (cruise ${fastest.toFixed(4)})`,
+    );
+  }
+  // The final tick is the leftover of the bank, never more than a full one.
+  const last = steps[steps.length - 1];
+  ok(last <= fastest + 1e-9, `the last tick (${last.toFixed(4)} px) outran the cap`);
+  ok(
+    BANK_EASE_OUT_FLOOR > 0 && BANK_EASE_OUT_FLOOR < 1,
+    "the ease FLOOR is kept intact for the ?ease= dial",
+  );
+  ok(latest().bankPx === 0, "the coast ends with nothing owed");
+  bankReport.push(
+    `  (H4) ease off: ${cruise.length} coasting ticks at a flat ` +
+      `${fastest.toFixed(3)} px/tick (spread ${(fastest - slowest).toExponential(1)}), ` +
+      `last tick ${last.toFixed(3)} px — no deceleration tail`,
   );
   controller.dispose();
 }
 
 // (G1b) The same fling, measured where the ceiling does NOT bind: a 144 px /
-// 240 ms stroke (~0.59 px/ms after the EMA) must queue v x 150 ms of pixels and
-// no more — the old 500 ms tau queued three times that.
+// 240 ms stroke (~0.59 px/ms after the EMA) must queue exactly v x 300 ms of
+// pixels and no more.
 {
   const harness = createHarness(SCENIC_Y);
   const { latest, controller } = harness;
@@ -762,7 +874,7 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   const owedBeforeLift = latest().bankPx;
   const fling = liftFlingPx(harness, fingerY);
   ok(
-    owedBeforeLift + fling < CEILING_PX,
+    owedBeforeLift + fling < TOUCH_CEILING_PX,
     "the small-flick probe stays under the bank ceiling, so the fling is visible",
   );
   const lowest = TOUCH_FLING_VELOCITY_PX_MS * TOUCH_FLING_TAU_MS;
@@ -1464,9 +1576,12 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
 }
 
 console.log(
-  `input bank (ceiling ${SCROLL_BANK_MAX_CLIP_S} s of clip = ${BANK_FRAMES} frames, ` +
-    `ease-out ${BANK_EASE_OUT_CLIP_S} s of clip down to ${BANK_EASE_OUT_FLOOR}x, ` +
-    `fling tau ${TOUCH_FLING_TAU_MS} ms) at 390x844:`,
+  `input bank at 390x844 — ceilings: finger ${SCROLL_BANK_MAX_CLIP_S_TOUCH} s of ` +
+    `clip = ${TOUCH_BANK_FRAMES} frames = ${TOUCH_CEILING_PX.toFixed(1)} px, ` +
+    `trackpad/wheel/keys ${SCROLL_BANK_MAX_CLIP_S_WHEEL} s = ${WHEEL_BANK_FRAMES} ` +
+    `frames = ${WHEEL_CEILING_PX.toFixed(1)} px; ease-out ${BANK_EASE_OUT_CLIP_S} s ` +
+    `(0 = OFF, floor ${BANK_EASE_OUT_FLOOR}x kept for ?ease=); fling tau ` +
+    `${TOUCH_FLING_TAU_MS} ms:`,
 );
 console.log(bankReport.join("\n"));
-console.log("✓ scroll lifecycle (capped video zone + short eased coast + gesture-follow gallery)");
+console.log("✓ scroll lifecycle (capped video zone + per-source bank ceilings + gesture-follow gallery)");

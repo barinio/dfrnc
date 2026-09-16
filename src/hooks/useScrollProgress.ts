@@ -10,6 +10,7 @@ import type {
   ScrollTimelineController,
   ScrollTimelineEventTarget,
   ScrollTimelinePublication,
+  ScrubBankSource,
 } from "../scrollTimelineController";
 
 export interface ScrollTimelineRefs {
@@ -35,13 +36,16 @@ interface ScrollTimelineDiagnostic {
   // stops) and that a reversal empties it on the next tick.
   bankPx: number;
   // The scrub dials this page is actually running (defaults, or whatever
-  // ?bank= / ?fling= / ?ease= overrode — see src/scrubDials.ts), so a phone
-  // session can read back what it is feeling instead of guessing.
+  // ?bank= / ?bankw= / ?fling= / ?ease= overrode — see src/scrubDials.ts), so a
+  // phone or trackpad session can read back what it is feeling instead of
+  // guessing — plus which of the two bank ceilings is currently in force.
   dials: {
-    bankMaxClipS: number;
+    touchBankMaxClipS: number;
+    wheelBankMaxClipS: number;
     flingTauMs: number;
     easeWindowClipS: number;
     overridden: boolean;
+    bankSource: ScrubBankSource;
   };
 }
 
@@ -97,10 +101,12 @@ export function useScrollTimelineRefs(
           capActive: publication.capActive,
           bankPx: publication.bankPx,
           dials: {
-            bankMaxClipS: ACTIVE_SCRUB_DIALS.bankMaxClipS,
+            touchBankMaxClipS: ACTIVE_SCRUB_DIALS.touchBankMaxClipS,
+            wheelBankMaxClipS: ACTIVE_SCRUB_DIALS.wheelBankMaxClipS,
             flingTauMs: ACTIVE_SCRUB_DIALS.flingTauMs,
             easeWindowClipS: ACTIVE_SCRUB_DIALS.easeWindowClipS,
             overridden: ACTIVE_SCRUB_DIALS.overridden,
+            bankSource: publication.bankSource,
           },
         };
         window.__sg = diagnostic;

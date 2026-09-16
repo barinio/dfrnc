@@ -1,13 +1,16 @@
 // Runtime scrub dials, read ONCE at startup from the URL query.
 //
-// Three numbers decide how a flick feels inside the video zone — how much clip
-// one gesture may still owe, how much a finger release is worth, and how long
-// the coast eases out — and the only honest way to judge them is a thumb on a
-// real phone. So they are overridable per URL:
+// Four numbers decide how a flick feels inside the video zone — how much clip
+// one gesture may still owe (separately for a FINGER and for a TRACKPAD, which
+// deliver a gesture in opposite shapes), how much a finger release is worth,
+// and how long the coast eases out — and the only honest way to judge them is a
+// thumb on a real phone and a hand on a real trackpad. So they are overridable
+// per URL:
 //
-//   ?bank=<clip seconds>   the input-bank ceiling      0 < v ≤ 10
-//   ?fling=<ms>            the synthetic fling tau     0 ≤ v ≤ 1000
-//   ?ease=<clip seconds>   the coast ease-out window   0 ≤ v ≤ 2
+//   ?bank=<clip seconds>   the TOUCH input-bank ceiling   0 < v ≤ 10
+//   ?bankw=<clip seconds>  the WHEEL input-bank ceiling   0 < v ≤ 10
+//   ?fling=<ms>            the synthetic fling tau        0 ≤ v ≤ 1000
+//   ?ease=<clip seconds>   the coast ease-out window      0 ≤ v ≤ 2  (0 = off)
 //
 // Gated exactly like Scene.tsx's `?gyro=1` — a plain URLSearchParams read on
 // window.location.search — with ONE deliberate difference: no import.meta.env
@@ -20,16 +23,19 @@
 // can own their own defaults and still consume the overrides.
 
 export interface ScrubDialOverrides {
-  // Seconds of clip one gesture may still owe (scrollGovernor.clampBankPx).
-  bankMaxClipS: number | null;
+  // Seconds of clip one TOUCH gesture may still owe (scrollGovernor.clampBankPx).
+  touchBankMaxClipS: number | null;
+  // The same, for wheel/trackpad/keyboard input.
+  wheelBankMaxClipS: number | null;
   // Milliseconds of release velocity a touch lift queues (the controller).
   flingTauMs: number | null;
-  // Seconds of clip over which a coast decelerates (coastRateScale).
+  // Seconds of clip over which a coast decelerates (coastRateScale); 0 = off.
   easeWindowClipS: number | null;
 }
 
 export const NO_SCRUB_DIALS: ScrubDialOverrides = {
-  bankMaxClipS: null,
+  touchBankMaxClipS: null,
+  wheelBankMaxClipS: null,
   flingTauMs: null,
   easeWindowClipS: null,
 };
@@ -60,7 +66,8 @@ export function parseScrubDials(search: string): ScrubDialOverrides {
     return { ...NO_SCRUB_DIALS };
   }
   return {
-    bankMaxClipS: dial(params, "bank", 0, 10, true),
+    touchBankMaxClipS: dial(params, "bank", 0, 10, true),
+    wheelBankMaxClipS: dial(params, "bankw", 0, 10, true),
     flingTauMs: dial(params, "fling", 0, 1000),
     easeWindowClipS: dial(params, "ease", 0, 2),
   };
@@ -85,7 +92,8 @@ export function scrubDialsActive(
   overrides: ScrubDialOverrides = SCRUB_DIAL_OVERRIDES,
 ): boolean {
   return (
-    overrides.bankMaxClipS !== null ||
+    overrides.touchBankMaxClipS !== null ||
+    overrides.wheelBankMaxClipS !== null ||
     overrides.flingTauMs !== null ||
     overrides.easeWindowClipS !== null
   );

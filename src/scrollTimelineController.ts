@@ -1,6 +1,7 @@
 import {
   BANK_EASE_OUT_CLIP_S,
-  SCROLL_BANK_MAX_CLIP_S,
+  SCROLL_BANK_MAX_CLIP_S_TOUCH,
+  SCROLL_BANK_MAX_CLIP_S_WHEEL,
   bankClipSeconds,
   capVirtualY,
   clampBankPx,
@@ -66,6 +67,12 @@ export interface ScrollTimelineControllerEnvironment {
   scrollTo(options: { top: number; behavior: "auto" }): void;
 }
 
+// Which device filled the input bank. A finger and a trackpad owe wildly
+// different amounts of coast (see SCROLL_BANK_MAX_CLIP_S_TOUCH/_WHEEL), so the
+// controller has to remember which one it is paying back. Keys count as wheel:
+// like a wheel notch they are a discrete, repeatable request, not a throw.
+export type ScrubBankSource = "touch" | "wheel";
+
 export type GalleryMode =
   | "native-before"
   | "gallery-idle"
@@ -87,6 +94,8 @@ export interface ScrollTimelinePublication {
   // Scroll the user has already asked for and the cap has not paid out yet
   // (signed, px). Zero outside the zone and the instant a gesture is spent.
   bankPx: number;
+  // Which input last fed that bank, i.e. which ceiling is holding it down.
+  bankSource: ScrubBankSource;
 }
 
 export interface ScrollTimelineControllerOptions {
@@ -219,31 +228,45 @@ export const TOUCH_BANK_REVERSAL_DEAD_ZONE_PX = TOUCH_STEP_PX;
 // scroll to carry on. Same number as the gallery pin's flick threshold, which
 // is the same physical gesture judged by the same hand.
 export const TOUCH_FLING_VELOCITY_PX_MS = 0.5;
-// 2026-09-16 — 500 ms → 150 ms. 500 was modelled on iOS's own long glide and,
-// on top of the 4 s bank, is what the client saw as "the page scrolls by itself
-// for 2-4 s" after every swipe. Android's fling is the reference now: a 2 px/ms
-// release travels ~300 px in ~0.4 s, which is exactly v x 150 ms here. A 1.6
-// px/ms thumb flick buys 240 px, a violent 2.5 px/ms one 375 px — and the bank
-// ceiling (1.2 s of clip ≈ 345 px at 844) tops both of them out, so the page
-// answers a hard swipe and a firm one almost identically.
-export const TOUCH_FLING_TAU_MS = 150;
+// 2026-09-16 — 500 ms → 150 ms → 300 ms. 500 ms was modelled on iOS's own long
+// glide and, on top of the 4 s bank, is what the client saw as "the page scrolls
+// by itself for 2-4 s". 150 ms then overshot the other way: with the finger's
+// own travel already spent during the gesture, a firm thumb flick barely
+// reached the ceiling and read as a page that refuses to be thrown. 300 ms is
+// the value the user picked on the phone: a 2 px/ms release travels 600 px and
+// a 1.6 px/ms one 480 px, both comfortably past the 1.2 s-of-clip touch ceiling
+// (≈345 px at 844), so an ordinary flick now reliably buys the WHOLE coast the
+// ceiling allows and a violent one buys exactly the same — the ceiling, not the
+// tau, is what decides where a throw ends.
+export const TOUCH_FLING_TAU_MS = 300;
 // A finger that stopped before lifting is PLACING the page, not throwing it, so
 // a stale velocity must not be paid out. (iOS in particular can hold the last
 // touchmove well before touchend.)
 export const TOUCH_FLING_MAX_IDLE_MS = 100;
 
 // ── The dials as this page actually runs them ───────────────────────────────
-// Defaults are the constants above and in scrollGovernor; `?bank=`, `?fling=`
-// and `?ease=` override them for a phone-testing session (see scrubDials.ts).
-// Resolved ONCE here so there is a single effective value to pass into the pure
-// functions and to publish on window.__sg.
+// Defaults are the constants above and in scrollGovernor; `?bank=` (touch),
+// `?bankw=` (wheel/trackpad), `?fling=` and `?ease=` override them for a
+// phone/trackpad testing session (see scrubDials.ts). Resolved ONCE here so
+// there is a single effective value to pass into the pure functions and to
+// publish on window.__sg.
 export const ACTIVE_SCRUB_DIALS = {
-  bankMaxClipS: SCRUB_DIAL_OVERRIDES.bankMaxClipS ?? SCROLL_BANK_MAX_CLIP_S,
+  touchBankMaxClipS:
+    SCRUB_DIAL_OVERRIDES.touchBankMaxClipS ?? SCROLL_BANK_MAX_CLIP_S_TOUCH,
+  wheelBankMaxClipS:
+    SCRUB_DIAL_OVERRIDES.wheelBankMaxClipS ?? SCROLL_BANK_MAX_CLIP_S_WHEEL,
   flingTauMs: SCRUB_DIAL_OVERRIDES.flingTauMs ?? TOUCH_FLING_TAU_MS,
   easeWindowClipS:
     SCRUB_DIAL_OVERRIDES.easeWindowClipS ?? BANK_EASE_OUT_CLIP_S,
   overridden: scrubDialsActive(),
 } as const;
+
+// Seconds of clip the bank may still owe, for the source that last fed it.
+export function bankCeilingClipSFor(source: ScrubBankSource): number {
+  return source === "touch"
+    ? ACTIVE_SCRUB_DIALS.touchBankMaxClipS
+    : ACTIVE_SCRUB_DIALS.wheelBankMaxClipS;
+}
 // Below this the bank is finished, not "nearly finished": leaving a hundredth
 // of a pixel owed would re-arm the ticker forever and creep the document.
 const BANK_SNAP_PX = 0.01;
@@ -474,6 +497,13 @@ export function createScrollTimelineController(
   // reads it: a finger and a wheel disagree about what counts as jitter.
   let pendingFromTouch = false;
   let bankPx = 0;
+  // The source of the LAST input that reached the bank, and therefore which
+  // ceiling clamps it EVERY tick — not just on the tick the input arrived. A
+  // trackpad that interrupts a finger's backlog (or vice versa on a hybrid
+  // machine) re-clamps the standing debt immediately, so the page can never be
+  // paying out a finger-sized coast while the OS is still feeding wheel
+  // momentum. "wheel" is the conservative seat for a bank nobody has claimed.
+  let bankSource: ScrubBankSource = "wheel";
   // Zone-side finger velocity (px/ms, signed, same EMA as the gallery scrub's).
   // The gallery keeps its own on a GalleryScrub struct, which the video zone
   // never allocates — the zone owns the finger before any card exists.
@@ -511,6 +541,7 @@ export function createScrollTimelineController(
       virtualY,
       capActive,
       bankPx,
+      bankSource,
     });
   };
 
@@ -583,6 +614,7 @@ export function createScrollTimelineController(
     pendingDeltaPx = 0;
     pendingFromTouch = false;
     bankPx = 0;
+    bankSource = "wheel";
     capLastTickAt = null;
     capLastInputAt = null;
     capEntryGraceUntil = -Infinity;
@@ -604,6 +636,7 @@ export function createScrollTimelineController(
     pendingDeltaPx = 0;
     pendingFromTouch = false;
     bankPx = 0;
+    bankSource = "wheel";
     capLastInputAt = null;
     capActive = true;
     // Seed the tick clock at ENTRY, not at the first frame: a null seed would
@@ -702,16 +735,23 @@ export function createScrollTimelineController(
     } else {
       bankPx += incoming;
     }
-    // A bank is a debt in CLIP TIME, so its ceiling is too: one gesture may owe
-    // at most ACTIVE_SCRUB_DIALS.bankMaxClipS seconds of playback. At the zone's
-    // edges that horizon runs out of clip and the ceiling lifts, which is what
-    // keeps the seam hand-off and the native hand-back below firing exactly as
-    // before.
+    // A bank is a debt in CLIP TIME, so its ceiling is too — and WHOSE debt it
+    // is decides how big that ceiling may be. A finger delivers one burst and
+    // then nothing, so its backlog IS the coast (1.2 s of clip); a trackpad
+    // keeps feeding OS momentum wheel events for another 1-2 s after the hand
+    // has lifted, so a long backlog underneath that tail is paid out at a user
+    // who stopped scrolling ages ago — hence 0.4 s. The source of the LAST
+    // input to reach the bank is remembered and re-applied every tick, so a
+    // wheel event landing on a touch backlog shortens it on that very tick.
+    // At the zone's edges the horizon runs out of clip and the ceiling lifts,
+    // which is what keeps the seam hand-off and the native hand-back below
+    // firing exactly as before.
+    if (incoming !== 0) bankSource = incomingFromTouch ? "touch" : "wheel";
     bankPx = clampBankPx(
       previous,
       bankPx,
       innerHeight,
-      ACTIVE_SCRUB_DIALS.bankMaxClipS,
+      bankCeilingClipSFor(bankSource),
     );
     const requested = previous + bankPx;
 
@@ -1435,6 +1475,7 @@ export function createScrollTimelineController(
     pendingDeltaPx = 0;
     pendingFromTouch = false;
     bankPx = 0;
+    bankSource = "wheel";
     capLastTickAt = null;
     capLastInputAt = null;
     // Losing focus/visibility mid-gesture: freeze in place — any motion

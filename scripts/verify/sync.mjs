@@ -52,8 +52,15 @@ const FRAME_COUNT = 295;
 const FRAME_SPAN = FRAME_COUNT - 1;
 const NATIVE_FPS = 12.5;
 // Mirrored from src/scrollGovernor.ts / src/scrollTimelineController.ts: how
-// much playback one flick may bank, and how long the zone absorbs a crossing.
-const SCROLL_BANK_MAX_CLIP_S = 1.2;
+// much playback one gesture may bank, and how long the zone absorbs a crossing.
+// TWO ceilings since 2026-09-16, one per input source. A FINGER delivers one
+// burst and nothing after (inside the zone its touchmoves are all cancelled, so
+// the backlog IS the coast) — 1.2 s of clip. A TRACKPAD keeps being fed OS
+// momentum wheel events for another 1-2 s after the hand lifts, so a long
+// backlog underneath that tail is paid out at a user who stopped scrolling ages
+// ago — 0.4 s. Each profile below is measured against its own ceiling.
+const SCROLL_BANK_MAX_CLIP_S_TOUCH = 1.2;
+const SCROLL_BANK_MAX_CLIP_S_WHEEL = 0.4;
 const WHEEL_ENTRY_GRACE_MS = 250;
 // UNIFORM since 2026-09-16: two knots, one linear ramp over the anim track.
 // The five caption-dwell knots are gone — under the 12.5 f/s cap the captions
@@ -64,12 +71,13 @@ const VIDEO_TIME_KNOTS = [
   [1, VIDEO_SPLIT],
 ];
 // Mirrored from src/scrollTimelineController.ts: what a finger release buys.
-const TOUCH_FLING_TAU_MS = 150;
-// Mirrored from src/scrollGovernor.ts: the coast's ease-out. 1.2 s of clip runs
-// at the cap until the last 0.3 s of it, which is paid out on a ramp down to a
-// 0.15x floor — about 0.87 s of wall time instead of 0.3 s. Any "how long may
-// it coast" bound has to allow for that tail.
-const BANK_EASE_OUT_CLIP_S = 0.3;
+const TOUCH_FLING_TAU_MS = 300;
+// Mirrored from src/scrollGovernor.ts: the coast's ease-out, now SHIPPED OFF.
+// A 0.3 s window stretched the last 0.3 s of clip over ~0.87 s of wall time,
+// which read as the page creeping on after the gesture ended, so the window is
+// 0: constant capped speed, then a stop. The formula stays because ?ease= can
+// still switch the ramp back on — with the window at 0 it contributes nothing.
+const BANK_EASE_OUT_CLIP_S = 0;
 const BANK_EASE_OUT_FLOOR = 0.15;
 // ramp W→W·floor takes W·ln(1/floor); the floor phase then spends W·floor of
 // clip at floor rate, i.e. exactly W of wall — so the whole excess is the ramp.
@@ -122,7 +130,7 @@ const bounds = (innerHeight) => {
 
 // Wall seconds it takes to play the clip interval [a, b] AT THE CAP. One rate
 // everywhere now, so this is a straight conversion — plus the ease-out tail,
-// which spends the last 0.3 s of clip over ~0.87 s of wall time.
+// which is 0 while the ease is off.
 function wallSecondsForClipSpan(a, b) {
   return (Math.abs(b - a) * FRAME_SPAN) / NATIVE_FPS + EASE_TAIL_EXCESS_MS / 1000;
 }
@@ -630,8 +638,18 @@ async function runProfile(browser, profile) {
   // The client's complaint in one phase. Input used to be dropped every tick,
   // so the page only moved while the user kept cranking (~150 notches for the
   // 23.5 s zone). One burst must now keep the page running ON ITS OWN — at the
-  // very same 12.5 f/s, for at most SCROLL_BANK_MAX_CLIP_S seconds — and one
-  // reverse event must still be felt immediately.
+  // very same 12.5 f/s — and one reverse event must still be felt immediately.
+  //
+  // FOR HOW LONG depends on the device. This profile's burst is a trackpad
+  // burst on desktop (ceiling 0.4 s of clip ≈ 5 frames, so the page carries
+  // roughly 0.4 s) and a thumb swipe on the phone (1.2 s ≈ 15 frames, ≈1.2 s).
+  const bankCeilingClipS = profile.emulate
+    ? SCROLL_BANK_MAX_CLIP_S_TOUCH
+    : SCROLL_BANK_MAX_CLIP_S_WHEEL;
+  // How long the page must still be moving after the input stops for the burst
+  // to count as BANKED rather than dropped. Scaled to the ceiling that applies:
+  // half of it, floored well above the 50 ms sampler grid.
+  const bankCarryMinMs = Math.max(bankCeilingClipS * 1000 * 0.5, 200);
   const rearm = async () => {
     for (let i = 0; i < 200; i += 1) {
       if (await page.evaluate(() => window.__sg.capActive)) return true;
@@ -706,20 +724,22 @@ async function runProfile(browser, profile) {
   const burst = analyse(burstSamples, `${profile.name} burst`, { rateOnly: true });
   failures.push(...burst.failures);
   const tail = motionTail(burstSamples, burstEndMs);
-  if (!(tail.coastMs >= 600)) {
+  if (!(tail.coastMs >= bankCarryMinMs)) {
     failures.push(
       `${profile.name} (bank i): the page stopped ${fmt(tail.coastMs / 1000)} s ` +
-        `after the input did — a flick must still carry`,
+        `after the input did — a flick must still carry (want >= ` +
+        `${fmt(bankCarryMinMs / 1000)} s for a ${bankCeilingClipS} s ceiling)`,
     );
   }
-  // The ceiling is 1.2 s of CLIP, so it is checked in FRAMES; the wall-clock
-  // bound is that same clip span played at the cap plus the ease-out tail.
-  const BANK_CEILING_FRAMES = SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS;
+  // The ceiling is in CLIP seconds, so it is checked in FRAMES; the wall-clock
+  // bound is that same clip span played at the cap plus the ease-out tail
+  // (which is 0 now that the ease is off).
+  const BANK_CEILING_FRAMES = bankCeilingClipS * NATIVE_FPS;
   if (!(tail.movedFrames <= BANK_CEILING_FRAMES + 2)) {
     failures.push(
       `${profile.name} (bank ii): one burst bought ${fmt(tail.movedFrames, 1)} ` +
         `frames, past the ${BANK_CEILING_FRAMES}-frame ` +
-        `(${SCROLL_BANK_MAX_CLIP_S} s of clip) ceiling`,
+        `(${bankCeilingClipS} s of clip) ceiling`,
     );
   }
   const coastCeilingMs =
@@ -742,7 +762,8 @@ async function runProfile(browser, profile) {
       `scrollY ${fmt(burstAt.y, 0)}):\n    ${fmt(askedPx, 0)} px asked in one burst → the page ` +
       `ran ${fmt(tail.coastMs / 1000)} s / ${fmt(tail.movedFrames, 1)} frames / ` +
       `${fmt(tail.movedPx, 0)} px on its own, then stopped (bank ${fmt(bankLeft, 3)} px; ` +
-      `ceiling ${BANK_CEILING_FRAMES} frames = ${fmt(coastCeilingMs / 1000)} s here)`,
+      `${profile.emulate ? "finger" : "trackpad"} ceiling ${bankCeilingClipS} s of ` +
+      `clip = ${BANK_CEILING_FRAMES} frames = ${fmt(coastCeilingMs / 1000)} s here)`,
   );
   report("burst", burst);
   console.log(
@@ -809,12 +830,13 @@ async function runProfile(browser, profile) {
   // ── SINGLE FLICK (touch only) ─────────────────────────────────────────────
   // The phone complaint in one phase. Inside the zone every touchmove is
   // cancelled, so the browser's own fling never runs — the zone synthesizes it
-  // (v × 150 ms) and banks it. One flick must move the page A BIT and STOP:
+  // (v × 300 ms) and banks it. One flick must move the page A BIT and STOP:
   // it may never outrun the clip, it must keep going for a beat after the
   // finger leaves (a flick that dies on touchend reads as a hang), and it must
-  // be over in well under two seconds (the client's "it scrolls by itself for
-  // 2-4 s"). The old caption dwells are gone, so the middle of the zone is the
-  // only place worth measuring: it is the same slope everywhere now.
+  // be over in about 1.2 s — the finger's whole ceiling at the cap, with no
+  // ease-out tail behind it (the client's "it scrolls by itself for 2-4 s").
+  // The old caption dwells are gone, so the middle of the zone is the only
+  // place worth measuring: it is the same slope everywhere now.
   if (profile.emulate) {
     const clipNow = () => page.evaluate(() => window.__sg.clipT);
     for (let i = 0; i < 120; i += 1) {
@@ -866,14 +888,17 @@ async function runProfile(browser, profile) {
           `after touchend — a flick must still carry`,
       );
     }
-    // (b) …and it STOPS. The design bound is 1.2 s of clip at the cap plus the
-    // ease-out tail ≈ 1.75 s; the allowance here adds the 50 ms sampler grid
-    // and CDP's own touchend latency.
-    const FLICK_STOP_MS = 2200;
+    // (b) …and it STOPS. With the ease off there is no tail at all: the design
+    // bound is the finger's whole 1.2 s of clip played at the cap, and nothing
+    // after it. The allowance adds the 50 ms sampler grid and CDP's own
+    // touchend latency.
+    const FLICK_DESIGN_MS = SCROLL_BANK_MAX_CLIP_S_TOUCH * 1000;
+    const FLICK_STOP_MS = 1400;
     if (!(flickTail.coastMs <= FLICK_STOP_MS)) {
       failures.push(
         `${profile.name} (flick ii): the page coasted ${fmt(flickTail.coastMs / 1000)} s ` +
-          `after touchend (design 1.75 s, allowance ${FLICK_STOP_MS / 1000} s)`,
+          `after touchend (design ${fmt(FLICK_DESIGN_MS / 1000)} s, allowance ` +
+          `${FLICK_STOP_MS / 1000} s)`,
       );
     }
     // (c) the hard client rule: no 1 s window of the coast may outrun the clip.
@@ -906,10 +931,11 @@ async function runProfile(browser, profile) {
       );
     }
     // (d) the ceiling, in the unit it is written in.
-    if (!(flickTail.movedFrames <= SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS + 3)) {
+    if (!(flickTail.movedFrames <= SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_FPS + 3)) {
       failures.push(
         `${profile.name} (flick iv): one flick bought ${fmt(flickTail.movedFrames, 1)} ` +
-          `frames, past the ${SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS}-frame ceiling`,
+          `frames, past the ${SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_FPS}-frame ` +
+          `finger ceiling`,
       );
     }
     console.log(
@@ -918,8 +944,9 @@ async function runProfile(browser, profile) {
         `${stroke ? stroke.ms : 0} ms (${fmt(delivered, 2)} px/ms) → the page ran ` +
         `${fmt(flickTail.coastMs / 1000)} s / ${fmt(flickTail.movedFrames, 1)} ` +
         `frames / ${fmt(flickTail.movedPx, 0)} px on its own, then stopped ` +
-        `(fling budget ${TOUCH_FLING_TAU_MS} ms of release velocity, bank ceiling ` +
-        `${SCROLL_BANK_MAX_CLIP_S} s of clip = ${SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS} frames)` +
+        `(fling budget ${TOUCH_FLING_TAU_MS} ms of release velocity, finger bank ` +
+        `ceiling ${SCROLL_BANK_MAX_CLIP_S_TOUCH} s of clip = ` +
+        `${SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_FPS} frames, ease off)` +
         `\n    max 1s-window clip rate during the coast: ` +
         `${fmt(worstFlickRate, 3)} f/s over ${coastSamples.length} samples ` +
         `(cap ${NATIVE_FPS})`,
