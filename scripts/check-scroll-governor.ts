@@ -10,7 +10,10 @@ import {
   VID_FLY_END,
 } from "../src/constants";
 import {
+  CAPTION_KNOT_SPANS,
+  CAPTION_RATE,
   VIDEO_TIME_KNOTS,
+  clipRateFactorAt,
   videoMasterTimeFor,
   videoTimelinePositionFor,
 } from "../src/playback";
@@ -205,22 +208,105 @@ for (const t of [0.85, 0.92, 0.99]) {
   }
 }
 
-// Whole-zone traversal at unlimited demand: the clip's own running time.
+// Whole-zone traversal at unlimited demand: the clip's own running time PLUS
+// the caption windows a second time over, because they are metered at
+// CAPTION_RATE. Everywhere else the ride is still exactly 1x.
+const CAPTION_CLIP_SPAN = CAPTION_KNOT_SPANS.reduce(
+  (sum, [from, to]) =>
+    sum + (VIDEO_TIME_KNOTS[to][1] - VIDEO_TIME_KNOTS[from][1]),
+  0,
+);
+const EXPECTED_TRAVERSAL_S =
+  (1 + CAPTION_CLIP_SPAN * (1 / CAPTION_RATE - 1)) / NATIVE_CLIP_RATE_PER_S;
 {
   let y = bounds.startY;
   let ticks = 0;
-  while (y < bounds.endY - 1e-6 && ticks < 60 * 120) {
+  while (y < bounds.endY - 1e-6 && ticks < 60 * 240) {
     y = capVirtualY(y, y + FLICK_PX_PER_S * TICK_S, TICK_S, IH);
     ticks += 1;
   }
   const seconds = ticks * TICK_S;
   ok(y >= bounds.endY - 1e-6, "the zone is traversable at full demand");
   ok(
-    seconds >= FRAME_SPAN / NATIVE_SCRUB_FPS - 0.1,
-    `full-demand traversal took ${seconds.toFixed(2)} s, below the clip's ` +
-      `${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s`,
+    seconds >= EXPECTED_TRAVERSAL_S - 0.1,
+    `full-demand traversal took ${seconds.toFixed(2)} s, below the expected ` +
+      `${EXPECTED_TRAVERSAL_S.toFixed(2)} s`,
   );
-  ok(seconds <= FRAME_SPAN / NATIVE_SCRUB_FPS + 0.5, "traversal is not slower than the clip");
+  ok(
+    seconds <= EXPECTED_TRAVERSAL_S + 0.5,
+    `full-demand traversal took ${seconds.toFixed(2)} s, past the expected ` +
+      `${EXPECTED_TRAVERSAL_S.toFixed(2)} s`,
+  );
+  // The captions are the whole difference: without them the ride is the clip.
+  ok(
+    seconds > FRAME_SPAN / NATIVE_SCRUB_FPS + 5,
+    "the caption windows visibly lengthen a full-demand ride",
+  );
+}
+
+// ── Caption rate factor ──────────────────────────────────────────────────────
+// Inside the two caption windows a tick may spend only CAPTION_RATE of the
+// clip time it spends anywhere else — in BOTH directions — so the burned-in
+// captions keep moving under a flick but stay slower than the rest of the clip.
+{
+  const spendForward = (t: number) =>
+    videoTimeForY(
+      capVirtualY(
+        scrollYForVideoTime(t, IH),
+        scrollYForVideoTime(t, IH) + FLICK_PX_PER_S,
+        TICK_S,
+        IH,
+      ),
+      IH,
+    ) - t;
+  const spendBackward = (t: number) =>
+    t -
+    videoTimeForY(
+      capVirtualY(
+        scrollYForVideoTime(t, IH),
+        scrollYForVideoTime(t, IH) - FLICK_PX_PER_S,
+        TICK_S,
+        IH,
+      ),
+      IH,
+    );
+  const FULL_TICK_T = NATIVE_CLIP_RATE_PER_S * TICK_S;
+
+  for (const t of [0.05, 0.4, 0.5, 0.9]) {
+    eq(clipRateFactorAt(t), 1, `scenic t=${t} is full rate`);
+    eq(spendForward(t), FULL_TICK_T, `scenic t=${t} spends a whole tick of clip`, 1e-12);
+    eq(spendBackward(t), FULL_TICK_T, `scenic t=${t} rewinds a whole tick of clip`, 1e-12);
+  }
+  for (const [from, to] of CAPTION_KNOT_SPANS) {
+    const t = (VIDEO_TIME_KNOTS[from][1] + VIDEO_TIME_KNOTS[to][1]) / 2;
+    eq(clipRateFactorAt(t), CAPTION_RATE, `caption t=${t} is braked`);
+    eq(
+      spendForward(t),
+      FULL_TICK_T * CAPTION_RATE,
+      `caption t=${t} spends half a tick of clip`,
+      1e-12,
+    );
+    eq(
+      spendBackward(t),
+      FULL_TICK_T * CAPTION_RATE,
+      `caption t=${t} rewinds half a tick of clip`,
+      1e-12,
+    );
+    // The brief's own phrasing: a dwell tick against a scenic tick, same dt.
+    eq(
+      spendForward(t) / spendForward(0.4),
+      CAPTION_RATE,
+      `caption t=${t} advances exactly ${CAPTION_RATE} of a scenic tick`,
+      1e-12,
+    );
+  }
+  // A tick is far smaller than a caption window, so evaluating the factor at
+  // the FROM position can never mis-meter a whole window: 0.2 frames of clip
+  // against the 32- and 57-frame dwells.
+  ok(
+    FULL_TICK_T * FRAME_SPAN < 0.25,
+    "one tick is a fraction of a frame, so the FROM-position factor is safe",
+  );
 }
 
 // Symmetry: rewinding is metered exactly like running forward.
@@ -424,30 +510,65 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
 }
 eq(clampBankPx(Number.NaN, 900, IH), 900, "a non-finite seat passes the bank through");
 
-// Reported for the record: the page speed each authored segment allows.
-const segmentSpeeds: string[] = [];
-for (let segment = 1; segment < VIDEO_TIME_KNOTS.length; segment += 1) {
+// Reported for the record: the page speed each authored segment allows, now
+// that the caption windows are metered at CAPTION_RATE.
+function segmentSpeed(segment: number, height: number): number {
   const [, t0] = VIDEO_TIME_KNOTS[segment - 1];
   const [, t1] = VIDEO_TIME_KNOTS[segment];
-  const y0 = scrollYForVideoTime(t0, IH);
-  const y1 = scrollYForVideoTime(t1, IH);
-  const pxPerSecond = ((y1 - y0) / (t1 - t0)) * NATIVE_CLIP_RATE_PER_S;
-  segmentSpeeds.push(`  segment ${segment} (t ${t0}→${t1}): ${pxPerSecond.toFixed(1)} px/s`);
-}
-{
-  const y0 = scrollYForVideoTime(VIDEO_SPLIT, IH);
-  const pxPerSecond =
-    ((bounds.endY - y0) / (1 - VIDEO_SPLIT)) * NATIVE_CLIP_RATE_PER_S;
-  segmentSpeeds.push(
-    `  video-card tail (t ${VIDEO_SPLIT}→1): ${pxPerSecond.toFixed(1)} px/s`,
+  const y0 = scrollYForVideoTime(t0, height);
+  const y1 = scrollYForVideoTime(t1, height);
+  return (
+    ((y1 - y0) / (t1 - t0)) *
+    NATIVE_CLIP_RATE_PER_S *
+    clipRateFactorAt((t0 + t1) / 2)
   );
 }
 
-console.log("max page speed per knot segment at 390x844:");
-console.log(segmentSpeeds.join("\n"));
+function segmentSpeedLines(height: number): string[] {
+  const lines: string[] = [];
+  for (let segment = 1; segment < VIDEO_TIME_KNOTS.length; segment += 1) {
+    const [, t0] = VIDEO_TIME_KNOTS[segment - 1];
+    const [, t1] = VIDEO_TIME_KNOTS[segment];
+    const factor = clipRateFactorAt((t0 + t1) / 2);
+    lines.push(
+      `  segment ${segment} (t ${t0}→${t1}): ` +
+        `${segmentSpeed(segment, height).toFixed(1)} px/s` +
+        (factor === 1 ? "" : ` [caption, ${factor}x]`),
+    );
+  }
+  const y0 = scrollYForVideoTime(VIDEO_SPLIT, height);
+  const endY = videoGovernorBounds(height).endY;
+  lines.push(
+    `  video-card tail (t ${VIDEO_SPLIT}→1): ` +
+      `${(((endY - y0) / (1 - VIDEO_SPLIT)) * NATIVE_CLIP_RATE_PER_S).toFixed(1)} px/s`,
+  );
+  return lines;
+}
+
+// The caps the client actually feels on a phone, asserted rather than printed.
+ok(
+  Math.abs(segmentSpeed(3, IH) - 329.9) < 1,
+  `caption-1 dwell cap at 844 = ${segmentSpeed(3, IH).toFixed(1)} px/s (want ≈329.9)`,
+);
+ok(
+  Math.abs(segmentSpeed(5, IH) - 327.7) < 1,
+  `caption-2 dwell cap at 844 = ${segmentSpeed(5, IH).toFixed(1)} px/s (want ≈327.7)`,
+);
+ok(
+  Math.abs(segmentSpeed(4, IH) - 70.3) < 1,
+  `scenic cap at 844 = ${segmentSpeed(4, IH).toFixed(1)} px/s (want the unchanged ≈70.3)`,
+);
+
+for (const height of [IH, 1080]) {
+  console.log(`max page speed per knot segment at ${height === IH ? "390x844" : "1080p"}:`);
+  console.log(segmentSpeedLines(height).join("\n"));
+}
 console.log(
   `zone = ${(bounds.endY - bounds.startY).toFixed(1)} px, ` +
-    `min traversal = ${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s`,
+    `clip runtime = ${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s, ` +
+    `min traversal = ${EXPECTED_TRAVERSAL_S.toFixed(2)} s ` +
+    `(captions at ${CAPTION_RATE}x add ` +
+    `${(EXPECTED_TRAVERSAL_S - FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s)`,
 );
 
 // What one flick may buy, in pixels, where the page is slowest (a scenic knot

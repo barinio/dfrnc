@@ -64,6 +64,21 @@ const VIDEO_TIME_KNOTS = [
   [1228.5 / SCROLL_TRACK_VH, 0.786],
   [1, VIDEO_SPLIT],
 ];
+// Mirrored from src/playback.ts: inside the two caption knot spans the clip may
+// only be spent at CAPTION_RATE, so the burned-in text keeps running under a
+// flick but stays slower than the rest of the clip.
+const CAPTION_RATE = 0.5;
+const CAPTION_KNOT_SPANS = [
+  [2, 3],
+  [4, 5],
+];
+const CAPTION_FPS = NATIVE_FPS * CAPTION_RATE;
+const captionWindow = (index) => [
+  VIDEO_TIME_KNOTS[CAPTION_KNOT_SPANS[index][0]][1],
+  VIDEO_TIME_KNOTS[CAPTION_KNOT_SPANS[index][1]][1],
+];
+// Mirrored from src/scrollTimelineController.ts: what a finger release buys.
+const TOUCH_FLING_TAU_MS = 500;
 
 function animTrackClipTimeFor(sp) {
   const s = Math.min(Math.max(sp, VIDEO_START), 1);
@@ -108,6 +123,27 @@ const bounds = (innerHeight) => {
   const videoCardPx = (VIDEO_CARD_TRACK_VH / 100) * innerHeight;
   return { animY, startY: VIDEO_START * animY, endY: animY + videoCardPx };
 };
+
+// Wall seconds it takes to play the clip interval [a, b] AT THE CAP, counting
+// the caption windows at CAPTION_RATE. The bank ceiling is 4 s of CLIP, which is
+// 4 s of wall time through a scenic stretch and up to 8 s through a caption —
+// so any "how long may it coast" bound has to be converted along the path the
+// coast actually took, not assumed to be 1 s of wall per 1 s of clip.
+function wallSecondsForClipSpan(a, b) {
+  let cursor = Math.min(a, b);
+  const hi = Math.max(a, b);
+  let seconds = 0;
+  for (let i = 0; i < CAPTION_KNOT_SPANS.length; i += 1) {
+    const [from, to] = captionWindow(i);
+    const start = Math.max(cursor, from);
+    const end = Math.min(hi, to);
+    if (end <= start) continue;
+    seconds += ((start - cursor) * FRAME_SPAN) / NATIVE_FPS;
+    seconds += ((end - start) * FRAME_SPAN) / CAPTION_FPS;
+    cursor = end;
+  }
+  return seconds + (Math.max(hi - cursor, 0) * FRAME_SPAN) / NATIVE_FPS;
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const fmt = (x, d = 2) => (Number.isFinite(x) ? x.toFixed(d) : String(x));
@@ -268,6 +304,9 @@ function touchDriver(page, cdp, viewport) {
       await sleep(60);
       await send("touchEnd", []);
     },
+    // POSITIONING, never a throw: the finger rests on the glass before it
+    // lifts, so the zone's idle guard queues no synthetic fling and this stays
+    // the fine-grained step it has always been.
     async nudge() {
       const from = Math.round(viewport.height * 0.6);
       await send("touchStart", [{ x, y: from }]);
@@ -275,7 +314,45 @@ function touchDriver(page, cdp, viewport) {
         await send("touchMove", [{ x, y: from - i * 40 }]);
         await sleep(8);
       }
+      await sleep(200);
       await send("touchEnd", []);
+    },
+    // Exactly `px` of finger travel, slowly, with a rest before the lift: the
+    // page must move that far and not one pixel further.
+    async creep(px = 120, steps = 6, stepMs = 50) {
+      const from = Math.round(viewport.height * 0.8);
+      await send("touchStart", [{ x, y: from }]);
+      for (let i = 1; i <= steps; i += 1) {
+        await send("touchMove", [
+          { x, y: Math.round(from - (px * i) / steps) },
+        ]);
+        await sleep(stepMs);
+      }
+      await sleep(200);
+      await send("touchEnd", []);
+      return px;
+    },
+    // One controlled thumb FLICK: `px` of travel in `steps` samples `stepMs`
+    // apart, released while still moving. Pipelined like swipe() — awaiting
+    // each CDP ack would stretch a 250 ms flick over a second and measure the
+    // probe's own round-trip instead of the gesture.
+    async flick(px = 500, steps = 10, stepMs = 8) {
+      const from = Math.round(viewport.height * 0.85);
+      await send("touchStart", [{ x, y: from }]);
+      const startedAt = Date.now();
+      const inFlight = [];
+      for (let i = 1; i <= steps; i += 1) {
+        inFlight.push(
+          send("touchMove", [
+            { x, y: Math.round(from - (px * i) / steps) },
+          ]).catch(() => {}),
+        );
+        if (inFlight.length >= 16) await Promise.all(inFlight.splice(0));
+        await sleep(stepMs);
+      }
+      await Promise.all(inFlight);
+      await send("touchEnd", []);
+      return { px, ms: Date.now() - startedAt };
     },
     // One thumb flick, finger up, then silence: ~0.3 s of swipe used to buy
     // ~20 px of page.
@@ -599,7 +676,13 @@ async function runProfile(browser, profile) {
       movedFrames = Math.abs(last.clipT - base.clipT) * FRAME_SPAN;
       movedPx = Math.abs(last.virtualY - base.virtualY);
     }
-    return { coastMs: lastMoveMs - fromMs, movedFrames, movedPx };
+    return {
+      coastMs: lastMoveMs - fromMs,
+      movedFrames,
+      movedPx,
+      fromT: base ? base.clipT : null,
+      toT: last ? last.clipT : null,
+    };
   };
 
   const waitForRest = async (maxMs = 9000) => {
@@ -649,10 +732,26 @@ async function runProfile(browser, profile) {
         `after the input did — a flick must buy at least 2 s`,
     );
   }
-  if (!(tail.coastMs <= 4500)) {
+  // The ceiling is 4 s of CLIP, so it is checked in FRAMES; the wall-clock
+  // bound is that same clip span played at the cap — which through a caption
+  // window is legitimately twice as long (CAPTION_RATE).
+  const BANK_CEILING_FRAMES = SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS;
+  if (!(tail.movedFrames <= BANK_CEILING_FRAMES + 2)) {
     failures.push(
-      `${profile.name} (bank ii): the page coasted ${fmt(tail.coastMs / 1000)} s, ` +
-        `past the ${SCROLL_BANK_MAX_CLIP_S} s ceiling`,
+      `${profile.name} (bank ii): one burst bought ${fmt(tail.movedFrames, 1)} ` +
+        `frames, past the ${BANK_CEILING_FRAMES}-frame ` +
+        `(${SCROLL_BANK_MAX_CLIP_S} s of clip) ceiling`,
+    );
+  }
+  const coastCeilingMs =
+    tail.fromT === null || tail.toT === null
+      ? 4500
+      : wallSecondsForClipSpan(tail.fromT, tail.toT) * 1000 + 600;
+  if (!(tail.coastMs <= coastCeilingMs)) {
+    failures.push(
+      `${profile.name} (bank ii): the page coasted ${fmt(tail.coastMs / 1000)} s ` +
+        `for ${fmt(tail.movedFrames, 1)} frames of clip (cap ` +
+        `${fmt(coastCeilingMs / 1000)} s at the rate those frames run)`,
     );
   }
   const bankLeft = await page.evaluate(() => window.__sg.bankPx);
@@ -663,7 +762,8 @@ async function runProfile(browser, profile) {
     `  burst then silence (from a scenic stretch: clip t ${fmt(burstAt.t, 3)}, ` +
       `scrollY ${fmt(burstAt.y, 0)}):\n    ${fmt(askedPx, 0)} px asked in one burst → the page ` +
       `ran ${fmt(tail.coastMs / 1000)} s / ${fmt(tail.movedFrames, 1)} frames / ` +
-      `${fmt(tail.movedPx, 0)} px on its own, then stopped (bank ${fmt(bankLeft, 3)} px)`,
+      `${fmt(tail.movedPx, 0)} px on its own, then stopped (bank ${fmt(bankLeft, 3)} px; ` +
+      `ceiling ${BANK_CEILING_FRAMES} frames = ${fmt(coastCeilingMs / 1000)} s here)`,
   );
   report("burst", burst);
   console.log(
@@ -727,6 +827,145 @@ async function runProfile(browser, profile) {
       `${rev.frames} frame(s) after the event landed ` +
       `(${rev.frames !== null && rev.dy < 0 && rev.frames <= 2 ? "PASS" : "FAIL"})`,
   );
+  // ── CAPTION FLICK (touch only) ────────────────────────────────────────────
+  // The phone complaint in one phase. Inside the zone every touchmove is
+  // cancelled, so the browser's own fling never runs and a swipe bought exactly
+  // the finger's travel (~400 px) — and the two caption dwells are 82 % of the
+  // zone's pixels, so that was 0.6 s of clip: five to ten flicks to read one
+  // caption, which the client called a hang. One flick must now COAST for
+  // seconds, and while it coasts the caption must run at CAPTION_RATE — half
+  // the native pace — not at the full 12.5 f/s the dwell's knot slope allows.
+  if (profile.emulate) {
+    const [dwellFrom, dwellTo] = captionWindow(1);
+    const clipNow = () => page.evaluate(() => window.__sg.clipT);
+    // Ride up to the scenic run first, then creep INTO caption 2 so the flick
+    // starts with the whole dwell ahead of it.
+    for (let i = 0; i < 80; i += 1) {
+      if ((await clipNow()) >= 0.45) break;
+      await driver.nudge();
+      await waitForRest();
+    }
+    for (let i = 0; i < 80; i += 1) {
+      if ((await clipNow()) >= dwellFrom + 0.03) break;
+      await driver.creep();
+      await waitForRest();
+    }
+    // (a) ONE flick, then silence. The CDP touch pipeline is only as fast as
+    // the machine: under load a ten-sample stroke can stretch from ~200 ms to
+    // over a second, which is no longer a flick at all and would measure the
+    // probe rather than the page. So the stroke is RETRIED until the velocity
+    // it actually delivered is a real throw, and the probe says so if it never
+    // managed one instead of quietly reporting a pass.
+    const FLICK_PROBE_PX_MS = 0.8; // comfortably above the product's 0.5
+    let flickFrom = 0;
+    let stroke = null;
+    let delivered = 0;
+    let flickEndMs = 0;
+    let captionSamples = [];
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      flickFrom = await clipNow();
+      if (!(flickFrom > dwellFrom && flickFrom < dwellTo - 0.04)) break;
+      await page.evaluate(INSTALL_SAMPLER);
+      stroke = await driver.flick();
+      flickEndMs = await page.evaluate(() => performance.now());
+      delivered = stroke.px / stroke.ms;
+      if (delivered >= FLICK_PROBE_PX_MS) break;
+      await waitForRest();
+    }
+    if (!(flickFrom > dwellFrom && flickFrom < dwellTo)) {
+      failures.push(
+        `${profile.name} (caption): could not seat the flick inside caption 2 ` +
+          `(clip t ${fmt(flickFrom, 3)}, window ${dwellFrom}-${dwellTo})`,
+      );
+    }
+    if (!(delivered >= FLICK_PROBE_PX_MS)) {
+      failures.push(
+        `${profile.name} (caption): the probe never delivered a flick — the ` +
+          `fastest stroke was ${fmt(delivered, 2)} px/ms (need ` +
+          `${FLICK_PROBE_PX_MS}); this measures the CDP pipeline, not the page`,
+      );
+    }
+    // The bank ceiling is 4 s of CLIP, and a caption spends clip at half rate,
+    // so a caption flick may legitimately coast for ~8 s of wall time — the
+    // silence has to outlast that or the measurement is just the window.
+    await sleep(9000);
+    captionSamples = await page.evaluate(() => window.__syncSamples.slice());
+    const captionTail = motionTail(captionSamples, flickEndMs);
+    if (!(captionTail.coastMs >= 2000)) {
+      failures.push(
+        `${profile.name} (caption i): one flick in a caption kept the page ` +
+          `moving only ${fmt(captionTail.coastMs / 1000)} s`,
+      );
+    }
+    // (b) while the clip stays INSIDE the dwell, no 1 s window may exceed the
+    // caption rate. Both endpoints are read from __sg in the same animation
+    // frame as their timestamp, so this window has no painter skew in it.
+    let worstCaptionRate = 0;
+    let worstCaptionSpan = 0;
+    let insideSamples = 0;
+    const inDwell = (s) => s.clipT >= dwellFrom && s.clipT <= dwellTo;
+    for (const s of captionSamples) if (inDwell(s)) insideSamples += 1;
+    for (let j = 1; j < captionSamples.length; j += 1) {
+      if (!inDwell(captionSamples[j])) continue;
+      for (let i = 0; i < j; i += 1) {
+        if (!inDwell(captionSamples[i])) continue;
+        const span = (captionSamples[j].ms - captionSamples[i].ms) / 1000;
+        if (span < 1) continue;
+        const rate =
+          (Math.abs(captionSamples[j].clipT - captionSamples[i].clipT) *
+            FRAME_SPAN) /
+          span;
+        if (rate > worstCaptionRate) {
+          worstCaptionRate = rate;
+          worstCaptionSpan = span;
+        }
+      }
+    }
+    const captionCeiling = CAPTION_FPS + 0.4;
+    if (insideSamples < 20) {
+      failures.push(
+        `${profile.name} (caption ii): only ${insideSamples} samples inside the dwell`,
+      );
+    }
+    if (worstCaptionRate > captionCeiling) {
+      failures.push(
+        `${profile.name} (caption ii): the caption ran ${fmt(worstCaptionRate, 3)} ` +
+          `frames/s over a ${fmt(worstCaptionSpan)} s window (cap ${captionCeiling})`,
+      );
+    }
+    console.log(
+      `  caption flick (clip t ${fmt(flickFrom, 3)}, dwell ${dwellFrom}-${dwellTo}):` +
+        `\n    ${stroke ? stroke.px : 0} px of finger in ` +
+        `${stroke ? stroke.ms : 0} ms (${fmt(delivered, 2)} px/ms) → the page ran ` +
+        `${fmt(captionTail.coastMs / 1000)} s / ${fmt(captionTail.movedFrames, 1)} ` +
+        `frames / ${fmt(captionTail.movedPx, 0)} px on its own ` +
+        `(fling budget ${TOUCH_FLING_TAU_MS} ms of release velocity)` +
+        `\n    max 1s-window clip rate inside the dwell: ` +
+        `${fmt(worstCaptionRate, 3)} f/s over ${insideSamples} samples ` +
+        `(cap ${captionCeiling}, native ${NATIVE_FPS})`,
+    );
+
+    // (c) a SLOW drag is "just a bit": it must move the finger's travel and
+    // stop. No synthetic coast may be attached to it.
+    await waitForRest();
+    const dragBefore = await page.evaluate(() => window.scrollY);
+    await driver.creep(120, 12, 50); // 120 px over 600 ms = 0.2 px/ms
+    await waitForRest();
+    await sleep(600);
+    const dragAfter = await page.evaluate(() => window.scrollY);
+    const dragMoved = dragAfter - dragBefore;
+    if (!(dragMoved <= 125)) {
+      failures.push(
+        `${profile.name} (caption iii): a 120 px drag moved the page ` +
+          `${fmt(dragMoved, 1)} px — a light scroll must not carry on`,
+      );
+    }
+    console.log(
+      `    slow 120 px / 600 ms drag moved the page ${fmt(dragMoved, 1)} px ` +
+        `(want <= 125)`,
+    );
+  }
+
   // Put the page back at the zone's front edge before the flick phases, so they
   // measure the same full-zone ride they always did instead of a shorter one
   // starting wherever the bursts left off.

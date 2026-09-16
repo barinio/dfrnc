@@ -8,6 +8,10 @@
 //   npx tsx scripts/check-scroll-lifecycle.ts
 import {
   BANK_REVERSAL_DEAD_ZONE_PX,
+  TOUCH_BANK_REVERSAL_DEAD_ZONE_PX,
+  TOUCH_FLING_MAX_IDLE_MS,
+  TOUCH_FLING_TAU_MS,
+  TOUCH_FLING_VELOCITY_PX_MS,
   GALLERY_COMMIT_FRAC,
   GALLERY_DRAG_DEAD_ZONE_PX,
   GALLERY_SETTLE_MS,
@@ -32,6 +36,7 @@ import {
   videoGovernorBounds,
   videoTimeForY,
 } from "../src/scrollGovernor";
+import { CAPTION_RATE, clipRateFactorAt } from "../src/playback";
 import { NATIVE_SCRUB_FPS, scrubTargetFrameFor } from "../src/frameScrub";
 import { FRAME_COUNT } from "../src/frames";
 import { galleryStepTargets } from "../src/galleryGestureStepper";
@@ -343,18 +348,24 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
     `a banked flick still advances at most one frame in four ticks (got ${flickFrames.toFixed(3)})`,
   );
 
-  // Sustained maximum input for a full second: still native rate.
+  // Sustained maximum input for a full second: still the clip's own rate —
+  // times the caption factor, and zoneStartY + 1200 px happens to land inside
+  // caption 1's readable window, where the clip runs at CAPTION_RATE.
   const before = frameAt(latest().virtualY);
+  const seatFactor = clipRateFactorAt(videoTimeForY(latest().virtualY, IH));
+  eq(seatFactor, CAPTION_RATE, "this probe sits inside a caption window");
   for (let tick = 0; tick < 60; tick += 1) {
     environment.wheel(4000);
     environment.clock.advance(TICK_MS);
   }
   const advanced = frameAt(latest().virtualY) - before;
+  const seatFps = NATIVE_SCRUB_FPS * seatFactor;
   ok(
-    advanced <= NATIVE_SCRUB_FPS + 1,
-    `one second of 4000 px wheel events advanced ${advanced.toFixed(2)} frames`,
+    advanced <= seatFps + 1,
+    `one second of 4000 px wheel events advanced ${advanced.toFixed(2)} frames ` +
+      `(cap ${seatFps})`,
   );
-  ok(advanced > NATIVE_SCRUB_FPS - 2, "sustained input still runs at the clip's pace");
+  ok(advanced > seatFps - 1, "sustained input still runs at the clip's pace");
 
   // The document FOLLOWS the virtual position (physical write-back).
   ok(environment.scrollToCalls.length > 0, "the soft pin writes back to the document");
@@ -581,6 +592,216 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
   const restY = environment.scrollY;
   environment.clock.advance(TICK_MS * 60);
   eq(environment.scrollY, restY, "the discarded bank does not coast the document");
+  controller.dispose();
+}
+
+// ── A TOUCH FLICK COASTS, and the captions run at half speed ────────────────
+// On a phone the zone kills the browser's own fling (every touchmove is
+// preventDefault-ed) and nothing replaced it, so a swipe bought exactly the
+// finger's travel — ~400 px — while the two caption dwells are 82 % of the
+// zone's pixels: five to ten flicks to read one caption, which the client
+// reported as a hang. A release above TOUCH_FLING_VELOCITY_PX_MS now queues
+// v × TOUCH_FLING_TAU_MS more pixels (Chrome's own fling for 2 px/ms travels
+// ~1500-2000 px; we grant ~1000, and the 4 s bank ceiling bounds it anyway),
+// and inside the caption windows the page pays that out at CAPTION_RATE.
+const DWELL_T = 0.65; // inside caption 2's readable window [0.592, 0.786]
+const DWELL_Y = scrollYForVideoTime(DWELL_T, IH);
+const DWELL_TICK_FRAMES = MAX_TICK_FRAMES * CAPTION_RATE;
+
+// One finger stroke through the capped zone: `steps` touchmoves of `pxPerStep`
+// (positive = the finger travels UP the glass, i.e. the page goes forward),
+// with one clock advance of `stepMs` after each. Returns the finger position.
+function fingerStroke(
+  harness: Harness,
+  steps: number,
+  pxPerStep: number,
+  stepMs: number,
+  fromY = 700,
+): number {
+  const { environment } = harness;
+  environment.touchStart(fromY);
+  let fingerY = fromY;
+  for (let i = 0; i < steps; i += 1) {
+    fingerY -= pxPerStep;
+    environment.touchMove(fingerY);
+    environment.clock.advance(stepMs);
+  }
+  return fingerY;
+}
+
+// How many px the LIFT itself added to the bank: everything else on that tick
+// is the cap spending, which is observable as the move of virtualY.
+function liftFlingPx(harness: Harness, fingerY: number): number {
+  const { environment, latest } = harness;
+  const bankBefore = latest().bankPx;
+  const yBefore = latest().virtualY;
+  environment.touchEnd(fingerY);
+  environment.clock.advance(TICK_MS);
+  return latest().bankPx - bankBefore + (latest().virtualY - yBefore);
+}
+
+// (F1) A real thumb flick inside caption 2: 400 px in 250 ms (≈1.6 px/ms).
+{
+  const harness = createHarness(DWELL_Y);
+  const { environment, latest, controller } = harness;
+  ok(latest().capActive, "the flick starts inside the soft pin");
+  eq(latest().bankPx, 0, "a fresh seat owes nothing");
+
+  const fingerY = fingerStroke(harness, 16, 25, 16); // 400 px over 256 ms
+  const velocity = 25 / 16;
+  ok(
+    velocity >= TOUCH_FLING_VELOCITY_PX_MS,
+    "the probe swipe is above the fling threshold",
+  );
+  const bankBeforeLift = latest().bankPx;
+  ok(bankBeforeLift > 0, "the unpaid finger travel is still owed at the lift");
+  const fling = liftFlingPx(harness, fingerY);
+  const wanted = velocity * TOUCH_FLING_TAU_MS;
+  ok(
+    Math.abs(fling - wanted) <= 40,
+    `the lift queued ${fling.toFixed(1)} px of fling (want ≈${wanted.toFixed(0)})`,
+  );
+
+  const coast = coastToRest(harness);
+  ok(
+    coast.ticks * TICK_MS >= 2000,
+    `the flick coasted only ${(coast.ticks * TICK_MS) / 1000} s with no input`,
+  );
+  ok(
+    coast.worstTickFrames <= DWELL_TICK_FRAMES + 1e-9,
+    `a caption tick advanced ${coast.worstTickFrames.toFixed(4)} frames ` +
+      `(cap ${DWELL_TICK_FRAMES})`,
+  );
+  ok(
+    videoTimeForY(latest().virtualY, IH) < 0.786,
+    "the whole coast stayed inside caption 2",
+  );
+  eq(latest().bankPx, 0, "the flick's bank empties");
+  bankReport.push(
+    `  (F1) 400 px / 250 ms touch flick at t=${DWELL_T}: lift queued ` +
+      `${fling.toFixed(0)} px on top of ${bankBeforeLift.toFixed(0)} px owed, ` +
+      `coasted ${coast.movedPx.toFixed(0)} px / ${coast.movedFrames.toFixed(2)} ` +
+      `frames over ${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s, worst tick ` +
+      `${coast.worstTickFrames.toFixed(4)} frames (cap ${DWELL_TICK_FRAMES})`,
+  );
+  controller.dispose();
+}
+
+// (F2) A SLOW drag is "just a bit" and must move exactly the finger travel and
+// stop — the client explicitly does not want a light scroll to carry on.
+{
+  const harness = createHarness(DWELL_Y);
+  const { latest, controller } = harness;
+  const startY = latest().virtualY;
+  const fingerY = fingerStroke(harness, 12, 10, 50); // 120 px over 600 ms
+  ok(10 / 50 < TOUCH_FLING_VELOCITY_PX_MS, "the probe drag is below the threshold");
+  const fling = liftFlingPx(harness, fingerY);
+  eq(fling, 0, "a slow drag queues no fling", 1e-9);
+  const coast = coastToRest(harness);
+  ok(Math.abs(coast.movedPx) < 1, `the page coasted ${coast.movedPx.toFixed(2)} px after a slow drag`);
+  ok(
+    Math.abs(latest().virtualY - startY - 120) <= 2,
+    `a 120 px drag moved the page ${(latest().virtualY - startY).toFixed(2)} px`,
+  );
+  bankReport.push(
+    `  (F2) 120 px / 600 ms drag at t=${DWELL_T}: no fling, page moved ` +
+      `${(latest().virtualY - startY).toFixed(1)} px and stopped`,
+  );
+  controller.dispose();
+}
+
+// (F3) A finger that PAUSES before lifting is not flicking — it is placing the
+// page. No fling, only the travel it already asked for.
+{
+  const harness = createHarness(DWELL_Y);
+  const { environment, latest, controller } = harness;
+  const fingerY = fingerStroke(harness, 16, 25, 16);
+  environment.clock.advance(150); // the finger rests on the glass
+  ok(150 > TOUCH_FLING_MAX_IDLE_MS, "the probe pause is past the idle guard");
+  const fling = liftFlingPx(harness, fingerY);
+  eq(fling, 0, "a paused finger queues no fling", 1e-9);
+  bankReport.push(
+    `  (F3) 150 ms pause before the lift: fling ${fling.toFixed(2)} px`,
+  );
+  controller.dispose();
+}
+
+// (F4) The reversal dead zone is PER SOURCE. A finger rolls back a few px as it
+// leaves the glass — at 8 px that discarded the whole unpaid remainder of the
+// swipe — so touch gets TOUCH_BANK_REVERSAL_DEAD_ZONE_PX (a deliberate step).
+// The wheel keeps the tight 8 px it always had.
+{
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  environment.touchStart(700);
+  environment.touchMove(300); // 400 px of forward swipe in one sample
+  environment.clock.advance(TICK_MS * 3);
+  const bankBefore = latest().bankPx;
+  ok(bankBefore > 100, "a forward touch bank is pending");
+
+  const yBefore = latest().virtualY;
+  environment.touchMove(312); // the finger rolls back 12 px at the lift
+  environment.clock.advance(TICK_MS);
+  ok(
+    12 < TOUCH_BANK_REVERSAL_DEAD_ZONE_PX && 12 >= BANK_REVERSAL_DEAD_ZONE_PX,
+    "the probe wobble sits between the wheel and touch dead zones",
+  );
+  ok(latest().virtualY > yBefore, "a 12 px touch wobble keeps the page going forward");
+  ok(latest().bankPx > 0, "a 12 px touch wobble keeps the swipe");
+  eq(
+    latest().bankPx,
+    bankBefore - (latest().virtualY - yBefore),
+    "the wobble is IGNORED, not banked against the swipe",
+    1e-9,
+  );
+
+  const yWobble = latest().virtualY;
+  environment.touchMove(342); // a deliberate 30 px step back
+  environment.clock.advance(TICK_MS);
+  ok(latest().virtualY < yWobble, "a 30 px touch step is a real reversal");
+  ok(latest().bankPx < 0, "a real touch reversal takes the bank with it");
+  bankReport.push(
+    `  (F4) touch: -12 px kept a ${bankBefore.toFixed(0)} px bank, -30 px ` +
+      `replaced it (dead zone ${TOUCH_BANK_REVERSAL_DEAD_ZONE_PX} px vs ` +
+      `${BANK_REVERSAL_DEAD_ZONE_PX} px for the wheel)`,
+  );
+  controller.dispose();
+}
+{
+  // The wheel is unchanged: 12 px still reverses it.
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  ok(environment.wheel(1000), "the forward wheel flick is owned");
+  environment.clock.advance(TICK_MS * 3);
+  const yBefore = latest().virtualY;
+  ok(environment.wheel(-12), "the reverse wheel event is owned");
+  environment.clock.advance(TICK_MS);
+  ok(latest().virtualY < yBefore, "-12 px of wheel still reverses (dead zone 8)");
+  ok(latest().bankPx < 0, "the wheel bank follows the reversal");
+  controller.dispose();
+}
+
+// (F5) The caption brake must NOT leak: a scenic stretch still runs at the full
+// 12.5 f/s.
+{
+  const harness = createHarness(SCENIC_Y);
+  const { environment, latest, controller } = harness;
+  ok(environment.wheel(100000), "the scenic flick is owned");
+  environment.clock.advance(TICK_MS);
+  const coast = coastToRest(harness);
+  ok(
+    coast.worstTickFrames <= MAX_TICK_FRAMES + 1e-9,
+    `a scenic tick advanced ${coast.worstTickFrames.toFixed(4)} frames`,
+  );
+  ok(
+    coast.worstTickFrames > DWELL_TICK_FRAMES + 1e-6,
+    `the caption brake leaked into the scenic run ` +
+      `(${coast.worstTickFrames.toFixed(4)} frames/tick)`,
+  );
+  bankReport.push(
+    `  (F5) scenic tick ${coast.worstTickFrames.toFixed(4)} frames vs caption ` +
+      `cap ${DWELL_TICK_FRAMES} — the brake does not leak`,
+  );
   controller.dispose();
 }
 

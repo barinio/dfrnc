@@ -206,6 +206,47 @@ export const VIDEO_TIME_KNOTS: readonly (readonly [number, number])[] = [
   [1, VIDEO_SPLIT], // short scenic tail to the morph point
 ];
 
+// ── Caption rate factor ──────────────────────────────────────────────────────
+// The knots above spend more SCROLL on the captions; this spends more TIME on
+// them. Under a flick the page pays a dwell's extra pixels out at the full
+// 12.5 f/s cap, so the caption still streamed past at 1× — just with more
+// pixels behind it — and the client's note is explicit: the captions must keep
+// running, but "не так швидко, як решта відео". Inside the two caption windows
+// the clip therefore advances at CAPTION_RATE of the native rate (6.25 f/s);
+// everywhere else the factor is 1 and nothing changes.
+//
+// This is a PAGE-SPEED dial only (scrollGovernor.capVirtualY multiplies its
+// per-tick budget by it). The painted-frame chase in VideoPlane still runs at
+// the same NATIVE_SCRUB_FPS — it simply follows a target that now moves at
+// half pace here — and the bank ceiling stays in clip time, so a caption flick
+// may coast about twice as long in WALL seconds for the same 4 s of picture.
+export const CAPTION_RATE = 0.5;
+
+// The caption windows as INDEX PAIRS into VIDEO_TIME_KNOTS, never as literal
+// clip fractions: re-authoring a knot (the readable window was already re-cut
+// once, 2026-07-29) retimes the brake with it instead of leaving a stale
+// 0.139/0.248 behind. [2,3] = caption 1 readable, [4,5] = caption 2 readable.
+export const CAPTION_KNOT_SPANS: readonly (readonly [number, number])[] = [
+  [2, 3],
+  [4, 5],
+];
+
+// Clip-time → how fast clip time itself may be spent there, as a fraction of
+// the native rate. Half-open [from, to): the upper knot is the first instant of
+// the scenic run that follows, so the two windows can never overlap and a
+// position exactly on a boundary belongs to exactly one of them.
+export function clipRateFactorAt(t: number): number {
+  if (!Number.isFinite(t)) return 1;
+  for (let i = 0; i < CAPTION_KNOT_SPANS.length; i += 1) {
+    const [from, to] = CAPTION_KNOT_SPANS[i];
+    const lower = VIDEO_TIME_KNOTS[from];
+    const upper = VIDEO_TIME_KNOTS[to];
+    if (!lower || !upper) continue;
+    if (t >= lower[1] && t < upper[1]) return CAPTION_RATE;
+  }
+  return 1;
+}
+
 function animTrackClipTimeFor(sp: number): number {
   const s = Math.min(Math.max(sp, VIDEO_START), 1);
   for (let i = 1; i < VIDEO_TIME_KNOTS.length; i++) {

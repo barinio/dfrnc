@@ -173,10 +173,12 @@ export const GALLERY_SETTLE_MIN_MS = 120;
 // published progress, so they stay in phase by construction instead of by a
 // per-consumer lag. "Please scroll slower" is enforced, not requested.
 //
-// Excess input is DROPPED, never banked: a banked backlog would keep the page
-// creeping after the finger stopped and, worse, a reversal would first have to
-// pay off the forward debt before anything moved. Dropping means one reverse
-// event lowers sp on the very next tick.
+// Excess input is BANKED (see the bank section of capTick) and paid out at the
+// cap, so a flick buys playback instead of evaporating; a reversal past the
+// per-source dead zone still discards the backlog and answers on the very next
+// tick, so changing your mind is never charged for the direction you left.
+// On touch the zone also has to SYNTHESIZE the fling the browser would have run
+// (see TOUCH_FLING_TAU_MS): preventDefault killed it.
 //
 // How far the requested frame may run ahead of the frame actually PAINTED
 // before the page itself waits (decode backpressure). With the chase running at
@@ -193,6 +195,34 @@ const MAX_QUEUED_DELTA_PX = 1e6;
 // randomly refusing a flick. Anything at or above this is a real reversal and
 // takes effect on the very tick it arrives, backlog and all.
 export const BANK_REVERSAL_DEAD_ZONE_PX = 8;
+// …except from a FINGER, which rolls backwards as it leaves the glass far more
+// than a trackpad's momentum tail flutters: a lift that wobbles 8-20 px the
+// other way is ordinary, and at the wheel's dead zone it threw away the whole
+// unpaid remainder of the swipe — the flick simply stopped dead. Touch therefore
+// reverses only on a DELIBERATE step, the same TOUCH_STEP_PX the pinned gallery
+// already treats as one. A frame that somehow mixed sources uses the larger.
+export const TOUCH_BANK_REVERSAL_DEAD_ZONE_PX = TOUCH_STEP_PX;
+// ── Synthetic touch fling ───────────────────────────────────────────────────
+// Inside the zone every touchmove is preventDefault-ed, so the browser's own
+// fling never happens: a swipe used to buy exactly the finger's travel (~400 px)
+// and stop. The two caption dwells are 82 % of the zone's pixels but only 36 %
+// of its frames, so 400 px there bought ~7.6 frames — 0.6 s of clip — and the
+// client read five-to-ten flicks per caption as a hang. On release the zone now
+// queues the fling the browser would have: velocity x TOUCH_FLING_TAU_MS px.
+//
+// Below this release speed a drag is "just a bit" and must move exactly the
+// finger travel and then stop — the client explicitly does not want a light
+// scroll to carry on. Same number as the gallery pin's flick threshold, which
+// is the same physical gesture judged by the same hand.
+export const TOUCH_FLING_VELOCITY_PX_MS = 0.5;
+// Chrome's native fling for a 2 px/ms release travels roughly 1500-2000 px; this
+// grants ~1000, and the bank's 4 s-of-clip ceiling bounds it from above anyway,
+// so a violent swipe cannot buy more picture than a modest one.
+export const TOUCH_FLING_TAU_MS = 500;
+// A finger that stopped before lifting is PLACING the page, not throwing it, so
+// a stale velocity must not be paid out. (iOS in particular can hold the last
+// touchmove well before touchend.)
+export const TOUCH_FLING_MAX_IDLE_MS = 100;
 // Below this the bank is finished, not "nearly finished": leaving a hundredth
 // of a pixel owed would re-arm the ticker forever and creep the document.
 const BANK_SNAP_PX = 0.01;
@@ -419,7 +449,15 @@ export function createScrollTimelineController(
   // the last tick. bankPx is the standing debt — everything the user has asked
   // for that the cap has not paid out yet (see the bank section of capTick).
   let pendingDeltaPx = 0;
+  // Which input queued this frame's pending px. Only the reversal dead zone
+  // reads it: a finger and a wheel disagree about what counts as jitter.
+  let pendingFromTouch = false;
   let bankPx = 0;
+  // Zone-side finger velocity (px/ms, signed, same EMA as the gallery scrub's).
+  // The gallery keeps its own on a GalleryScrub struct, which the video zone
+  // never allocates — the zone owns the finger before any card exists.
+  let capTouchVelocityPxMs = 0;
+  let capTouchLastMoveAt: number | null = null;
   let capLastTickAt: number | null = null;
   let capEntryGraceUntil = -Infinity;
   let capFrame: number | null = null;
@@ -517,6 +555,7 @@ export function createScrollTimelineController(
     // on the near side has the browser's own momentum: handing either of them a
     // banked debt would move the page after the zone stopped owning it.
     pendingDeltaPx = 0;
+    pendingFromTouch = false;
     bankPx = 0;
     capLastTickAt = null;
     capEntryGraceUntil = -Infinity;
@@ -536,6 +575,7 @@ export function createScrollTimelineController(
     );
     virtualY = seat;
     pendingDeltaPx = 0;
+    pendingFromTouch = false;
     bankPx = 0;
     capActive = true;
     // Seed the tick clock at ENTRY, not at the first frame: a null seed would
@@ -550,8 +590,9 @@ export function createScrollTimelineController(
     publish();
   };
 
-  const queueCapDelta = (px: number) => {
+  const queueCapDelta = (px: number, source: "wheel" | "touch" | "key") => {
     if (!Number.isFinite(px) || px === 0) return;
+    if (source === "touch") pendingFromTouch = true;
     pendingDeltaPx += Math.min(Math.max(px, -MAX_QUEUED_DELTA_PX), MAX_QUEUED_DELTA_PX);
     startCapTicker();
   };
@@ -611,7 +652,9 @@ export function createScrollTimelineController(
     // evaporating (the old behaviour cost the user ~150 wheel notches to cross
     // the zone, because 98.5 px of every 100 px notch was thrown away).
     const incoming = pendingDeltaPx;
+    const incomingFromTouch = pendingFromTouch;
     pendingDeltaPx = 0;
+    pendingFromTouch = false;
     if (
       bankPx !== 0 &&
       incoming !== 0 &&
@@ -620,8 +663,13 @@ export function createScrollTimelineController(
       // Changing direction is not "netting off against the backlog": the user
       // wants to go the other way NOW, so the backlog is dropped and the
       // reverse applies on this very tick. Except for jitter — see
-      // BANK_REVERSAL_DEAD_ZONE_PX — which is ignored outright.
-      if (Math.abs(incoming) >= BANK_REVERSAL_DEAD_ZONE_PX) bankPx = incoming;
+      // BANK_REVERSAL_DEAD_ZONE_PX — which is ignored outright. A FINGER
+      // wobbles much harder than a trackpad tail as it lifts, so touch uses the
+      // wider TOUCH_BANK_REVERSAL_DEAD_ZONE_PX (a mixed frame takes the larger).
+      const deadZone = incomingFromTouch
+        ? TOUCH_BANK_REVERSAL_DEAD_ZONE_PX
+        : BANK_REVERSAL_DEAD_ZONE_PX;
+      if (Math.abs(incoming) >= deadZone) bankPx = incoming;
     } else {
       bankPx += incoming;
     }
@@ -1050,7 +1098,7 @@ export function createScrollTimelineController(
       // Soft pin: the wheel never moves the document directly, it only asks.
       preventDefault(event);
       if (environment.readNow() < capEntryGraceUntil) return;
-      queueCapDelta(delta);
+      queueCapDelta(delta, "wheel");
       return;
     }
     const magnitude = Math.abs(delta);
@@ -1156,6 +1204,8 @@ export function createScrollTimelineController(
     touchStepUsed = false;
     touchStartY = y;
     touchLastY = y;
+    capTouchVelocityPxMs = 0;
+    capTouchLastMoveAt = null;
   };
 
   const onTouchMove: ScrollTimelineEventListener = (event) => {
@@ -1196,7 +1246,21 @@ export function createScrollTimelineController(
 
     preventDefault(event);
     if (capActive) {
-      queueCapDelta(delta);
+      // The zone keeps its own release velocity, on the same EMA the gallery
+      // scrub uses, because there is no GalleryScrub here to hang it on and the
+      // gallery path below is never reached while the soft pin owns the finger.
+      // The first move after touchstart seeds nothing (no previous sample), so
+      // a single stray sample can never read as a throw.
+      const now = environment.readNow();
+      const lastAt = capTouchLastMoveAt;
+      capTouchLastMoveAt = now;
+      if (lastAt !== null) {
+        const dt = Math.max(now - lastAt, 1);
+        capTouchVelocityPxMs =
+          capTouchVelocityPxMs * (1 - VELOCITY_SMOOTHING) +
+          (delta / dt) * VELOCITY_SMOOTHING;
+      }
+      queueCapDelta(delta, "touch");
       return;
     }
     // Everything below scrubs the pinned GALLERY. Ownership can outlive the
@@ -1231,6 +1295,23 @@ export function createScrollTimelineController(
     if (!touchActive) return;
     if (firstTouchY(event) !== null) return;
     if (touchOwned) preventDefault(event);
+    // The fling the browser would have started if the zone had not cancelled
+    // every touchmove. Only for touch, only while the zone owns it, and only
+    // from a finger that was still MOVING when it left the glass.
+    if (capActive && touchOwned) {
+      const idleMs =
+        capTouchLastMoveAt === null
+          ? Number.POSITIVE_INFINITY
+          : environment.readNow() - capTouchLastMoveAt;
+      if (
+        Math.abs(capTouchVelocityPxMs) >= TOUCH_FLING_VELOCITY_PX_MS &&
+        idleMs <= TOUCH_FLING_MAX_IDLE_MS
+      ) {
+        queueCapDelta(capTouchVelocityPxMs * TOUCH_FLING_TAU_MS, "touch");
+      }
+    }
+    capTouchVelocityPxMs = 0;
+    capTouchLastMoveAt = null;
     touchActive = false;
     touchOwned = false;
     touchStepUsed = false;
@@ -1250,7 +1331,7 @@ export function createScrollTimelineController(
 
     if (capActive) {
       preventDefault(event);
-      queueCapDelta(projectedDelta);
+      queueCapDelta(projectedDelta, "key");
       return;
     }
 
@@ -1290,11 +1371,14 @@ export function createScrollTimelineController(
     touchStepUsed = false;
     touchStartY = null;
     touchLastY = null;
+    capTouchVelocityPxMs = 0;
+    capTouchLastMoveAt = null;
     // Queued-but-unspent scroll is abandoned with the gesture — the pending
     // accumulator AND the bank, so a tab that comes back does not finish a
     // swipe the user made before they left — and the tick clock restarts so a
     // backgrounded tab cannot pay out a multi-second dt.
     pendingDeltaPx = 0;
+    pendingFromTouch = false;
     bankPx = 0;
     capLastTickAt = null;
     // Losing focus/visibility mid-gesture: freeze in place — any motion

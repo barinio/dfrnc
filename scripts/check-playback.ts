@@ -17,6 +17,10 @@ import {
   videoMasterTimeFor,
   lottieBleedFor,
   lottiePlaneVisibleFor,
+  CAPTION_KNOT_SPANS,
+  CAPTION_RATE,
+  VIDEO_TIME_KNOTS,
+  clipRateFactorAt,
 } from "../src/playback";
 import { frameIndexFor, frameTierFor, frameUrl, FRAME_COUNT, buildCoarseToFineOrder } from "../src/frames";
 import {
@@ -1021,6 +1025,42 @@ for (const f of FIGURES) {
     eq(videoMasterTimeFor(vh(769.8), 0, "scroll"), 0.248, "caption-1 dwell releases at the camera dive");
     eq(videoMasterTimeFor(vh(843.1), 0, "scroll"), 0.592, "caption-2 dwell starts when the text is readable");
     eq(videoMasterTimeFor(vh(1228.5), 0, "scroll"), 0.786, "caption-2 dwell releases when too close to read");
+  }
+
+  // ── Caption rate factor (the clip itself runs at half speed there) ──────────
+  // The dwells buy the captions more SCROLL distance per clip-second, but under
+  // a flick the page pays that distance out at the full cap, so the caption
+  // still streamed past at 12.5 f/s — only with more pixels spent on it. The
+  // client wants the captions to keep MOVING and to stay slower than the rest
+  // ("не так швидко, як решта відео"), so inside the two caption knot spans the
+  // clip advances at CAPTION_RATE and at 1.0 everywhere else. The windows are
+  // derived from VIDEO_TIME_KNOTS by INDEX: re-authoring a knot retimes the
+  // brake with it instead of leaving a stale literal behind.
+  {
+    eq(CAPTION_RATE, 0.5, "captions run at half the clip rate");
+    eq(CAPTION_KNOT_SPANS.length, 2, "exactly two caption windows");
+    for (const [from, to] of CAPTION_KNOT_SPANS) {
+      const t0 = VIDEO_TIME_KNOTS[from][1];
+      const t1 = VIDEO_TIME_KNOTS[to][1];
+      ok(t1 > t0, `caption span ${from}->${to} is non-empty`);
+      eq(clipRateFactorAt(t0), CAPTION_RATE, `span ${from}->${to}: lower bound is inside`);
+      eq(clipRateFactorAt((t0 + t1) / 2), CAPTION_RATE, `span ${from}->${to}: midpoint is inside`);
+      eq(clipRateFactorAt(t1 - 1e-9), CAPTION_RATE, `span ${from}->${to}: just under the top`);
+      eq(clipRateFactorAt(t0 - 1e-6), 1, `span ${from}->${to}: just below is full rate`);
+      eq(clipRateFactorAt(t1), 1, `span ${from}->${to}: the top bound is already full rate`);
+      eq(clipRateFactorAt(t1 + 1e-6), 1, `span ${from}->${to}: just above is full rate`);
+    }
+    // The authored windows themselves (see VIDEO_TIME_KNOTS): caption 1 is
+    // readable over clip 0.139→0.248, caption 2 over 0.592→0.786.
+    eq(clipRateFactorAt(0.2), CAPTION_RATE, "caption 1 is half rate");
+    eq(clipRateFactorAt(0.65), CAPTION_RATE, "caption 2 is half rate");
+    eq(clipRateFactorAt(0), 1, "the clip start is full rate");
+    eq(clipRateFactorAt(0.05), 1, "the cloud approach is full rate");
+    eq(clipRateFactorAt(0.3), 1, "the bridge→lake scenic run is full rate");
+    eq(clipRateFactorAt(0.5), 1, "mid-scenic is full rate");
+    eq(clipRateFactorAt(0.9), 1, "the post-caption tail is full rate");
+    eq(clipRateFactorAt(1), 1, "the clip end is full rate");
+    eq(clipRateFactorAt(Number.NaN), 1, "a non-finite clip time is full rate");
   }
 
   // imageGalleryProgress: 0 through the morph + hold, opens at IMAGE_GALLERY_START

@@ -5,7 +5,11 @@ import {
   VID_FLY_END,
 } from "./constants";
 import { galleryProgressFrom } from "./gallery";
-import { videoMasterTimeFor, videoTimelinePositionFor } from "./playback";
+import {
+  clipRateFactorAt,
+  videoMasterTimeFor,
+  videoTimelinePositionFor,
+} from "./playback";
 import { NATIVE_CLIP_RATE_PER_S } from "./frameScrub";
 
 export interface TimelineProgress {
@@ -104,8 +108,10 @@ export function videoGovernorBounds(innerHeight: number): {
 // sequence-frames/s the painted chase runs at), then inverts that clip time back
 // through the very same VIDEO_TIME_KNOTS to a scroll position. So the cap is
 // automatically correct at every knot slope — 70 px/s through the scenic
-// stretches, ~660 px/s through the caption dwells — with no per-segment dials,
-// and the published progress can never outrun the picture.
+// stretches, ~328 px/s through the caption dwells (their knot slope would allow
+// ~660, halved by playback's CAPTION_RATE so the burned-in text still reads
+// slower than the rest of the clip) — with no per-segment dials, and the
+// published progress can never outrun the picture.
 //
 // Symmetric: a rewind is capped exactly like a forward run (the clip cannot play
 // backwards faster than it was shot either).
@@ -136,10 +142,18 @@ export function capVirtualY(
   const b = Math.min(Math.max(requestedY, startY), endY);
   if (a === b) return requestedY;
 
+  const t0 = videoTimeForY(a, innerHeight);
+  // The caption windows are metered at CAPTION_RATE of the native rate, so the
+  // burned-in text keeps running under a flick but stays slower than the rest
+  // of the clip. The factor is read at the FROM position: a tick moves at most
+  // NATIVE_CLIP_RATE_PER_S * dt = ~0.2 of a frame, against caption windows 32
+  // and 57 frames long, so a tick can never straddle enough of a window for the
+  // endpoint's factor to matter. (One tick either side of a boundary is metered
+  // by the side it starts on — which is also what keeps the rule symmetric.)
   const budget =
     NATIVE_CLIP_RATE_PER_S *
+    clipRateFactorAt(t0) *
     (Number.isFinite(dtSec) ? Math.max(dtSec, 0) : 0);
-  const t0 = videoTimeForY(a, innerHeight);
   const tRequested = videoTimeForY(b, innerHeight);
   const demand = tRequested - t0;
   if (Math.abs(demand) <= budget) return requestedY;
