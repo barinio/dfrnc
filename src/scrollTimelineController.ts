@@ -1,12 +1,17 @@
 import {
+  BANK_EASE_OUT_CLIP_S,
+  SCROLL_BANK_MAX_CLIP_S,
+  bankClipSeconds,
   capVirtualY,
   clampBankPx,
+  coastRateScale,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
   timelineProgressForY,
   videoGovernorBounds,
   videoTimeForY,
 } from "./scrollGovernor";
+import { SCRUB_DIAL_OVERRIDES, scrubDialsActive } from "./scrubDials";
 import {
   MAX_SCRUB_DELTA_S,
   getLastPaintedScrubFrame,
@@ -205,24 +210,40 @@ export const TOUCH_BANK_REVERSAL_DEAD_ZONE_PX = TOUCH_STEP_PX;
 // ── Synthetic touch fling ───────────────────────────────────────────────────
 // Inside the zone every touchmove is preventDefault-ed, so the browser's own
 // fling never happens: a swipe used to buy exactly the finger's travel (~400 px)
-// and stop. The two caption dwells are 82 % of the zone's pixels but only 36 %
-// of its frames, so 400 px there bought ~7.6 frames — 0.6 s of clip — and the
-// client read five-to-ten flicks per caption as a hang. On release the zone now
-// queues the fling the browser would have: velocity x TOUCH_FLING_TAU_MS px.
+// and stop dead, which on the old caption dwells was 0.6 s of clip — the "hang".
+// On release the zone now queues the fling the browser would have: velocity
+// x TOUCH_FLING_TAU_MS px, banked and paid out at the cap like any other input.
 //
 // Below this release speed a drag is "just a bit" and must move exactly the
 // finger travel and then stop — the client explicitly does not want a light
 // scroll to carry on. Same number as the gallery pin's flick threshold, which
 // is the same physical gesture judged by the same hand.
 export const TOUCH_FLING_VELOCITY_PX_MS = 0.5;
-// Chrome's native fling for a 2 px/ms release travels roughly 1500-2000 px; this
-// grants ~1000, and the bank's 4 s-of-clip ceiling bounds it from above anyway,
-// so a violent swipe cannot buy more picture than a modest one.
-export const TOUCH_FLING_TAU_MS = 500;
+// 2026-09-16 — 500 ms → 150 ms. 500 was modelled on iOS's own long glide and,
+// on top of the 4 s bank, is what the client saw as "the page scrolls by itself
+// for 2-4 s" after every swipe. Android's fling is the reference now: a 2 px/ms
+// release travels ~300 px in ~0.4 s, which is exactly v x 150 ms here. A 1.6
+// px/ms thumb flick buys 240 px, a violent 2.5 px/ms one 375 px — and the bank
+// ceiling (1.2 s of clip ≈ 345 px at 844) tops both of them out, so the page
+// answers a hard swipe and a firm one almost identically.
+export const TOUCH_FLING_TAU_MS = 150;
 // A finger that stopped before lifting is PLACING the page, not throwing it, so
 // a stale velocity must not be paid out. (iOS in particular can hold the last
 // touchmove well before touchend.)
 export const TOUCH_FLING_MAX_IDLE_MS = 100;
+
+// ── The dials as this page actually runs them ───────────────────────────────
+// Defaults are the constants above and in scrollGovernor; `?bank=`, `?fling=`
+// and `?ease=` override them for a phone-testing session (see scrubDials.ts).
+// Resolved ONCE here so there is a single effective value to pass into the pure
+// functions and to publish on window.__sg.
+export const ACTIVE_SCRUB_DIALS = {
+  bankMaxClipS: SCRUB_DIAL_OVERRIDES.bankMaxClipS ?? SCROLL_BANK_MAX_CLIP_S,
+  flingTauMs: SCRUB_DIAL_OVERRIDES.flingTauMs ?? TOUCH_FLING_TAU_MS,
+  easeWindowClipS:
+    SCRUB_DIAL_OVERRIDES.easeWindowClipS ?? BANK_EASE_OUT_CLIP_S,
+  overridden: scrubDialsActive(),
+} as const;
 // Below this the bank is finished, not "nearly finished": leaving a hundredth
 // of a pixel owed would re-arm the ticker forever and creep the document.
 const BANK_SNAP_PX = 0.01;
@@ -458,6 +479,11 @@ export function createScrollTimelineController(
   // never allocates — the zone owns the finger before any card exists.
   let capTouchVelocityPxMs = 0;
   let capTouchLastMoveAt: number | null = null;
+  // When the zone last received ANY input (wheel/touch/key, the synthetic fling
+  // included). The ease-out below only engages once this is INPUT_QUIET_MS old
+  // and no finger is on the glass — i.e. only while the page is coasting on a
+  // gesture that is already over.
+  let capLastInputAt: number | null = null;
   let capLastTickAt: number | null = null;
   let capEntryGraceUntil = -Infinity;
   let capFrame: number | null = null;
@@ -558,6 +584,7 @@ export function createScrollTimelineController(
     pendingFromTouch = false;
     bankPx = 0;
     capLastTickAt = null;
+    capLastInputAt = null;
     capEntryGraceUntil = -Infinity;
     stopCapTicker();
   };
@@ -577,6 +604,7 @@ export function createScrollTimelineController(
     pendingDeltaPx = 0;
     pendingFromTouch = false;
     bankPx = 0;
+    capLastInputAt = null;
     capActive = true;
     // Seed the tick clock at ENTRY, not at the first frame: a null seed would
     // give the first tick dt = 0, which drops the very wheel event that asked
@@ -593,6 +621,7 @@ export function createScrollTimelineController(
   const queueCapDelta = (px: number, source: "wheel" | "touch" | "key") => {
     if (!Number.isFinite(px) || px === 0) return;
     if (source === "touch") pendingFromTouch = true;
+    capLastInputAt = environment.readNow();
     pendingDeltaPx += Math.min(Math.max(px, -MAX_QUEUED_DELTA_PX), MAX_QUEUED_DELTA_PX);
     startCapTicker();
   };
@@ -674,16 +703,39 @@ export function createScrollTimelineController(
       bankPx += incoming;
     }
     // A bank is a debt in CLIP TIME, so its ceiling is too: one gesture may owe
-    // at most SCROLL_BANK_MAX_CLIP_S seconds of playback. At the zone's edges
-    // that horizon runs out of clip and the ceiling lifts, which is what keeps
-    // the seam hand-off and the native hand-back below firing exactly as before.
-    bankPx = clampBankPx(previous, bankPx, innerHeight);
+    // at most ACTIVE_SCRUB_DIALS.bankMaxClipS seconds of playback. At the zone's
+    // edges that horizon runs out of clip and the ceiling lifts, which is what
+    // keeps the seam hand-off and the native hand-back below firing exactly as
+    // before.
+    bankPx = clampBankPx(
+      previous,
+      bankPx,
+      innerHeight,
+      ACTIVE_SCRUB_DIALS.bankMaxClipS,
+    );
     const requested = previous + bankPx;
+
+    // ── Ease-out ───────────────────────────────────────────────────────────
+    // A native fling decelerates; a bank that runs out at the cap stops dead.
+    // So the moment the page is purely COASTING — no finger on the glass and no
+    // input for INPUT_QUIET_MS — the tick budget is scaled by how much clip is
+    // still owed. While the gesture is live the scale is exactly 1: the client
+    // rejected "lag" under the finger in August and nothing here may re-add it.
+    const coasting =
+      !touchActive &&
+      capLastInputAt !== null &&
+      now - capLastInputAt >= INPUT_QUIET_MS;
+    const rateScale = coasting
+      ? coastRateScale(
+          bankClipSeconds(previous, bankPx, innerHeight),
+          ACTIVE_SCRUB_DIALS.easeWindowClipS,
+        )
+      : 1;
 
     let next =
       requested === previous
         ? previous
-        : capVirtualY(previous, requested, dtSec, innerHeight);
+        : capVirtualY(previous, requested, dtSec, innerHeight, rateScale);
     next = finiteScrollY(decodeBackpressuredY(previous, next, now));
 
     // STRICTLY at or past the seam. A boundary-epsilon threshold here would
@@ -1307,7 +1359,10 @@ export function createScrollTimelineController(
         Math.abs(capTouchVelocityPxMs) >= TOUCH_FLING_VELOCITY_PX_MS &&
         idleMs <= TOUCH_FLING_MAX_IDLE_MS
       ) {
-        queueCapDelta(capTouchVelocityPxMs * TOUCH_FLING_TAU_MS, "touch");
+        queueCapDelta(
+          capTouchVelocityPxMs * ACTIVE_SCRUB_DIALS.flingTauMs,
+          "touch",
+        );
       }
     }
     capTouchVelocityPxMs = 0;
@@ -1381,6 +1436,7 @@ export function createScrollTimelineController(
     pendingFromTouch = false;
     bankPx = 0;
     capLastTickAt = null;
+    capLastInputAt = null;
     // Losing focus/visibility mid-gesture: freeze in place — any motion
     // behind the user's back reads as a jump when they come back.
     freezeScrub();

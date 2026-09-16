@@ -6,7 +6,6 @@ import {
 } from "./constants";
 import { galleryProgressFrom } from "./gallery";
 import {
-  clipRateFactorAt,
   videoMasterTimeFor,
   videoTimelinePositionFor,
 } from "./playback";
@@ -107,11 +106,16 @@ export function videoGovernorBounds(innerHeight: number): {
 // clip by at most NATIVE_CLIP_RATE_PER_S per wall second (= the same 12.5
 // sequence-frames/s the painted chase runs at), then inverts that clip time back
 // through the very same VIDEO_TIME_KNOTS to a scroll position. So the cap is
-// automatically correct at every knot slope — 70 px/s through the scenic
-// stretches, ~328 px/s through the caption dwells (their knot slope would allow
-// ~660, halved by playback's CAPTION_RATE so the burned-in text still reads
-// slower than the rest of the clip) — with no per-segment dials, and the
-// published progress can never outrun the picture.
+// automatically correct at every knot slope — and since 2026-09-16 there is
+// only ONE slope: the uniform ramp gives ≈289 px/s of page at innerHeight 844
+// and ≈370 px/s at 1080, everywhere inside the anim track, plus ≈314 px/s on
+// the video-card tail. The published progress can never outrun the picture.
+//
+// `rateScale` is the one caller-supplied modifier: the controller passes < 1
+// while the page is COASTING on a spent gesture (see coastRateScale) so a flick
+// eases out the way a native fling does instead of stopping at full speed. It
+// is 1 — untouched — while a finger is down or input is fresh, because the
+// client rejected any lag under the finger.
 //
 // Symmetric: a rewind is capped exactly like a forward run (the clip cannot play
 // backwards faster than it was shot either).
@@ -127,6 +131,7 @@ export function capVirtualY(
   requestedY: number,
   dtSec: number,
   innerHeight: number,
+  rateScale = 1,
 ): number {
   if (!Number.isFinite(requestedY)) return Number.isFinite(fromY) ? fromY : 0;
   if (!Number.isFinite(fromY)) return requestedY;
@@ -143,16 +148,11 @@ export function capVirtualY(
   if (a === b) return requestedY;
 
   const t0 = videoTimeForY(a, innerHeight);
-  // The caption windows are metered at CAPTION_RATE of the native rate, so the
-  // burned-in text keeps running under a flick but stays slower than the rest
-  // of the clip. The factor is read at the FROM position: a tick moves at most
-  // NATIVE_CLIP_RATE_PER_S * dt = ~0.2 of a frame, against caption windows 32
-  // and 57 frames long, so a tick can never straddle enough of a window for the
-  // endpoint's factor to matter. (One tick either side of a boundary is metered
-  // by the side it starts on — which is also what keeps the rule symmetric.)
+  const scale =
+    Number.isFinite(rateScale) ? Math.min(Math.max(rateScale, 0), 1) : 1;
   const budget =
     NATIVE_CLIP_RATE_PER_S *
-    clipRateFactorAt(t0) *
+    scale *
     (Number.isFinite(dtSec) ? Math.max(dtSec, 0) : 0);
   const tRequested = videoTimeForY(b, innerHeight);
   const demand = tRequested - t0;
@@ -171,29 +171,79 @@ export function capVirtualY(
 // cranking (and on a phone a 0.3 s swipe bought ~20 px). The controller now
 // BANKS the remainder and keeps paying it out at the cap after the input stops.
 //
-// How much playback one flick may buy. In CLIP SECONDS, not pixels, for exactly
-// the reason the cap is: a scenic stretch (70 px/s at 844) and a caption dwell
-// (660 px/s) owe the viewer the same four seconds of PICTURE, not the same
-// number of pixels. The client's spec is untouched by it — the bank only
-// changes how long the page keeps moving, never how fast (never above 1×).
-export const SCROLL_BANK_MAX_CLIP_S = 4;
+// How much playback one flick may buy. In CLIP SECONDS, not pixels, because
+// that is the unit the cap is in.
+//
+// 2026-09-16 — 4 s → 1.2 s: "a flick moves a bit and stops". A native Android
+// fling coasts ~0.4–1.1 s, and 4 s of clip (plus the old caption half-rate,
+// which doubled it in WALL seconds) is what the client saw as the page
+// scrolling by itself for 2–4 s after every swipe. 1.2 s of clip is 15 frames
+// ≈ 345 px at innerHeight 844 — a 400 px finger swipe is worth ~1.4 s of clip
+// here, so most of it is paid DURING the gesture and just after it, and the
+// remainder is dropped rather than replayed at the user.
+export const SCROLL_BANK_MAX_CLIP_S = 1.2;
 
-// Ceiling for a signed bank held at `virtualY`, in pixels. Unbounded on a side
-// whose 4 s horizon has run past the end of the clip: that is what preserves
-// today's edge semantics exactly — the residue passes free, so capTick's
-// `next >= seamY` hand-off to the pinned gallery and its `next < zoneStartY`
-// hand-back to native scrolling both still fire on the very same tick they do
-// now, instead of being fenced in one horizon short of the edge.
-export function clampBankPx(
+// ── Coast ease-out ──────────────────────────────────────────────────────────
+// A bank that runs out at full speed stops DEAD, which is the one thing no
+// native fling does. So while the page is coasting — nothing under the finger,
+// no input for INPUT_QUIET_MS — the controller scales the per-tick budget by
+// how much clip is still owed: full rate until the last BANK_EASE_OUT_CLIP_S
+// of it, then proportionally down to BANK_EASE_OUT_FLOOR, which keeps the tail
+// finite instead of asymptotic. Smoothing the INPUT, never the pixels: no frame
+// is ever blended, the clip simply arrives a little slower at the very end.
+export const BANK_EASE_OUT_CLIP_S = 0.3;
+export const BANK_EASE_OUT_FLOOR = 0.15;
+
+// Seconds of clip still owed → the fraction of the cap this tick may spend.
+// Pure, so the deceleration curve is a unit test and not a screen recording.
+export function coastRateScale(
+  bankClipS: number,
+  windowClipS = BANK_EASE_OUT_CLIP_S,
+  floor = BANK_EASE_OUT_FLOOR,
+): number {
+  if (!Number.isFinite(bankClipS)) return 1;
+  if (!Number.isFinite(windowClipS) || windowClipS <= 0) return 1;
+  const owed = Math.abs(bankClipS);
+  return Math.min(Math.max(owed / windowClipS, floor), 1);
+}
+
+// The standing debt expressed in the unit the ease-out reasons about: seconds
+// of CLIP still owed, i.e. how long the page would keep moving at the cap.
+// Pixels would be the wrong unit — the same 300 px is a different amount of
+// picture on the anim track and on the video-card tail.
+export function bankClipSeconds(
   virtualY: number,
   bankPx: number,
   innerHeight: number,
 ): number {
+  if (!Number.isFinite(bankPx) || bankPx === 0) return 0;
+  if (!Number.isFinite(virtualY)) return 0;
+  if (!validHeight(innerHeight)) return 0;
+  const from = videoTimeForY(virtualY, innerHeight);
+  const to = videoTimeForY(virtualY + bankPx, innerHeight);
+  return Math.abs(to - from) / NATIVE_CLIP_RATE_PER_S;
+}
+
+// Ceiling for a signed bank held at `virtualY`, in pixels. Unbounded on a side
+// whose horizon has run past the end of the clip: that is what preserves
+// today's edge semantics exactly — the residue passes free, so capTick's
+// `next >= seamY` hand-off to the pinned gallery and its `next < zoneStartY`
+// hand-back to native scrolling both still fire on the very same tick they do
+// now, instead of being fenced in one horizon short of the edge.
+// `maxClipS` is a parameter so the URL dial (?bank=) can move it without this
+// module knowing anything about the page it runs in.
+export function clampBankPx(
+  virtualY: number,
+  bankPx: number,
+  innerHeight: number,
+  maxClipS = SCROLL_BANK_MAX_CLIP_S,
+): number {
   if (!Number.isFinite(bankPx) || bankPx === 0) return bankPx;
   if (!Number.isFinite(virtualY)) return bankPx;
   if (!validHeight(innerHeight)) return bankPx;
+  if (!Number.isFinite(maxClipS) || maxClipS < 0) return bankPx;
 
-  const budget = SCROLL_BANK_MAX_CLIP_S * NATIVE_CLIP_RATE_PER_S;
+  const budget = maxClipS * NATIVE_CLIP_RATE_PER_S;
   const t = videoTimeForY(virtualY, innerHeight);
 
   if (bankPx > 0) {

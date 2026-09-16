@@ -53,32 +53,28 @@ const FRAME_SPAN = FRAME_COUNT - 1;
 const NATIVE_FPS = 12.5;
 // Mirrored from src/scrollGovernor.ts / src/scrollTimelineController.ts: how
 // much playback one flick may bank, and how long the zone absorbs a crossing.
-const SCROLL_BANK_MAX_CLIP_S = 4;
+const SCROLL_BANK_MAX_CLIP_S = 1.2;
 const WHEEL_ENTRY_GRACE_MS = 250;
+// UNIFORM since 2026-09-16: two knots, one linear ramp over the anim track.
+// The five caption-dwell knots are gone — under the 12.5 f/s cap the captions
+// could not be fast-forwarded anyway, and their 9x slope contrast was what made
+// one flick worth 5.7 s of clip in one place and 0.6 s in another.
 const VIDEO_TIME_KNOTS = [
   [VIDEO_START, 0],
-  [545.6 / SCROLL_TRACK_VH, 0.11],
-  [551.8 / SCROLL_TRACK_VH, 0.139],
-  [769.8 / SCROLL_TRACK_VH, 0.248],
-  [843.1 / SCROLL_TRACK_VH, 0.592],
-  [1228.5 / SCROLL_TRACK_VH, 0.786],
   [1, VIDEO_SPLIT],
 ];
-// Mirrored from src/playback.ts: inside the two caption knot spans the clip may
-// only be spent at CAPTION_RATE, so the burned-in text keeps running under a
-// flick but stays slower than the rest of the clip.
-const CAPTION_RATE = 0.5;
-const CAPTION_KNOT_SPANS = [
-  [2, 3],
-  [4, 5],
-];
-const CAPTION_FPS = NATIVE_FPS * CAPTION_RATE;
-const captionWindow = (index) => [
-  VIDEO_TIME_KNOTS[CAPTION_KNOT_SPANS[index][0]][1],
-  VIDEO_TIME_KNOTS[CAPTION_KNOT_SPANS[index][1]][1],
-];
 // Mirrored from src/scrollTimelineController.ts: what a finger release buys.
-const TOUCH_FLING_TAU_MS = 500;
+const TOUCH_FLING_TAU_MS = 150;
+// Mirrored from src/scrollGovernor.ts: the coast's ease-out. 1.2 s of clip runs
+// at the cap until the last 0.3 s of it, which is paid out on a ramp down to a
+// 0.15x floor — about 0.87 s of wall time instead of 0.3 s. Any "how long may
+// it coast" bound has to allow for that tail.
+const BANK_EASE_OUT_CLIP_S = 0.3;
+const BANK_EASE_OUT_FLOOR = 0.15;
+// ramp W→W·floor takes W·ln(1/floor); the floor phase then spends W·floor of
+// clip at floor rate, i.e. exactly W of wall — so the whole excess is the ramp.
+const EASE_TAIL_EXCESS_MS =
+  BANK_EASE_OUT_CLIP_S * Math.log(1 / BANK_EASE_OUT_FLOOR) * 1000;
 
 function animTrackClipTimeFor(sp) {
   const s = Math.min(Math.max(sp, VIDEO_START), 1);
@@ -124,25 +120,11 @@ const bounds = (innerHeight) => {
   return { animY, startY: VIDEO_START * animY, endY: animY + videoCardPx };
 };
 
-// Wall seconds it takes to play the clip interval [a, b] AT THE CAP, counting
-// the caption windows at CAPTION_RATE. The bank ceiling is 4 s of CLIP, which is
-// 4 s of wall time through a scenic stretch and up to 8 s through a caption —
-// so any "how long may it coast" bound has to be converted along the path the
-// coast actually took, not assumed to be 1 s of wall per 1 s of clip.
+// Wall seconds it takes to play the clip interval [a, b] AT THE CAP. One rate
+// everywhere now, so this is a straight conversion — plus the ease-out tail,
+// which spends the last 0.3 s of clip over ~0.87 s of wall time.
 function wallSecondsForClipSpan(a, b) {
-  let cursor = Math.min(a, b);
-  const hi = Math.max(a, b);
-  let seconds = 0;
-  for (let i = 0; i < CAPTION_KNOT_SPANS.length; i += 1) {
-    const [from, to] = captionWindow(i);
-    const start = Math.max(cursor, from);
-    const end = Math.min(hi, to);
-    if (end <= start) continue;
-    seconds += ((start - cursor) * FRAME_SPAN) / NATIVE_FPS;
-    seconds += ((end - start) * FRAME_SPAN) / CAPTION_FPS;
-    cursor = end;
-  }
-  return seconds + (Math.max(hi - cursor, 0) * FRAME_SPAN) / NATIVE_FPS;
+  return (Math.abs(b - a) * FRAME_SPAN) / NATIVE_FPS + EASE_TAIL_EXCESS_MS / 1000;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -701,11 +683,9 @@ async function runProfile(browser, profile) {
     failures.push(`${profile.name} (bank): the zone never re-took ownership`);
   }
   await sleep(WHEEL_ENTRY_GRACE_MS + 250);
-  // Ride to a SCENIC stretch first. That is where the client's complaint lives —
-  // 70 px/s of page, so a 100 px notch used to buy about 1.5 px — and where a
-  // flick is worth seconds of clip. Through a caption DWELL the page legitimately
-  // covers 660 px/s, so the same flick is worth a fraction of a second there and
-  // measuring the bank in one would say nothing.
+  // Ride into the middle of the zone. Every part of it runs at the same
+  // ~289 px/s now, so one place is as good as another — this one just leaves
+  // room on both sides for the coast and the reversal probe below.
   for (let i = 0; i < 300; i += 1) {
     if ((await page.evaluate(() => window.__sg.clipT)) >= 0.26) break;
     await driver.nudge();
@@ -721,20 +701,19 @@ async function runProfile(browser, profile) {
   await page.evaluate(INSTALL_SAMPLER);
   const askedPx = await driver.burst();
   const burstEndMs = await page.evaluate(() => performance.now());
-  await sleep(6000); // pure silence, still sampling
+  await sleep(4500); // pure silence, still sampling
   const burstSamples = await page.evaluate(() => window.__syncSamples.slice());
   const burst = analyse(burstSamples, `${profile.name} burst`, { rateOnly: true });
   failures.push(...burst.failures);
   const tail = motionTail(burstSamples, burstEndMs);
-  if (!(tail.coastMs >= 2000)) {
+  if (!(tail.coastMs >= 600)) {
     failures.push(
       `${profile.name} (bank i): the page stopped ${fmt(tail.coastMs / 1000)} s ` +
-        `after the input did — a flick must buy at least 2 s`,
+        `after the input did — a flick must still carry`,
     );
   }
-  // The ceiling is 4 s of CLIP, so it is checked in FRAMES; the wall-clock
-  // bound is that same clip span played at the cap — which through a caption
-  // window is legitimately twice as long (CAPTION_RATE).
+  // The ceiling is 1.2 s of CLIP, so it is checked in FRAMES; the wall-clock
+  // bound is that same clip span played at the cap plus the ease-out tail.
   const BANK_CEILING_FRAMES = SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS;
   if (!(tail.movedFrames <= BANK_CEILING_FRAMES + 2)) {
     failures.push(
@@ -745,7 +724,7 @@ async function runProfile(browser, profile) {
   }
   const coastCeilingMs =
     tail.fromT === null || tail.toT === null
-      ? 4500
+      ? 2600
       : wallSecondsForClipSpan(tail.fromT, tail.toT) * 1000 + 600;
   if (!(tail.coastMs <= coastCeilingMs)) {
     failures.push(
@@ -827,125 +806,126 @@ async function runProfile(browser, profile) {
       `${rev.frames} frame(s) after the event landed ` +
       `(${rev.frames !== null && rev.dy < 0 && rev.frames <= 2 ? "PASS" : "FAIL"})`,
   );
-  // ── CAPTION FLICK (touch only) ────────────────────────────────────────────
+  // ── SINGLE FLICK (touch only) ─────────────────────────────────────────────
   // The phone complaint in one phase. Inside the zone every touchmove is
-  // cancelled, so the browser's own fling never runs and a swipe bought exactly
-  // the finger's travel (~400 px) — and the two caption dwells are 82 % of the
-  // zone's pixels, so that was 0.6 s of clip: five to ten flicks to read one
-  // caption, which the client called a hang. One flick must now COAST for
-  // seconds, and while it coasts the caption must run at CAPTION_RATE — half
-  // the native pace — not at the full 12.5 f/s the dwell's knot slope allows.
+  // cancelled, so the browser's own fling never runs — the zone synthesizes it
+  // (v × 150 ms) and banks it. One flick must move the page A BIT and STOP:
+  // it may never outrun the clip, it must keep going for a beat after the
+  // finger leaves (a flick that dies on touchend reads as a hang), and it must
+  // be over in well under two seconds (the client's "it scrolls by itself for
+  // 2-4 s"). The old caption dwells are gone, so the middle of the zone is the
+  // only place worth measuring: it is the same slope everywhere now.
   if (profile.emulate) {
-    const [dwellFrom, dwellTo] = captionWindow(1);
     const clipNow = () => page.evaluate(() => window.__sg.clipT);
-    // Ride up to the scenic run first, then creep INTO caption 2 so the flick
-    // starts with the whole dwell ahead of it.
-    for (let i = 0; i < 80; i += 1) {
+    for (let i = 0; i < 120; i += 1) {
       if ((await clipNow()) >= 0.45) break;
       await driver.nudge();
       await waitForRest();
     }
-    for (let i = 0; i < 80; i += 1) {
-      if ((await clipNow()) >= dwellFrom + 0.03) break;
-      await driver.creep();
-      await waitForRest();
-    }
-    // (a) ONE flick, then silence. The CDP touch pipeline is only as fast as
-    // the machine: under load a ten-sample stroke can stretch from ~200 ms to
-    // over a second, which is no longer a flick at all and would measure the
-    // probe rather than the page. So the stroke is RETRIED until the velocity
-    // it actually delivered is a real throw, and the probe says so if it never
-    // managed one instead of quietly reporting a pass.
+    // The CDP touch pipeline is only as fast as the machine: under load a
+    // ten-sample stroke can stretch from ~200 ms to over a second, which is no
+    // longer a flick at all and would measure the probe rather than the page.
+    // So the stroke is RETRIED until the velocity it actually delivered is a
+    // real throw, and the probe says so if it never managed one.
     const FLICK_PROBE_PX_MS = 0.8; // comfortably above the product's 0.5
     let flickFrom = 0;
     let stroke = null;
     let delivered = 0;
     let flickEndMs = 0;
-    let captionSamples = [];
+    let flickSamples = [];
     for (let attempt = 0; attempt < 6; attempt += 1) {
+      await waitForRest();
       flickFrom = await clipNow();
-      if (!(flickFrom > dwellFrom && flickFrom < dwellTo - 0.04)) break;
+      if (!(flickFrom > 0.35 && flickFrom < 0.75)) break;
       await page.evaluate(INSTALL_SAMPLER);
-      stroke = await driver.flick();
+      stroke = await driver.flick(400, 10, 8);
       flickEndMs = await page.evaluate(() => performance.now());
       delivered = stroke.px / stroke.ms;
       if (delivered >= FLICK_PROBE_PX_MS) break;
-      await waitForRest();
     }
-    if (!(flickFrom > dwellFrom && flickFrom < dwellTo)) {
+    if (!(flickFrom > 0.35 && flickFrom < 0.75)) {
       failures.push(
-        `${profile.name} (caption): could not seat the flick inside caption 2 ` +
-          `(clip t ${fmt(flickFrom, 3)}, window ${dwellFrom}-${dwellTo})`,
+        `${profile.name} (flick): could not seat the flick mid-zone ` +
+          `(clip t ${fmt(flickFrom, 3)})`,
       );
     }
     if (!(delivered >= FLICK_PROBE_PX_MS)) {
       failures.push(
-        `${profile.name} (caption): the probe never delivered a flick — the ` +
+        `${profile.name} (flick): the probe never delivered a flick — the ` +
           `fastest stroke was ${fmt(delivered, 2)} px/ms (need ` +
           `${FLICK_PROBE_PX_MS}); this measures the CDP pipeline, not the page`,
       );
     }
-    // The bank ceiling is 4 s of CLIP, and a caption spends clip at half rate,
-    // so a caption flick may legitimately coast for ~8 s of wall time — the
-    // silence has to outlast that or the measurement is just the window.
-    await sleep(9000);
-    captionSamples = await page.evaluate(() => window.__syncSamples.slice());
-    const captionTail = motionTail(captionSamples, flickEndMs);
-    if (!(captionTail.coastMs >= 2000)) {
+    await sleep(4500); // silence, still sampling — the coast must end inside it
+    flickSamples = await page.evaluate(() => window.__syncSamples.slice());
+    const flickTail = motionTail(flickSamples, flickEndMs);
+    // (a) it keeps going after the finger leaves…
+    if (!(flickTail.coastMs >= 600)) {
       failures.push(
-        `${profile.name} (caption i): one flick in a caption kept the page ` +
-          `moving only ${fmt(captionTail.coastMs / 1000)} s`,
+        `${profile.name} (flick i): the page stopped ${fmt(flickTail.coastMs / 1000)} s ` +
+          `after touchend — a flick must still carry`,
       );
     }
-    // (b) while the clip stays INSIDE the dwell, no 1 s window may exceed the
-    // caption rate. Both endpoints are read from __sg in the same animation
-    // frame as their timestamp, so this window has no painter skew in it.
-    let worstCaptionRate = 0;
-    let worstCaptionSpan = 0;
-    let insideSamples = 0;
-    const inDwell = (s) => s.clipT >= dwellFrom && s.clipT <= dwellTo;
-    for (const s of captionSamples) if (inDwell(s)) insideSamples += 1;
-    for (let j = 1; j < captionSamples.length; j += 1) {
-      if (!inDwell(captionSamples[j])) continue;
+    // (b) …and it STOPS. The design bound is 1.2 s of clip at the cap plus the
+    // ease-out tail ≈ 1.75 s; the allowance here adds the 50 ms sampler grid
+    // and CDP's own touchend latency.
+    const FLICK_STOP_MS = 2200;
+    if (!(flickTail.coastMs <= FLICK_STOP_MS)) {
+      failures.push(
+        `${profile.name} (flick ii): the page coasted ${fmt(flickTail.coastMs / 1000)} s ` +
+          `after touchend (design 1.75 s, allowance ${FLICK_STOP_MS / 1000} s)`,
+      );
+    }
+    // (c) the hard client rule: no 1 s window of the coast may outrun the clip.
+    let worstFlickRate = 0;
+    let worstFlickSpan = 0;
+    const from = flickSamples.findIndex((s) => s.ms >= flickEndMs);
+    const coastSamples = from >= 0 ? flickSamples.slice(from) : [];
+    for (let j = 1; j < coastSamples.length; j += 1) {
       for (let i = 0; i < j; i += 1) {
-        if (!inDwell(captionSamples[i])) continue;
-        const span = (captionSamples[j].ms - captionSamples[i].ms) / 1000;
+        const span = (coastSamples[j].ms - coastSamples[i].ms) / 1000;
         if (span < 1) continue;
         const rate =
-          (Math.abs(captionSamples[j].clipT - captionSamples[i].clipT) *
-            FRAME_SPAN) /
+          (Math.abs(coastSamples[j].clipT - coastSamples[i].clipT) * FRAME_SPAN) /
           span;
-        if (rate > worstCaptionRate) {
-          worstCaptionRate = rate;
-          worstCaptionSpan = span;
+        if (rate > worstFlickRate) {
+          worstFlickRate = rate;
+          worstFlickSpan = span;
         }
       }
     }
-    const captionCeiling = CAPTION_FPS + 0.4;
-    if (insideSamples < 20) {
+    if (coastSamples.length < 20) {
       failures.push(
-        `${profile.name} (caption ii): only ${insideSamples} samples inside the dwell`,
+        `${profile.name} (flick iii): only ${coastSamples.length} samples of coast`,
       );
     }
-    if (worstCaptionRate > captionCeiling) {
+    if (worstFlickRate > NATIVE_FPS + 0.4) {
       failures.push(
-        `${profile.name} (caption ii): the caption ran ${fmt(worstCaptionRate, 3)} ` +
-          `frames/s over a ${fmt(worstCaptionSpan)} s window (cap ${captionCeiling})`,
+        `${profile.name} (flick iii): the coast ran ${fmt(worstFlickRate, 3)} ` +
+          `frames/s over a ${fmt(worstFlickSpan)} s window (cap ${NATIVE_FPS})`,
+      );
+    }
+    // (d) the ceiling, in the unit it is written in.
+    if (!(flickTail.movedFrames <= SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS + 3)) {
+      failures.push(
+        `${profile.name} (flick iv): one flick bought ${fmt(flickTail.movedFrames, 1)} ` +
+          `frames, past the ${SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS}-frame ceiling`,
       );
     }
     console.log(
-      `  caption flick (clip t ${fmt(flickFrom, 3)}, dwell ${dwellFrom}-${dwellTo}):` +
+      `  single flick (clip t ${fmt(flickFrom, 3)}, mid-zone):` +
         `\n    ${stroke ? stroke.px : 0} px of finger in ` +
         `${stroke ? stroke.ms : 0} ms (${fmt(delivered, 2)} px/ms) → the page ran ` +
-        `${fmt(captionTail.coastMs / 1000)} s / ${fmt(captionTail.movedFrames, 1)} ` +
-        `frames / ${fmt(captionTail.movedPx, 0)} px on its own ` +
-        `(fling budget ${TOUCH_FLING_TAU_MS} ms of release velocity)` +
-        `\n    max 1s-window clip rate inside the dwell: ` +
-        `${fmt(worstCaptionRate, 3)} f/s over ${insideSamples} samples ` +
-        `(cap ${captionCeiling}, native ${NATIVE_FPS})`,
+        `${fmt(flickTail.coastMs / 1000)} s / ${fmt(flickTail.movedFrames, 1)} ` +
+        `frames / ${fmt(flickTail.movedPx, 0)} px on its own, then stopped ` +
+        `(fling budget ${TOUCH_FLING_TAU_MS} ms of release velocity, bank ceiling ` +
+        `${SCROLL_BANK_MAX_CLIP_S} s of clip = ${SCROLL_BANK_MAX_CLIP_S * NATIVE_FPS} frames)` +
+        `\n    max 1s-window clip rate during the coast: ` +
+        `${fmt(worstFlickRate, 3)} f/s over ${coastSamples.length} samples ` +
+        `(cap ${NATIVE_FPS})`,
     );
 
-    // (c) a SLOW drag is "just a bit": it must move the finger's travel and
+    // (e) a SLOW drag is "just a bit": it must move the finger's travel and
     // stop. No synthetic coast may be attached to it.
     await waitForRest();
     const dragBefore = await page.evaluate(() => window.scrollY);
@@ -956,7 +936,7 @@ async function runProfile(browser, profile) {
     const dragMoved = dragAfter - dragBefore;
     if (!(dragMoved <= 125)) {
       failures.push(
-        `${profile.name} (caption iii): a 120 px drag moved the page ` +
+        `${profile.name} (flick v): a 120 px drag moved the page ` +
           `${fmt(dragMoved, 1)} px — a light scroll must not carry on`,
       );
     }
@@ -988,6 +968,14 @@ async function runProfile(browser, profile) {
     );
   }
   const forwardSeconds = (Date.now() - forwardStart) / 1000;
+  // Uniform map: a full-demand ride IS the clip's runtime (23.52 s). Nothing
+  // may make it shorter; the caption dwells used to make it ~35 s.
+  if (forwardSeconds < FRAME_SPAN / NATIVE_FPS - 1) {
+    failures.push(
+      `${profile.name}: the forward ride crossed the zone in ${fmt(forwardSeconds)} s, ` +
+        `faster than the clip's ${fmt(FRAME_SPAN / NATIVE_FPS)} s`,
+    );
+  }
   await sleep(8000); // 8 s of quiet, still sampling
   const forwardSamples = await page.evaluate(() => window.__syncSamples.slice());
   const forward = analyse(forwardSamples, `${profile.name} forward`);

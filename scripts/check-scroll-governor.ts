@@ -10,24 +10,26 @@ import {
   VID_FLY_END,
 } from "../src/constants";
 import {
-  CAPTION_KNOT_SPANS,
-  CAPTION_RATE,
   VIDEO_TIME_KNOTS,
-  clipRateFactorAt,
   videoMasterTimeFor,
   videoTimelinePositionFor,
 } from "../src/playback";
 import {
+  BANK_EASE_OUT_CLIP_S,
+  BANK_EASE_OUT_FLOOR,
   SCROLL_BANK_MAX_CLIP_S,
   animationEndY,
+  bankClipSeconds,
   capVirtualY,
   clampBankPx,
+  coastRateScale,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
   timelineProgressForY,
   videoGovernorBounds,
   videoTimeForY,
 } from "../src/scrollGovernor";
+import { parseScrubDials } from "../src/scrubDials";
 import {
   NATIVE_CLIP_RATE_PER_S,
   NATIVE_SCRUB_FPS,
@@ -64,15 +66,23 @@ const galleryEndY = seamY + GALLERY_PIN_TRACK_PX;
 eq(VIDEO_DURATION_S, 23.56, "authored clip duration");
 eq(animationEndY(IH), animY, "animation end uses canonical vh track");
 
+// The whole authored map, post-2026-09-16: two knots, one uniform ramp. The
+// five caption-dwell knots (0.11 / 0.139 / 0.248 / 0.592 / 0.786 at
+// 545.6 / 551.8 / 769.8 / 843.1 / 1228.5 vh) are gone.
 const authoredKnots: readonly (readonly [number, number])[] = [
   [0, VIDEO_START],
-  [0.11, 545.6 / SCROLL_TRACK_VH],
-  [0.139, 551.8 / SCROLL_TRACK_VH],
-  [0.248, 769.8 / SCROLL_TRACK_VH],
-  [0.592, 843.1 / SCROLL_TRACK_VH],
-  [0.786, 1228.5 / SCROLL_TRACK_VH],
   [VIDEO_SPLIT, 1],
 ];
+eq(VIDEO_TIME_KNOTS.length, 2, "the anim-track map is exactly two knots");
+for (const t of [0.11, 0.139, 0.248, 0.592, 0.786]) {
+  const expected = VIDEO_START + (t / VIDEO_SPLIT) * (1 - VIDEO_START);
+  eq(
+    videoTimelinePositionFor(t).sp,
+    expected,
+    `old dwell anchor t=${t} is now plain interpolation`,
+    1e-12,
+  );
+}
 
 for (const [t, expectedSp] of authoredKnots) {
   const position = videoTimelinePositionFor(t);
@@ -208,16 +218,15 @@ for (const t of [0.85, 0.92, 0.99]) {
   }
 }
 
-// Whole-zone traversal at unlimited demand: the clip's own running time PLUS
-// the caption windows a second time over, because they are metered at
-// CAPTION_RATE. Everywhere else the ride is still exactly 1x.
-const CAPTION_CLIP_SPAN = CAPTION_KNOT_SPANS.reduce(
-  (sum, [from, to]) =>
-    sum + (VIDEO_TIME_KNOTS[to][1] - VIDEO_TIME_KNOTS[from][1]),
-  0,
+// Whole-zone traversal at unlimited demand is now EXACTLY the clip's own
+// running time: one uniform slope, one rate, nothing stretched.
+const EXPECTED_TRAVERSAL_S = 1 / NATIVE_CLIP_RATE_PER_S;
+eq(
+  EXPECTED_TRAVERSAL_S,
+  FRAME_SPAN / NATIVE_SCRUB_FPS,
+  "a full-demand ride is the clip's runtime, with no caption stretching",
+  1e-9,
 );
-const EXPECTED_TRAVERSAL_S =
-  (1 + CAPTION_CLIP_SPAN * (1 / CAPTION_RATE - 1)) / NATIVE_CLIP_RATE_PER_S;
 {
   let y = bounds.startY;
   let ticks = 0;
@@ -237,76 +246,186 @@ const EXPECTED_TRAVERSAL_S =
     `full-demand traversal took ${seconds.toFixed(2)} s, past the expected ` +
       `${EXPECTED_TRAVERSAL_S.toFixed(2)} s`,
   );
-  // The captions are the whole difference: without them the ride is the clip.
+  // Nothing lengthens the ride any more: it IS the clip.
   ok(
-    seconds > FRAME_SPAN / NATIVE_SCRUB_FPS + 5,
-    "the caption windows visibly lengthen a full-demand ride",
+    Math.abs(seconds - FRAME_SPAN / NATIVE_SCRUB_FPS) <= 0.5,
+    `a full-demand ride is ${seconds.toFixed(2)} s, the clip is ` +
+      `${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s`,
   );
 }
 
-// ── Caption rate factor ──────────────────────────────────────────────────────
-// Inside the two caption windows a tick may spend only CAPTION_RATE of the
-// clip time it spends anywhere else — in BOTH directions — so the burned-in
-// captions keep moving under a flick but stay slower than the rest of the clip.
-{
-  const spendForward = (t: number) =>
-    videoTimeForY(
-      capVirtualY(
-        scrollYForVideoTime(t, IH),
-        scrollYForVideoTime(t, IH) + FLICK_PX_PER_S,
-        TICK_S,
-        IH,
-      ),
-      IH,
-    ) - t;
-  const spendBackward = (t: number) =>
-    t -
-    videoTimeForY(
-      capVirtualY(
-        scrollYForVideoTime(t, IH),
-        scrollYForVideoTime(t, IH) - FLICK_PX_PER_S,
-        TICK_S,
-        IH,
-      ),
-      IH,
-    );
-  const FULL_TICK_T = NATIVE_CLIP_RATE_PER_S * TICK_S;
-
-  for (const t of [0.05, 0.4, 0.5, 0.9]) {
-    eq(clipRateFactorAt(t), 1, `scenic t=${t} is full rate`);
-    eq(spendForward(t), FULL_TICK_T, `scenic t=${t} spends a whole tick of clip`, 1e-12);
-    eq(spendBackward(t), FULL_TICK_T, `scenic t=${t} rewinds a whole tick of clip`, 1e-12);
-  }
-  for (const [from, to] of CAPTION_KNOT_SPANS) {
-    const t = (VIDEO_TIME_KNOTS[from][1] + VIDEO_TIME_KNOTS[to][1]) / 2;
-    eq(clipRateFactorAt(t), CAPTION_RATE, `caption t=${t} is braked`);
-    eq(
-      spendForward(t),
-      FULL_TICK_T * CAPTION_RATE,
-      `caption t=${t} spends half a tick of clip`,
-      1e-12,
-    );
-    eq(
-      spendBackward(t),
-      FULL_TICK_T * CAPTION_RATE,
-      `caption t=${t} rewinds half a tick of clip`,
-      1e-12,
-    );
-    // The brief's own phrasing: a dwell tick against a scenic tick, same dt.
-    eq(
-      spendForward(t) / spendForward(0.4),
-      CAPTION_RATE,
-      `caption t=${t} advances exactly ${CAPTION_RATE} of a scenic tick`,
-      1e-12,
-    );
-  }
-  // A tick is far smaller than a caption window, so evaluating the factor at
-  // the FROM position can never mis-meter a whole window: 0.2 frames of clip
-  // against the 32- and 57-frame dwells.
-  ok(
-    FULL_TICK_T * FRAME_SPAN < 0.25,
-    "one tick is a fraction of a frame, so the FROM-position factor is safe",
+// ── Uniform px per frame ────────────────────────────────────────────────────
+// The point of the 2-knot map: one sequence frame costs the SAME scroll
+// everywhere in the zone, so a flick is worth the same amount of picture
+// wherever it lands. (Before: 5.6 px/frame through a scenic stretch against
+// 52 px/frame in a caption dwell at 844 — a 9× asymmetry that made the same
+// swipe buy 5.7 s of clip in one place and 0.6 s in another.)
+function pxPerFrameAt(t: number, height: number): number {
+  const step = NATIVE_CLIP_RATE_PER_S / NATIVE_SCRUB_FPS; // one frame of clip
+  const lo = Math.max(t - step / 2, 0);
+  const hi = Math.min(t + step / 2, VIDEO_SPLIT);
+  return (
+    (scrollYForVideoTime(hi, height) - scrollYForVideoTime(lo, height)) /
+    ((hi - lo) / step)
   );
+}
+
+const UNIFORM_PX_PER_FRAME: Record<number, number> = {};
+for (const height of [IH, 1080]) {
+  const probes = [0.02, 0.11, 0.2, 0.4, 0.592, 0.7, 0.82];
+  const first = pxPerFrameAt(probes[0], height);
+  for (const t of probes) {
+    eq(
+      pxPerFrameAt(t, height),
+      first,
+      `px/frame is uniform at t=${t} (height ${height})`,
+      1e-9,
+    );
+  }
+  UNIFORM_PX_PER_FRAME[height] = first;
+}
+ok(
+  Math.abs(UNIFORM_PX_PER_FRAME[IH] - 23.1) < 0.3,
+  `px/frame at 844 = ${UNIFORM_PX_PER_FRAME[IH].toFixed(2)} (want ≈23.1)`,
+);
+ok(
+  Math.abs(UNIFORM_PX_PER_FRAME[1080] - 29.6) < 0.3,
+  `px/frame at 1080 = ${UNIFORM_PX_PER_FRAME[1080].toFixed(2)} (want ≈29.6)`,
+);
+
+// The same thing as the client feels it: the page's own top speed.
+function pageCapPxPerS(height: number): number {
+  const y0 = scrollYForVideoTime(0.4, height);
+  const y1 = capVirtualY(y0, y0 + 1e6, 1, height);
+  return y1 - y0;
+}
+ok(
+  Math.abs(pageCapPxPerS(IH) - 289) < 4,
+  `page cap at 844 = ${pageCapPxPerS(IH).toFixed(1)} px/s (want ≈289)`,
+);
+ok(
+  Math.abs(pageCapPxPerS(1080) - 370) < 4,
+  `page cap at 1080 = ${pageCapPxPerS(1080).toFixed(1)} px/s (want ≈370)`,
+);
+
+// A tick at full demand spends exactly one tick of clip, anywhere.
+{
+  const FULL_TICK_T = NATIVE_CLIP_RATE_PER_S * TICK_S;
+  const spend = (t: number, sign: number) =>
+    Math.abs(
+      videoTimeForY(
+        capVirtualY(
+          scrollYForVideoTime(t, IH),
+          scrollYForVideoTime(t, IH) + sign * FLICK_PX_PER_S,
+          TICK_S,
+          IH,
+        ),
+        IH,
+      ) - t,
+    );
+  for (const t of [0.05, 0.2, 0.4, 0.5, 0.65, 0.9]) {
+    eq(spend(t, 1), FULL_TICK_T, `t=${t} spends a whole tick of clip`, 1e-12);
+    eq(spend(t, -1), FULL_TICK_T, `t=${t} rewinds a whole tick of clip`, 1e-12);
+  }
+}
+
+// ── coastRateScale: the ease-out curve ──────────────────────────────────────
+// A bank that runs out at the cap stops DEAD; a native fling decelerates. The
+// scale is 1 while more than BANK_EASE_OUT_CLIP_S of clip is still owed, then
+// falls linearly to BANK_EASE_OUT_FLOOR, which keeps the tail finite.
+eq(BANK_EASE_OUT_CLIP_S, 0.3, "the ease window is 0.3 s of clip");
+eq(BANK_EASE_OUT_FLOOR, 0.15, "the ease floor is 0.15 of the cap");
+eq(coastRateScale(1.2), 1, "a full bank coasts at the cap");
+eq(coastRateScale(BANK_EASE_OUT_CLIP_S), 1, "the window's top edge is still full rate");
+eq(coastRateScale(BANK_EASE_OUT_CLIP_S + 1e-9), 1, "just above the window is full rate");
+eq(coastRateScale(0), BANK_EASE_OUT_FLOOR, "an empty bank sits on the floor");
+eq(coastRateScale(BANK_EASE_OUT_CLIP_S / 2), 0.5, "half the window is half the cap");
+eq(coastRateScale(0.15), 0.5, "linear between the floor and 1");
+eq(coastRateScale(0.09), 0.3, "linear at 0.09 s of clip owed");
+eq(
+  coastRateScale(BANK_EASE_OUT_CLIP_S * BANK_EASE_OUT_FLOOR),
+  BANK_EASE_OUT_FLOOR,
+  "the floor takes over exactly where the ramp reaches it",
+);
+eq(coastRateScale(0.001), BANK_EASE_OUT_FLOOR, "below the floor's knee it clamps");
+eq(coastRateScale(-0.5), 1, "a REWIND bank eases on its magnitude", 1e-12);
+eq(coastRateScale(-0.15), 0.5, "a rewind halfway through the window is half the cap", 1e-12);
+eq(coastRateScale(Number.NaN), 1, "a non-finite bank never brakes the page");
+eq(coastRateScale(0.15, 0), 1, "a zero window disables the ease-out");
+eq(coastRateScale(0.5, 1), 0.5, "the window is a parameter (the ?ease= dial)");
+
+// Monotonic, and never above 1 or below the floor.
+{
+  let previous = -1;
+  for (let owed = 0; owed <= 0.6; owed += 0.005) {
+    const scale = coastRateScale(owed);
+    ok(scale >= previous - 1e-12, `coastRateScale monotonic at ${owed.toFixed(3)}`);
+    ok(scale >= BANK_EASE_OUT_FLOOR - 1e-12 && scale <= 1, "scale stays in range");
+    previous = scale;
+  }
+}
+
+// capVirtualY honours it: half the scale, half the clip in the same tick.
+{
+  const y = scrollYForVideoTime(0.4, IH);
+  const full = videoTimeForY(capVirtualY(y, y + 1e6, TICK_S, IH, 1), IH) - 0.4;
+  const half = videoTimeForY(capVirtualY(y, y + 1e6, TICK_S, IH, 0.5), IH) - 0.4;
+  eq(half, full / 2, "rateScale 0.5 spends half a tick of clip", 1e-12);
+  eq(
+    videoTimeForY(capVirtualY(y, y + 1e6, TICK_S, IH, 0), IH),
+    0.4,
+    "rateScale 0 spends nothing",
+    1e-12,
+  );
+  eq(
+    videoTimeForY(capVirtualY(y, y + 1e6, TICK_S, IH, 4), IH) - 0.4,
+    full,
+    "rateScale can never buy MORE than the cap",
+    1e-12,
+  );
+  eq(
+    videoTimeForY(capVirtualY(y, y + 1e6, TICK_S, IH, Number.NaN), IH) - 0.4,
+    full,
+    "a non-finite rateScale falls back to the cap",
+    1e-12,
+  );
+}
+
+// bankClipSeconds: the debt in the unit the ease-out reasons about.
+{
+  const y = scrollYForVideoTime(0.4, IH);
+  const oneSecond = scrollYForVideoTime(0.4 + NATIVE_CLIP_RATE_PER_S, IH) - y;
+  eq(bankClipSeconds(y, oneSecond, IH), 1, "one second of clip owed", 1e-9);
+  eq(bankClipSeconds(y, -oneSecond, IH), 1, "a rewind owes the same magnitude", 1e-9);
+  eq(bankClipSeconds(y, 0, IH), 0, "an empty bank owes nothing");
+  eq(bankClipSeconds(y, 100, 0), 0, "an invalid viewport owes nothing");
+}
+
+// ── URL dials (?bank= / ?fling= / ?ease=) ───────────────────────────────────
+{
+  const none = parseScrubDials("");
+  ok(none.bankMaxClipS === null, "no query: no bank override");
+  ok(none.flingTauMs === null, "no query: no fling override");
+  ok(none.easeWindowClipS === null, "no query: no ease override");
+
+  const all = parseScrubDials("?bank=2.5&fling=220&ease=0.5");
+  eq(all.bankMaxClipS ?? -1, 2.5, "?bank= parses");
+  eq(all.flingTauMs ?? -1, 220, "?fling= parses");
+  eq(all.easeWindowClipS ?? -1, 0.5, "?ease= parses");
+
+  // Validation: finite, and inside the published ranges, or the default wins.
+  for (const query of ["?bank=0", "?bank=-1", "?bank=11", "?bank=abc", "?bank="]) {
+    ok(parseScrubDials(query).bankMaxClipS === null, `${query} is refused`);
+  }
+  for (const query of ["?fling=-1", "?fling=1001", "?fling=NaN", "?fling=x"]) {
+    ok(parseScrubDials(query).flingTauMs === null, `${query} is refused`);
+  }
+  for (const query of ["?ease=-0.1", "?ease=2.1", "?ease=Infinity"]) {
+    ok(parseScrubDials(query).easeWindowClipS === null, `${query} is refused`);
+  }
+  eq(parseScrubDials("?fling=0").flingTauMs ?? -1, 0, "fling=0 (no fling at all) is legal");
+  eq(parseScrubDials("?ease=0").easeWindowClipS ?? -1, 0, "ease=0 (no ease) is legal");
+  eq(parseScrubDials("?gyro=1&bank=1.5").bankMaxClipS ?? -1, 1.5, "other flags are ignored");
 }
 
 // Symmetry: rewinding is metered exactly like running forward.
@@ -406,56 +525,80 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
 // The cap says how FAST the page may move; the bank says how much of a gesture
 // may still be owed. Its ceiling is in CLIP TIME for the same reason the cap is:
 // one flick buys SCROLL_BANK_MAX_CLIP_S seconds of playback anywhere in the
-// zone, scenic stretch or caption dwell, and never a frame faster than 1×.
+// zone, and never a frame faster than 1×. 2026-09-16: 4 s → 1.2 s — "a flick
+// moves a bit and stops".
 const BANK_BUDGET_T = SCROLL_BANK_MAX_CLIP_S * NATIVE_CLIP_RATE_PER_S;
 const BANK_BUDGET_FRAMES = BANK_BUDGET_T * FRAME_SPAN;
 const HUGE_BANK_PX = 1e6;
 
+eq(SCROLL_BANK_MAX_CLIP_S, 1.2, "the bank ceiling is 1.2 s of clip");
 eq(
   BANK_BUDGET_FRAMES,
   SCROLL_BANK_MAX_CLIP_S * NATIVE_SCRUB_FPS,
-  "the bank ceiling is exactly 4 s of native frames",
+  "the bank ceiling is exactly 1.2 s of native frames",
   1e-9,
 );
-eq(BANK_BUDGET_FRAMES, 50, "4 s at 12.5 f/s is 50 sequence frames", 1e-9);
+eq(BANK_BUDGET_FRAMES, 15, "1.2 s at 12.5 f/s is 15 sequence frames", 1e-9);
+
+// PARAMETERISED: the pure function takes the ceiling, so the ?bank= dial moves
+// it without this module (or these tests) knowing about a URL.
+{
+  const y = scrollYForVideoTime(0.4, IH);
+  for (const clipS of [0.4, 1.2, 3]) {
+    const px = clampBankPx(y, HUGE_BANK_PX, IH, clipS);
+    eq(
+      videoTimeForY(y + px, IH) - 0.4,
+      clipS * NATIVE_CLIP_RATE_PER_S,
+      `an explicit ${clipS} s ceiling buys ${clipS} s of clip`,
+      1e-12,
+    );
+  }
+  eq(
+    clampBankPx(y, HUGE_BANK_PX, IH),
+    clampBankPx(y, HUGE_BANK_PX, IH, SCROLL_BANK_MAX_CLIP_S),
+    "the default parameter is the shipped constant",
+    1e-12,
+  );
+  eq(clampBankPx(y, HUGE_BANK_PX, IH, Number.NaN), HUGE_BANK_PX, "a broken dial passes through");
+}
 
 // A scenic stretch (segment 4, the slowest page speed) with four seconds of
 // clip on both sides of it: the ceiling binds in both directions.
 {
   const t = 0.4;
   const y = scrollYForVideoTime(t, IH);
-  ok(t + BANK_BUDGET_T < 1 && t - BANK_BUDGET_T > 0, "the scenic probe is mid-clip");
+  ok(t + BANK_BUDGET_T < 1 && t - BANK_BUDGET_T > 0, "the mid-clip probe has room both ways");
 
   const forward = clampBankPx(y, HUGE_BANK_PX, IH);
   const backward = clampBankPx(y, -HUGE_BANK_PX, IH);
   eq(
     forward,
     scrollYForVideoTime(t + BANK_BUDGET_T, IH) - y,
-    "the forward ceiling is the px of exactly 4 s of clip",
+    "the forward ceiling is the px of exactly 1.2 s of clip",
     1e-9,
   );
   eq(
     backward,
     scrollYForVideoTime(t - BANK_BUDGET_T, IH) - y,
-    "the backward ceiling is the px of exactly 4 s of clip",
+    "the backward ceiling is the px of exactly 1.2 s of clip",
     1e-9,
   );
   ok(forward > 0 && backward < 0, "the ceiling keeps the bank's sign");
-  // Symmetric in the only unit that matters — both directions buy 50 frames.
+  // Symmetric in the only unit that matters — both directions buy 15 frames.
   eq(
     videoTimeForY(y + forward, IH) - t,
     BANK_BUDGET_T,
-    "a full forward bank buys 4 s of clip",
+    "a full forward bank buys 1.2 s of clip",
     1e-12,
   );
   eq(
     t - videoTimeForY(y + backward, IH),
     BANK_BUDGET_T,
-    "a full backward bank buys 4 s of clip",
+    "a full backward bank buys 1.2 s of clip",
     1e-12,
   );
-  eq(frameAt(y + forward) - frameAt(y), BANK_BUDGET_FRAMES, "50 frames forward", 1e-6);
-  eq(frameAt(y) - frameAt(y + backward), BANK_BUDGET_FRAMES, "50 frames backward", 1e-6);
+  eq(frameAt(y + forward) - frameAt(y), BANK_BUDGET_FRAMES, "15 frames forward", 1e-6);
+  eq(frameAt(y) - frameAt(y + backward), BANK_BUDGET_FRAMES, "15 frames backward", 1e-6);
 
   // A bank INSIDE the ceiling is not touched at all.
   eq(clampBankPx(y, 3, IH), 3, "a small forward bank passes through unchanged");
@@ -464,20 +607,20 @@ eq(BANK_BUDGET_FRAMES, 50, "4 s at 12.5 f/s is 50 sequence frames", 1e-9);
   eq(clampBankPx(y, 0, IH), 0, "an empty bank stays empty");
 }
 
-// NEAR THE SEAM the 4 s horizon runs out of clip: forward becomes UNBOUNDED, so
+// NEAR THE SEAM the horizon runs out of clip: forward becomes UNBOUNDED, so
 // the residue passes free and capTick's `next >= seamY` hand-off still fires.
-// Backwards there is still a full 4 s of clip, so that side stays bounded.
+// Backwards there is still a full ceiling of clip, so that side stays bounded.
 {
-  const t = 0.9;
+  const t = 0.98;
   const y = scrollYForVideoTime(t, IH);
-  ok(t + BANK_BUDGET_T >= 1, "the seam probe has less than 4 s of clip ahead");
+  ok(t + BANK_BUDGET_T >= 1, "the seam probe has less than the ceiling of clip ahead");
   eq(clampBankPx(y, HUGE_BANK_PX, IH), HUGE_BANK_PX, "forward is unbounded at the seam");
   const backward = clampBankPx(y, -HUGE_BANK_PX, IH);
   ok(backward > -HUGE_BANK_PX, "backward is still bounded at the seam");
   eq(
     t - videoTimeForY(y + backward, IH),
     BANK_BUDGET_T,
-    "the seam's backward bank is still 4 s of clip",
+    "the seam's backward bank is still 1.2 s of clip",
     1e-12,
   );
 }
@@ -485,16 +628,16 @@ eq(BANK_BUDGET_FRAMES, 50, "4 s at 12.5 f/s is 50 sequence frames", 1e-9);
 // NEAR THE ZONE START, the mirror: backward unbounded (the hand-back to native
 // scrolling must not be held up), forward still bounded.
 {
-  const t = 0.05;
+  const t = 0.03;
   const y = scrollYForVideoTime(t, IH);
-  ok(t - BANK_BUDGET_T <= 0, "the start probe has less than 4 s of clip behind");
+  ok(t - BANK_BUDGET_T <= 0, "the start probe has less than the ceiling of clip behind");
   eq(clampBankPx(y, -HUGE_BANK_PX, IH), -HUGE_BANK_PX, "backward is unbounded at the zone start");
   const forward = clampBankPx(y, HUGE_BANK_PX, IH);
   ok(forward < HUGE_BANK_PX, "forward is still bounded at the zone start");
   eq(
     videoTimeForY(y + forward, IH) - t,
     BANK_BUDGET_T,
-    "the zone start's forward bank is still 4 s of clip",
+    "the zone start's forward bank is still 1.2 s of clip",
     1e-12,
   );
 }
@@ -510,87 +653,42 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
 }
 eq(clampBankPx(Number.NaN, 900, IH), 900, "a non-finite seat passes the bank through");
 
-// Reported for the record: the page speed each authored segment allows, now
-// that the caption windows are metered at CAPTION_RATE.
+// Reported for the record: the page speed the uniform map allows, and what one
+// flick is worth, in the numbers the client feels.
 function segmentSpeed(segment: number, height: number): number {
   const [, t0] = VIDEO_TIME_KNOTS[segment - 1];
   const [, t1] = VIDEO_TIME_KNOTS[segment];
   const y0 = scrollYForVideoTime(t0, height);
   const y1 = scrollYForVideoTime(t1, height);
-  return (
-    ((y1 - y0) / (t1 - t0)) *
-    NATIVE_CLIP_RATE_PER_S *
-    clipRateFactorAt((t0 + t1) / 2)
-  );
+  return ((y1 - y0) / (t1 - t0)) * NATIVE_CLIP_RATE_PER_S;
 }
-
-function segmentSpeedLines(height: number): string[] {
-  const lines: string[] = [];
-  for (let segment = 1; segment < VIDEO_TIME_KNOTS.length; segment += 1) {
-    const [, t0] = VIDEO_TIME_KNOTS[segment - 1];
-    const [, t1] = VIDEO_TIME_KNOTS[segment];
-    const factor = clipRateFactorAt((t0 + t1) / 2);
-    lines.push(
-      `  segment ${segment} (t ${t0}→${t1}): ` +
-        `${segmentSpeed(segment, height).toFixed(1)} px/s` +
-        (factor === 1 ? "" : ` [caption, ${factor}x]`),
-    );
-  }
-  const y0 = scrollYForVideoTime(VIDEO_SPLIT, height);
-  const endY = videoGovernorBounds(height).endY;
-  lines.push(
-    `  video-card tail (t ${VIDEO_SPLIT}→1): ` +
-      `${(((endY - y0) / (1 - VIDEO_SPLIT)) * NATIVE_CLIP_RATE_PER_S).toFixed(1)} px/s`,
-  );
-  return lines;
-}
-
-// The caps the client actually feels on a phone, asserted rather than printed.
-ok(
-  Math.abs(segmentSpeed(3, IH) - 329.9) < 1,
-  `caption-1 dwell cap at 844 = ${segmentSpeed(3, IH).toFixed(1)} px/s (want ≈329.9)`,
-);
-ok(
-  Math.abs(segmentSpeed(5, IH) - 327.7) < 1,
-  `caption-2 dwell cap at 844 = ${segmentSpeed(5, IH).toFixed(1)} px/s (want ≈327.7)`,
-);
-ok(
-  Math.abs(segmentSpeed(4, IH) - 70.3) < 1,
-  `scenic cap at 844 = ${segmentSpeed(4, IH).toFixed(1)} px/s (want the unchanged ≈70.3)`,
-);
 
 for (const height of [IH, 1080]) {
-  console.log(`max page speed per knot segment at ${height === IH ? "390x844" : "1080p"}:`);
-  console.log(segmentSpeedLines(height).join("\n"));
+  const label = height === IH ? "390x844" : "1080p  ";
+  const tailY0 = scrollYForVideoTime(VIDEO_SPLIT, height);
+  const tailEnd = videoGovernorBounds(height).endY;
+  console.log(
+    `${label}: uniform ${UNIFORM_PX_PER_FRAME[height].toFixed(2)} px/frame, ` +
+      `page cap ${segmentSpeed(1, height).toFixed(1)} px/s ` +
+      `(video-card tail ${(((tailEnd - tailY0) / (1 - VIDEO_SPLIT)) * NATIVE_CLIP_RATE_PER_S).toFixed(1)} px/s)`,
+  );
 }
 console.log(
   `zone = ${(bounds.endY - bounds.startY).toFixed(1)} px, ` +
     `clip runtime = ${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s, ` +
-    `min traversal = ${EXPECTED_TRAVERSAL_S.toFixed(2)} s ` +
-    `(captions at ${CAPTION_RATE}x add ` +
-    `${(EXPECTED_TRAVERSAL_S - FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s)`,
+    `min traversal = ${EXPECTED_TRAVERSAL_S.toFixed(2)} s (uniform: no dwells)`,
 );
-
-// What one flick may buy, in pixels, where the page is slowest (a scenic knot
-// segment) and where it is fastest (a caption dwell) \u2014 the numbers the client
-// feels: a single notch now carries the page this far instead of ~1.5 px.
-const bankProbes: readonly (readonly [string, number])[] = [
-  ["scenic  (t 0.40)", 0.4],
-  ["dwell   (t 0.20)", 0.2],
-];
 console.log(
   `bank ceiling = ${SCROLL_BANK_MAX_CLIP_S} s of clip = ` +
-    `${BANK_BUDGET_FRAMES.toFixed(0)} frames:`,
+    `${BANK_BUDGET_FRAMES.toFixed(0)} frames; ease-out ${BANK_EASE_OUT_CLIP_S} s ` +
+    `of clip down to ${BANK_EASE_OUT_FLOOR}x:`,
 );
 for (const height of [IH, 1080]) {
-  for (const [label, t] of bankProbes) {
-    const y = scrollYForVideoTime(t, height);
-    const forward = clampBankPx(y, HUGE_BANK_PX, height);
-    const backward = clampBankPx(y, -HUGE_BANK_PX, height);
-    console.log(
-      `  ${height === IH ? "390x844" : "1080p  "} ${label}: ` +
-        `forward ${forward.toFixed(1)} px, backward ${backward.toFixed(1)} px`,
-    );
-  }
+  const y = scrollYForVideoTime(0.4, height);
+  console.log(
+    `  ${height === IH ? "390x844" : "1080p  "} at t=0.40: forward ` +
+      `${clampBankPx(y, HUGE_BANK_PX, height).toFixed(1)} px, backward ` +
+      `${clampBankPx(y, -HUGE_BANK_PX, height).toFixed(1)} px`,
+  );
 }
-console.log("\u2713 scroll governor (mapping + page-speed cap + input bank)");
+console.log("\u2713 scroll governor (uniform mapping + page-speed cap + bank + ease-out)");

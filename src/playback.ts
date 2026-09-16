@@ -13,7 +13,6 @@ import {
   FIGURE_FADE,
   VIDEO_SPLIT,
   VID_FLY_END,
-  SCROLL_TRACK_VH,
 } from "./constants";
 
 // Single source of truth for the scroll-driven timeline. LottiePlane, the
@@ -169,83 +168,33 @@ export function videoStateFor(sp: number, phase: Phase): VideoState {
   };
 }
 
-// Anim-track scroll → clip-time map, piecewise-linear over these [sp, clip-
-// fraction] knots. NOT a single linear ramp (supervisor: "затримати погляд на
-// тексті"): the two captions BAKED into the footage get a slower scrub — more
-// scroll distance per clip-second, so there is time to read them — and the
-// scenic stretch between them is correspondingly faster.
+// Anim-track scroll → clip-time map: [sp, clip-fraction] knots, walked
+// piecewise-linearly. Since 2026-09-16 there are exactly TWO of them — ONE
+// UNIFORM ramp over the whole anim track.
 //
-// 2026-07-29 round (client: the slowdown still "не видно"): the dwells now
-// cover ONLY the windows where the text is actually READABLE — measured frame
-// by frame on the extracted sequence (295 frames / 23.56s):
-//   caption 1 "WIR SIND EIN KLEINES…":  onset frac 0.110 but BEHIND the cloud
-//     fly-through until ≈frame 42 (frac 0.139); readable until the camera dive
-//     rotates it away ≈frame 74 (frac 0.248).
-//   caption 2 "ZUHAUSE IM HERZEN…":  readable from ≈frame 175 (frac 0.592);
-//     too close/rotated to read past ≈frame 232 (frac 0.786).
-// Inside those windows the scrub slope is 0.5 clip-frac per 1000vh of scroll
-// (the old dwell slope was ≈1; the first cut at the supervisor's literal "0.3"
-// advanced only one source frame per ≈11vh and READ AS JERKY — "дьорганим" —
-// so it was relaxed to 0.5 ≈ 6.8vh/frame, still a hard ≈2× brake vs before).
-// EVERYWHERE else (the cloud approach, the bridge→lake→climb scenic run, the
-// post-caption tails) the scrub runs at the familiar scenic pace (≈213vh per
-// unit clip), so the slow-down snaps in exactly when the text becomes readable
-// and releases the moment it stops being readable. SCROLL_TRACK_VH funds the
-// two dwells (≈218vh + ≈385vh); every knot is anchored in PHYSICAL vh so track
-// growth cannot silently retime them.
-// Knot #2 still pins caption 1's ONSET just after LOTTIE_END (544vh) so the
-// Lottie zoom-through clears the frame BEFORE the caption appears.
-// Re-derive if VIDEO_START / VIDEO_SPLIT / LOTTIE_END move or the clip swaps.
+// History. The map used to carry five interior knots (545.6 / 551.8 / 769.8 /
+// 843.1 / 1228.5 vh ↔ 0.11 / 0.139 / 0.248 / 0.592 / 0.786) that parked the two
+// captions BAKED into the footage on a ~9× shallower slope, so a reader could
+// dwell on the text under an UNCAPPED scroll. Since the soft pin (5e79660) the
+// page itself may not advance the clip faster than 12.5 f/s, so the captions
+// can no longer be fast-forwarded at all and the dwells were redundant: they
+// spent 82 % of the zone's PIXELS on 36 % of its FRAMES, which on a phone reads
+// as "nothing happens" — and made one flick worth 9× more clip in one place
+// than in another, i.e. both halves of the client's last note ("hang" and
+// "it scrolls by itself for 2–4 s").
+//
+// The rule now: one linear ramp, VIDEO_START (504vh) → sp 1 (1240vh), 736vh for
+// VIDEO_SPLIT of clip ≈ 2.98 constant vh per sequence frame — 23.1 px/frame at
+// innerHeight 844 (page cap ≈289 px/s) and 29.6 px/frame at 1080 (≈370 px/s).
+// SCROLL_TRACK_VH is unchanged; the video-card tail [VIDEO_SPLIT, 1] still
+// rides the gallery track. videoTimelinePositionFor (the EXACT inverse) walks
+// this same array, so it has to keep working with two knots — it does: one
+// segment, one affine solve, no special case.
+// Re-derive if VIDEO_START / VIDEO_SPLIT move or the clip swaps.
 export const VIDEO_TIME_KNOTS: readonly (readonly [number, number])[] = [
-  [VIDEO_START, 0], // 504vh
-  [545.6 / SCROLL_TRACK_VH, 0.11], // caption-1 onset (in clouds) — 1.6vh after the zoom-through clears
-  [551.8 / SCROLL_TRACK_VH, 0.139], // out of the clouds → text readable; dwell begins
-  [769.8 / SCROLL_TRACK_VH, 0.248], // caption-1 dwell ends (camera dives): ≈218vh @ slope 0.5
-  [843.1 / SCROLL_TRACK_VH, 0.592], // scenic run (bridge → lake → climb) at the normal pace
-  [1228.5 / SCROLL_TRACK_VH, 0.786], // caption-2 dwell ends (too close to read): ≈385vh @ slope 0.5
-  [1, VIDEO_SPLIT], // short scenic tail to the morph point
+  [VIDEO_START, 0], // 504vh — the clip's first frame
+  [1, VIDEO_SPLIT], // 1240vh — 20 s in; the last 3.56 s ride the video card
 ];
-
-// ── Caption rate factor ──────────────────────────────────────────────────────
-// The knots above spend more SCROLL on the captions; this spends more TIME on
-// them. Under a flick the page pays a dwell's extra pixels out at the full
-// 12.5 f/s cap, so the caption still streamed past at 1× — just with more
-// pixels behind it — and the client's note is explicit: the captions must keep
-// running, but "не так швидко, як решта відео". Inside the two caption windows
-// the clip therefore advances at CAPTION_RATE of the native rate (6.25 f/s);
-// everywhere else the factor is 1 and nothing changes.
-//
-// This is a PAGE-SPEED dial only (scrollGovernor.capVirtualY multiplies its
-// per-tick budget by it). The painted-frame chase in VideoPlane still runs at
-// the same NATIVE_SCRUB_FPS — it simply follows a target that now moves at
-// half pace here — and the bank ceiling stays in clip time, so a caption flick
-// may coast about twice as long in WALL seconds for the same 4 s of picture.
-export const CAPTION_RATE = 0.5;
-
-// The caption windows as INDEX PAIRS into VIDEO_TIME_KNOTS, never as literal
-// clip fractions: re-authoring a knot (the readable window was already re-cut
-// once, 2026-07-29) retimes the brake with it instead of leaving a stale
-// 0.139/0.248 behind. [2,3] = caption 1 readable, [4,5] = caption 2 readable.
-export const CAPTION_KNOT_SPANS: readonly (readonly [number, number])[] = [
-  [2, 3],
-  [4, 5],
-];
-
-// Clip-time → how fast clip time itself may be spent there, as a fraction of
-// the native rate. Half-open [from, to): the upper knot is the first instant of
-// the scenic run that follows, so the two windows can never overlap and a
-// position exactly on a boundary belongs to exactly one of them.
-export function clipRateFactorAt(t: number): number {
-  if (!Number.isFinite(t)) return 1;
-  for (let i = 0; i < CAPTION_KNOT_SPANS.length; i += 1) {
-    const [from, to] = CAPTION_KNOT_SPANS[i];
-    const lower = VIDEO_TIME_KNOTS[from];
-    const upper = VIDEO_TIME_KNOTS[to];
-    if (!lower || !upper) continue;
-    if (t >= lower[1] && t < upper[1]) return CAPTION_RATE;
-  }
-  return 1;
-}
 
 function animTrackClipTimeFor(sp: number): number {
   const s = Math.min(Math.max(sp, VIDEO_START), 1);

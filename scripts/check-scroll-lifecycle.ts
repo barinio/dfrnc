@@ -30,13 +30,15 @@ import type {
   ScrollTimelinePublication,
 } from "../src/scrollTimelineController";
 import {
+  BANK_EASE_OUT_CLIP_S,
+  BANK_EASE_OUT_FLOOR,
   SCROLL_BANK_MAX_CLIP_S,
+  clampBankPx,
   scrollYForTimelineProgress,
   scrollYForVideoTime,
   videoGovernorBounds,
   videoTimeForY,
 } from "../src/scrollGovernor";
-import { CAPTION_RATE, clipRateFactorAt } from "../src/playback";
 import { NATIVE_SCRUB_FPS, scrubTargetFrameFor } from "../src/frameScrub";
 import { FRAME_COUNT } from "../src/frames";
 import { galleryStepTargets } from "../src/galleryGestureStepper";
@@ -348,18 +350,15 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
     `a banked flick still advances at most one frame in four ticks (got ${flickFrames.toFixed(3)})`,
   );
 
-  // Sustained maximum input for a full second: still the clip's own rate —
-  // times the caption factor, and zoneStartY + 1200 px happens to land inside
-  // caption 1's readable window, where the clip runs at CAPTION_RATE.
+  // Sustained maximum input for a full second: the clip's own rate, and since
+  // 2026-09-16 that is the SAME rate everywhere in the zone (uniform knots).
   const before = frameAt(latest().virtualY);
-  const seatFactor = clipRateFactorAt(videoTimeForY(latest().virtualY, IH));
-  eq(seatFactor, CAPTION_RATE, "this probe sits inside a caption window");
   for (let tick = 0; tick < 60; tick += 1) {
     environment.wheel(4000);
     environment.clock.advance(TICK_MS);
   }
   const advanced = frameAt(latest().virtualY) - before;
-  const seatFps = NATIVE_SCRUB_FPS * seatFactor;
+  const seatFps = NATIVE_SCRUB_FPS;
   ok(
     advanced <= seatFps + 1,
     `one second of 4000 px wheel events advanced ${advanced.toFixed(2)} frames ` +
@@ -411,6 +410,10 @@ function coastToRest(harness: Harness, maxTicks = 900) {
   const fromFrame = frameAt(fromY);
   let ticks = 0;
   let worstTickFrames = 0;
+  // Per-tick travel, so the DECELERATION PROFILE of a coast is assertable and
+  // not just its total: the ease-out is the difference between a fling and a
+  // page that stops dead.
+  const stepsPx: number[] = [];
   for (; ticks < maxTicks; ticks += 1) {
     const before = latest().virtualY;
     environment.clock.advance(TICK_MS);
@@ -420,12 +423,14 @@ function coastToRest(harness: Harness, maxTicks = 900) {
       Math.abs(frameAt(after) - frameAt(before)),
     );
     if (after === before) break;
+    stepsPx.push(Math.abs(after - before));
   }
   return {
     ticks,
     movedPx: latest().virtualY - fromY,
     movedFrames: frameAt(latest().virtualY) - fromFrame,
     worstTickFrames,
+    stepsPx,
   };
 }
 
@@ -435,9 +440,13 @@ const bankReport: string[] = [];
 const MAX_TICK_FRAMES = (NATIVE_SCRUB_FPS * TICK_MS) / 1000;
 const BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S * NATIVE_SCRUB_FPS;
 const SCENIC_Y = scrollYForVideoTime(0.4, IH);
+// What the ceiling is worth in PIXELS mid-clip at 390x844 — the number the
+// thumb feels: one flick can never owe more page than this.
+const CEILING_PX = clampBankPx(SCENIC_Y, 1e6, IH);
 
-// (A) A BURST is banked: input stops, the page keeps running at the clip's own
-// pace until the bank is spent, and the bank is worth 4 s of playback.
+// (G3) A BURST is banked: input stops, the page keeps running at the clip's own
+// pace until the bank is spent — at most 1.2 s of playback — and then EASES to
+// rest instead of stopping dead.
 {
   const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
@@ -452,9 +461,11 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
   ok(latest().bankPx > 0, "the unspent burst is banked, not dropped");
 
   const coast = coastToRest(harness);
+  const coastS = (coast.ticks * TICK_MS) / 1000;
+  ok(coastS >= 1.0, `the page kept moving only ${coastS.toFixed(2)} s after the input stopped`);
   ok(
-    coast.ticks * TICK_MS >= 2000,
-    `the page kept moving ${(coast.ticks * TICK_MS) / 1000} s after the input stopped`,
+    coastS <= 1.8,
+    `the page kept moving ${coastS.toFixed(2)} s after the input stopped (want ≤ 1.8)`,
   );
   ok(
     Math.abs(coast.movedFrames - BANK_FRAMES) <= 1.5,
@@ -464,11 +475,20 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
     coast.worstTickFrames <= MAX_TICK_FRAMES + 1e-9,
     `a banked tick advanced ${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES})`,
   );
+  // It eases out: the last tick is a fraction of the cruising speed.
+  const burstTail = coast.stepsPx[coast.stepsPx.length - 1];
+  const burstCruise = Math.max(...coast.stepsPx);
+  ok(
+    burstTail < burstCruise * 0.5,
+    `the burst stopped dead (${burstTail.toFixed(3)} px after cruising ` +
+      `${burstCruise.toFixed(3)} px/tick)`,
+  );
   bankReport.push(
-    `  (A) 10x100 px burst at t=0.40: coasted ${coast.movedPx.toFixed(1)} px / ` +
+    `  (G3) 10x100 px wheel burst at t=0.40: coasted ${coast.movedPx.toFixed(1)} px / ` +
       `${coast.movedFrames.toFixed(2)} frames over ${coast.ticks} ticks ` +
-      `(${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s), worst tick ` +
-      `${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES})`,
+      `(${coastS.toFixed(2)} s), worst tick ` +
+      `${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES}), ` +
+      `eased ${burstCruise.toFixed(2)} → ${burstTail.toFixed(2)} px/tick`,
   );
   // …and then it STOPS. No residue, no creep.
   eq(latest().bankPx, 0, "a spent bank is empty");
@@ -478,8 +498,8 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
   controller.dispose();
 }
 
-// (E) The bank NEVER buys speed: a single 1e6 px flick still moves at the cap,
-// still for 4 s, and never a frame more per tick than 12.5 f/s allows.
+// (G3b) The bank NEVER buys speed: a single 1e6 px flick still moves at the cap,
+// still for only the ceiling, and never a frame more per tick than 12.5 f/s.
 {
   const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
@@ -495,14 +515,15 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
     `an absurd flick still bought only ${coast.movedFrames.toFixed(2)} frames`,
   );
   bankReport.push(
-    `  (E) 1e6 px flick at t=0.40: ${coast.movedFrames.toFixed(2)} frames over ` +
-      `${coast.ticks} ticks, worst tick ${coast.worstTickFrames.toFixed(4)} frames`,
+    `  (G3b) 1e6 px flick at t=0.40: ${coast.movedFrames.toFixed(2)} frames over ` +
+      `${coast.ticks} ticks (${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s), ` +
+      `worst tick ${coast.worstTickFrames.toFixed(4)} frames`,
   );
   eq(latest().bankPx, 0, "even an absurd bank empties");
   controller.dispose();
 }
 
-// (B) A REVERSAL is felt on the very next tick and DISCARDS the forward
+// (G4a) A REVERSAL is felt on the very next tick and DISCARDS the forward
 // backlog: the page must never owe the user a direction they abandoned.
 {
   const harness = createHarness(SCENIC_Y);
@@ -523,13 +544,13 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
     `the reversal spent ${(yBefore - latest().virtualY).toFixed(2)} px, not the forward 1000`,
   );
   bankReport.push(
-    `  (B) -50 px against a 1000 px bank: back on tick 1, total rewind ` +
+    `  (G4a) -50 px against a 1000 px bank: back on tick 1, total rewind ` +
       `${(yBefore - latest().virtualY).toFixed(2)} px over ${coast.ticks + 1} ticks`,
   );
   controller.dispose();
 }
 
-// (C) JITTER is not a reversal. A finger lifting off the glass wobbles a few
+// (G4b) JITTER is not a reversal. A finger lifting off the glass wobbles a few
 // pixels backwards; that must not throw away the swipe the user just made.
 {
   const harness = createHarness(SCENIC_Y);
@@ -555,13 +576,13 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
   ok(latest().virtualY < yJitter, "8 px is a real reversal");
   ok(latest().bankPx < 0, "a real reversal takes the bank with it");
   bankReport.push(
-    `  (C) -3 px jitter against a ${bankBefore.toFixed(1)} px bank: still forward, ` +
+    `  (G4b) -3 px jitter against a ${bankBefore.toFixed(1)} px bank: still forward, ` +
       `bank ${latest().bankPx.toFixed(1)} px only after the -8 px reversal`,
   );
   controller.dispose();
 }
 
-// (D) EDGES: a full bank never fences the zone in. Forward it still hands over
+// (G4d) EDGES: a full bank never fences the zone in. Forward it still hands over
 // to the pinned gallery at the seam; backward it still hands back to native
 // scrolling — and the leftover bank is discarded on the way out, so nothing
 // coasts into a track the soft pin does not own.
@@ -575,7 +596,11 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
   eq(latest().galleryMode, "gallery-transitioning", "a full bank still reaches the seam");
   ok(!latest().capActive, "the soft pin releases at the seam");
   eq(latest().bankPx, 0, "leftover bank is discarded at the hand-off");
-  eq(environment.scrollY, seamY, "the hand-off still pins at the seam");
+  // The PUBLISHED position is the seam exactly; the document write is skipped
+  // while it is already inside the pin's 1 px boundary tolerance (the uniform
+  // slope happens to land the last capped tick 0.25 px short of it).
+  eq(latest().virtualY, seamY, "the hand-off publishes the seam");
+  ok(Math.abs(environment.scrollY - seamY) <= 1, `the hand-off still pins at the seam (${environment.scrollY})`);
   eq(latest().clipT, 1, "the clip is still on its last frame at the seam", 1e-9);
   controller.dispose();
 }
@@ -595,18 +620,14 @@ const SCENIC_Y = scrollYForVideoTime(0.4, IH);
   controller.dispose();
 }
 
-// ── A TOUCH FLICK COASTS, and the captions run at half speed ────────────────
-// On a phone the zone kills the browser's own fling (every touchmove is
-// preventDefault-ed) and nothing replaced it, so a swipe bought exactly the
-// finger's travel — ~400 px — while the two caption dwells are 82 % of the
-// zone's pixels: five to ten flicks to read one caption, which the client
-// reported as a hang. A release above TOUCH_FLING_VELOCITY_PX_MS now queues
-// v × TOUCH_FLING_TAU_MS more pixels (Chrome's own fling for 2 px/ms travels
-// ~1500-2000 px; we grant ~1000, and the 4 s bank ceiling bounds it anyway),
-// and inside the caption windows the page pays that out at CAPTION_RATE.
-const DWELL_T = 0.65; // inside caption 2's readable window [0.592, 0.786]
-const DWELL_Y = scrollYForVideoTime(DWELL_T, IH);
-const DWELL_TICK_FRAMES = MAX_TICK_FRAMES * CAPTION_RATE;
+// ── A FLICK MOVES A BIT AND STOPS (G1-G4) ───────────────────────────────────
+// Round three of the client's notes: the captions "дьоргаються" (the 6.25 f/s
+// caption half-rate, now deleted) and the page "scrolls by itself for 2-4 s"
+// after every swipe. The second one had three causes — the 4 s bank, the 500 ms
+// iOS-like fling, and above all the 9× knot-slope asymmetry that made a 400 px
+// swipe worth 5.7 s of clip in a scenic stretch and 0.6 s in a dwell. All three
+// are gone: uniform slope, a 1.2 s ceiling, a 150 ms Android-like fling, and a
+// coast that EASES OUT instead of stopping dead.
 
 // One finger stroke through the capped zone: `steps` touchmoves of `pxPerStep`
 // (positive = the finger travels UP the glass, i.e. the page goes forward),
@@ -640,9 +661,11 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   return latest().bankPx - bankBefore + (latest().virtualY - yBefore);
 }
 
-// (F1) A real thumb flick inside caption 2: 400 px in 250 ms (≈1.6 px/ms).
+// (G1) A real thumb flick: 400 px in 250 ms (≈1.6 px/ms), mid-clip. It must buy
+// AT MOST the 1.2 s-of-clip ceiling, never outrun the clip, come to rest inside
+// a couple of seconds — and DECELERATE on the way, the way a native fling does.
 {
-  const harness = createHarness(DWELL_Y);
+  const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
   ok(latest().capActive, "the flick starts inside the soft pin");
   eq(latest().bankPx, 0, "a fresh seat owes nothing");
@@ -657,44 +680,136 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   ok(bankBeforeLift > 0, "the unpaid finger travel is still owed at the lift");
   const fling = liftFlingPx(harness, fingerY);
   const wanted = velocity * TOUCH_FLING_TAU_MS;
+  ok(fling > 0, "a release above the threshold queues a fling");
+  // The fling arithmetic itself — Android's reference numbers, not iOS's glide.
+  eq(TOUCH_FLING_TAU_MS, 150, "the fling tau is 150 ms");
+  eq(2 * TOUCH_FLING_TAU_MS, 300, "a 2 px/ms release travels 300 px");
+  eq(1.6 * TOUCH_FLING_TAU_MS, 240, "a 1.6 px/ms release travels 240 px");
+  eq(2.5 * TOUCH_FLING_TAU_MS, 375, "a violent 2.5 px/ms release travels 375 px");
+  // A 400 px swipe is already worth ~1.4 s of clip here, so the swipe PLUS its
+  // ${wanted.toFixed(0)} px fling saturates the 1.2 s ceiling and the rest is
+  // dropped: a hard flick and a firm one answer almost identically.
   ok(
-    Math.abs(fling - wanted) <= 40,
-    `the lift queued ${fling.toFixed(1)} px of fling (want ≈${wanted.toFixed(0)})`,
+    Math.abs(latest().bankPx - CEILING_PX) <= 6, // one tick of payout
+    `a 400 px flick should owe exactly the ceiling ${CEILING_PX.toFixed(1)} px ` +
+      `(owes ${latest().bankPx.toFixed(1)})`,
   );
 
   const coast = coastToRest(harness);
+  const coastS = (coast.ticks * TICK_MS) / 1000;
+  // The ceiling, in the unit it is written in: one flick owes at most 1.2 s of
+  // clip, whatever it asked for.
   ok(
-    coast.ticks * TICK_MS >= 2000,
-    `the flick coasted only ${(coast.ticks * TICK_MS) / 1000} s with no input`,
+    coast.movedFrames <= BANK_FRAMES + 1,
+    `the flick bought ${coast.movedFrames.toFixed(2)} frames (ceiling ${BANK_FRAMES})`,
   );
   ok(
-    coast.worstTickFrames <= DWELL_TICK_FRAMES + 1e-9,
-    `a caption tick advanced ${coast.worstTickFrames.toFixed(4)} frames ` +
-      `(cap ${DWELL_TICK_FRAMES})`,
+    coast.movedFrames > BANK_FRAMES - 2,
+    `a real flick should still spend the whole ceiling (got ${coast.movedFrames.toFixed(2)})`,
   );
+  // The hard client rule, unchanged: never faster than the clip.
   ok(
-    videoTimeForY(latest().virtualY, IH) < 0.786,
-    "the whole coast stayed inside caption 2",
+    coast.worstTickFrames <= MAX_TICK_FRAMES + 1e-9,
+    `a coasting tick advanced ${coast.worstTickFrames.toFixed(4)} frames ` +
+      `(cap ${MAX_TICK_FRAMES})`,
+  );
+  // …and it STOPS, soon. 1.2 s of clip at the cap plus the ease-out tail
+  // (0.3 s window down to a 0.15× floor ⇒ 0.3·ln(1/0.15) + 0.3 ≈ 0.87 s).
+  ok(
+    coastS <= 1.8,
+    `the page kept moving ${coastS.toFixed(2)} s after touchend (want ≤ 1.8)`,
+  );
+  ok(coastS >= 1.0, `the flick coasted only ${coastS.toFixed(2)} s`);
+  // Deceleration: over the LAST 0.3 s no tick may be faster than the one
+  // before it. (Before the ease-out the page ran at the cap until the bank hit
+  // zero and then stopped dead — a hard stop, the opposite of a fling.)
+  const tailTicks = Math.round(300 / TICK_MS);
+  const tail = coast.stepsPx.slice(-tailTicks);
+  let monotonic = true;
+  for (let i = 1; i < tail.length; i += 1) {
+    if (tail[i] > tail[i - 1] + 1e-9) monotonic = false;
+  }
+  ok(monotonic, `the last 0.3 s does not decelerate monotonically: ${tail.map((v) => v.toFixed(2)).join(" ")}`);
+  ok(
+    tail[0] > tail[tail.length - 1] + 1e-6,
+    "the last 0.3 s is slower at its end than at its start",
+  );
+  const easedFrom = Math.max(...coast.stepsPx);
+  ok(
+    tail[tail.length - 1] < easedFrom * 0.5,
+    `the final tick (${tail[tail.length - 1].toFixed(3)} px) is not an ease-out ` +
+      `of the cruising ${easedFrom.toFixed(3)} px`,
   );
   eq(latest().bankPx, 0, "the flick's bank empties");
   bankReport.push(
-    `  (F1) 400 px / 250 ms touch flick at t=${DWELL_T}: lift queued ` +
+    `  (G1) 400 px / 250 ms touch flick at t=0.40: lift queued ` +
       `${fling.toFixed(0)} px on top of ${bankBeforeLift.toFixed(0)} px owed, ` +
       `coasted ${coast.movedPx.toFixed(0)} px / ${coast.movedFrames.toFixed(2)} ` +
-      `frames over ${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s, worst tick ` +
-      `${coast.worstTickFrames.toFixed(4)} frames (cap ${DWELL_TICK_FRAMES})`,
+      `frames over ${coastS.toFixed(2)} s, worst tick ` +
+      `${coast.worstTickFrames.toFixed(4)} frames (cap ${MAX_TICK_FRAMES}); ` +
+      `last 0.3 s ${tail[0].toFixed(2)} → ${tail[tail.length - 1].toFixed(2)} px/tick`,
   );
   controller.dispose();
 }
 
-// (F2) A SLOW drag is "just a bit" and must move exactly the finger travel and
-// stop — the client explicitly does not want a light scroll to carry on.
+// (G1b) The same fling, measured where the ceiling does NOT bind: a 144 px /
+// 240 ms stroke (~0.59 px/ms after the EMA) must queue v x 150 ms of pixels and
+// no more — the old 500 ms tau queued three times that.
 {
-  const harness = createHarness(DWELL_Y);
+  const harness = createHarness(SCENIC_Y);
+  const { latest, controller } = harness;
+  const fingerY = fingerStroke(harness, 12, 12, 20);
+  const owedBeforeLift = latest().bankPx;
+  const fling = liftFlingPx(harness, fingerY);
+  ok(
+    owedBeforeLift + fling < CEILING_PX,
+    "the small-flick probe stays under the bank ceiling, so the fling is visible",
+  );
+  const lowest = TOUCH_FLING_VELOCITY_PX_MS * TOUCH_FLING_TAU_MS;
+  ok(
+    fling >= lowest * 0.9 && fling <= 0.62 * TOUCH_FLING_TAU_MS + 5,
+    `a ~0.59 px/ms release queued ${fling.toFixed(1)} px (want ` +
+      `${lowest.toFixed(0)}-${(0.62 * TOUCH_FLING_TAU_MS).toFixed(0)})`,
+  );
+  const coast = coastToRest(harness);
+  ok(
+    (coast.ticks * TICK_MS) / 1000 <= 1.4,
+    `a modest flick coasted ${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s`,
+  );
+  bankReport.push(
+    `  (G1b) 144 px / 240 ms flick: lift queued ${fling.toFixed(0)} px on top of ` +
+      `${owedBeforeLift.toFixed(0)} px owed, coasted ${coast.movedPx.toFixed(0)} px / ` +
+      `${((coast.ticks * TICK_MS) / 1000).toFixed(2)} s`,
+  );
+  controller.dispose();
+}
+
+// (G2) A SLOW drag is "just a bit": it must move exactly the finger travel and
+// stop — and the page must FOLLOW THE FINGER while it is down, with no ease-out
+// lag whatsoever (the client rejected "lag" under the finger in August).
+{
+  const harness = createHarness(SCENIC_Y);
   const { latest, controller } = harness;
   const startY = latest().virtualY;
-  const fingerY = fingerStroke(harness, 12, 10, 50); // 120 px over 600 ms
+  const environment = harness.environment;
+  environment.touchStart(700);
+  let fingerY = 700;
+  let worstLagPx = 0;
+  for (let i = 0; i < 12; i += 1) {
+    fingerY -= 10;
+    environment.touchMove(fingerY);
+    environment.clock.advance(50); // 10 px / 50 ms = 0.2 px/ms
+    worstLagPx = Math.max(worstLagPx, 700 - fingerY - (latest().virtualY - startY));
+  }
   ok(10 / 50 < TOUCH_FLING_VELOCITY_PX_MS, "the probe drag is below the threshold");
+  // One tick of the cap is the whole tolerance: the page is never further than
+  // that behind the finger, because 0.2 px/ms is well inside the 289 px/s cap.
+  const oneTickPx = (289 * TICK_MS) / 1000;
+  ok(
+    worstLagPx <= oneTickPx + 1,
+    `the page fell ${worstLagPx.toFixed(2)} px behind the finger (one tick is ` +
+      `${oneTickPx.toFixed(2)} px)`,
+  );
   const fling = liftFlingPx(harness, fingerY);
   eq(fling, 0, "a slow drag queues no fling", 1e-9);
   const coast = coastToRest(harness);
@@ -704,29 +819,31 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
     `a 120 px drag moved the page ${(latest().virtualY - startY).toFixed(2)} px`,
   );
   bankReport.push(
-    `  (F2) 120 px / 600 ms drag at t=${DWELL_T}: no fling, page moved ` +
-      `${(latest().virtualY - startY).toFixed(1)} px and stopped`,
+    `  (G2) 120 px / 600 ms drag at t=0.40: no fling, page moved ` +
+      `${(latest().virtualY - startY).toFixed(1)} px and stopped; worst lag under ` +
+      `the finger ${worstLagPx.toFixed(2)} px (one tick ${oneTickPx.toFixed(2)} px)`,
   );
   controller.dispose();
 }
 
-// (F3) A finger that PAUSES before lifting is not flicking — it is placing the
+// (G2b) A finger that PAUSES before lifting is not flicking — it is placing the
 // page. No fling, only the travel it already asked for.
 {
-  const harness = createHarness(DWELL_Y);
+  const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
   const fingerY = fingerStroke(harness, 16, 25, 16);
   environment.clock.advance(150); // the finger rests on the glass
   ok(150 > TOUCH_FLING_MAX_IDLE_MS, "the probe pause is past the idle guard");
+  ok(latest().capActive, "the paused finger is still inside the soft pin");
   const fling = liftFlingPx(harness, fingerY);
   eq(fling, 0, "a paused finger queues no fling", 1e-9);
   bankReport.push(
-    `  (F3) 150 ms pause before the lift: fling ${fling.toFixed(2)} px`,
+    `  (G2b) 150 ms pause before the lift: fling ${fling.toFixed(2)} px`,
   );
   controller.dispose();
 }
 
-// (F4) The reversal dead zone is PER SOURCE. A finger rolls back a few px as it
+// (G4c) The reversal dead zone is PER SOURCE. A finger rolls back a few px as it
 // leaves the glass — at 8 px that discarded the whole unpaid remainder of the
 // swipe — so touch gets TOUCH_BANK_REVERSAL_DEAD_ZONE_PX (a deliberate step).
 // The wheel keeps the tight 8 px it always had.
@@ -761,7 +878,7 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   ok(latest().virtualY < yWobble, "a 30 px touch step is a real reversal");
   ok(latest().bankPx < 0, "a real touch reversal takes the bank with it");
   bankReport.push(
-    `  (F4) touch: -12 px kept a ${bankBefore.toFixed(0)} px bank, -30 px ` +
+    `  (G4c) touch: -12 px kept a ${bankBefore.toFixed(0)} px bank, -30 px ` +
       `replaced it (dead zone ${TOUCH_BANK_REVERSAL_DEAD_ZONE_PX} px vs ` +
       `${BANK_REVERSAL_DEAD_ZONE_PX} px for the wheel)`,
   );
@@ -781,26 +898,24 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   controller.dispose();
 }
 
-// (F5) The caption brake must NOT leak: a scenic stretch still runs at the full
-// 12.5 f/s.
+// (G5) The ease-out may NEVER touch a live gesture. Sustained input for a full
+// second still runs at the whole 12.5 f/s, never at the 0.15× floor.
 {
   const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
-  ok(environment.wheel(100000), "the scenic flick is owned");
-  environment.clock.advance(TICK_MS);
-  const coast = coastToRest(harness);
+  const before = frameAt(latest().virtualY);
+  for (let tick = 0; tick < 60; tick += 1) {
+    environment.wheel(400);
+    environment.clock.advance(TICK_MS);
+  }
+  const advanced = frameAt(latest().virtualY) - before;
   ok(
-    coast.worstTickFrames <= MAX_TICK_FRAMES + 1e-9,
-    `a scenic tick advanced ${coast.worstTickFrames.toFixed(4)} frames`,
-  );
-  ok(
-    coast.worstTickFrames > DWELL_TICK_FRAMES + 1e-6,
-    `the caption brake leaked into the scenic run ` +
-      `(${coast.worstTickFrames.toFixed(4)} frames/tick)`,
+    advanced > NATIVE_SCRUB_FPS - 1 && advanced <= NATIVE_SCRUB_FPS + 1,
+    `a second of live input advanced ${advanced.toFixed(2)} frames (want ${NATIVE_SCRUB_FPS})`,
   );
   bankReport.push(
-    `  (F5) scenic tick ${coast.worstTickFrames.toFixed(4)} frames vs caption ` +
-      `cap ${DWELL_TICK_FRAMES} — the brake does not leak`,
+    `  (G5) 1 s of live wheel input: ${advanced.toFixed(2)} frames — the ease-out ` +
+      `never brakes a gesture that is still happening`,
   );
   controller.dispose();
 }
@@ -1349,7 +1464,9 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
 }
 
 console.log(
-  `input bank (ceiling ${SCROLL_BANK_MAX_CLIP_S} s of clip = ${BANK_FRAMES} frames) at 390x844:`,
+  `input bank (ceiling ${SCROLL_BANK_MAX_CLIP_S} s of clip = ${BANK_FRAMES} frames, ` +
+    `ease-out ${BANK_EASE_OUT_CLIP_S} s of clip down to ${BANK_EASE_OUT_FLOOR}x, ` +
+    `fling tau ${TOUCH_FLING_TAU_MS} ms) at 390x844:`,
 );
 console.log(bankReport.join("\n"));
-console.log("✓ scroll lifecycle (capped video zone + banked input + gesture-follow gallery)");
+console.log("✓ scroll lifecycle (capped video zone + short eased coast + gesture-follow gallery)");

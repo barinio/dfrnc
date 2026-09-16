@@ -13,13 +13,14 @@ export const LOTTIE_INTRO_S = 103 / 30;
 export const LOTTIE_TOTAL_S = 266 / 30; // 8.8667s — 30 fps, 266 frames
 
 // Total scrollable track height (vh). Raised 800 → 1000 ("прям дуже повільно"
-// round), then rebuilt 2026-07-29 (client: the caption slowdown still "не
-// видно"): the caption dwells in VIDEO_TIME_KNOTS now cover ONLY the readable
-// text windows at slope 0.5 clip-frac per 1000vh (was ≈1; the first cut at 0.3
-// stepped ≈11vh per source frame and read as jerky — supervisor: "дьорганим",
-// → 0.5 ≈ 6.8vh/frame) and ALL the extra vh land there. The pre-video phases
-// keep their exact vh budgets: every sp constant below is expressed as
-// vh / track, so growing the track never retimes them.
+// round), then 1240 (2026-07-29) to fund the two caption dwells that used to
+// live in VIDEO_TIME_KNOTS. Those dwells are GONE since 2026-09-16 (the 12.5
+// f/s page cap already forbids fast-forwarding a caption, so they only bought
+// 82 % of the zone's pixels for 36 % of its frames) — but the track stays
+// 1240: the 736vh it leaves the video is exactly the uniform ≈2.98 vh per
+// sequence frame the scrub now runs at. The pre-video phases keep their exact
+// vh budgets: every sp constant below is expressed as vh / track, so changing
+// the track never retimes them.
 export const SCROLL_TRACK_VH = 1240;
 
 // ── Scroll-progress partition (0..1) ─────────────────────────────────────────
@@ -58,12 +59,13 @@ export const FIGURES_END = 464 / SCROLL_TRACK_VH;
 // The Lottie reaches its final (empty) frame here — the zoom-through has fully
 // passed the camera and the typography is gone. Pulled in from 0.78 so the
 // letters clear BEFORE the video's baked caption ("WIR SIND EIN KLEINES…",
-// on-screen at video-time ≈2.8–7.5s ⇒ sp ≈ 0.682–0.77): with the old 0.78 the
-// caption played its whole life behind the still-zooming giant letters and was
-// unreadable. Must stay ≤ the caption-1 onset knot (545.6vh — see
-// VIDEO_TIME_KNOTS) so the frame is clean when it appears. The zoom-through
-// window is [VIDEO_START, LOTTIE_END] (see lottieTimeFor) — keep it short for a
-// snappy fly-past, not a lingering zoom.
+// on-screen at video-time ≈2.8–7.5s ⇒ sp ≈ 0.49–0.63 under the uniform map):
+// with the old 0.78 the caption played its whole life behind the still-zooming
+// giant letters and was unreadable. Must stay ≤ where caption 1 fades in (clip
+// frac 0.11, which the uniform map puts at ≈600vh) so the frame is clean when
+// the caption appears. The
+// zoom-through window is [VIDEO_START, LOTTIE_END] (see lottieTimeFor) — keep it
+// short for a snappy fly-past, not a lingering zoom.
 export const LOTTIE_END = 544 / SCROLL_TRACK_VH;
 
 // Lottie time (s) reached at VIDEO_START — the seam between the readable-words
@@ -81,8 +83,8 @@ export const LOTTIE_ZOOM_S = 5.72;
 export const VIDEO_START = 504 / SCROLL_TRACK_VH;
 
 // Scroll-progress width of the video fade after VIDEO_START. Tuned so the video
-// reaches 100% opacity at VIDEO time ≈ 1.4s (direction): the fade completes just
-// over halfway to the caption-1 onset knot (clip frac 0.11).
+// reaches 100% opacity at VIDEO time ≈ 1.4s (direction): under the uniform map
+// the fade is over by clip frac ≈0.026, long before caption 1 fades in (0.11).
 export const VIDEO_FADE = 22.4 / SCROLL_TRACK_VH;
 
 // Fraction of a figure's own flight window spent fading opacity in/out.

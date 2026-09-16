@@ -17,10 +17,8 @@ import {
   videoMasterTimeFor,
   lottieBleedFor,
   lottiePlaneVisibleFor,
-  CAPTION_KNOT_SPANS,
-  CAPTION_RATE,
   VIDEO_TIME_KNOTS,
-  clipRateFactorAt,
+  videoTimelinePositionFor,
 } from "../src/playback";
 import { frameIndexFor, frameTierFor, frameUrl, FRAME_COUNT, buildCoarseToFineOrder } from "../src/frames";
 import {
@@ -994,73 +992,73 @@ for (const f of FIGURES) {
     }
   }
 
-  // Caption dwell (anim track is piecewise, not linear): the dwells cover ONLY
-  // the READABLE text windows (2026-07-29 round — no brake while caption 1 is
-  // still behind the clouds, none once either caption is too close to read),
-  // and inside them the slope is 0.5 clip-frac per 1000vh of scroll (0.3 read
-  // as jerky — ≈11vh per source frame) — vs the ≈4.7 scenic pace, an ≈9×
-  // contrast. Caption 1's onset stays pinned AFTER the Lottie zoom-through has
-  // cleared (LOTTIE_END).
+  // ── UNIFORM SCRUB (2026-09-16) ─────────────────────────────────────────────
+  // The anim track is ONE linear ramp now. The five caption-dwell knots
+  // (545.6 / 551.8 / 769.8 / 843.1 / 1228.5 vh) are gone: they were authored
+  // when scroll was UNCAPPED, and under the soft pin's 12.5 f/s cap the
+  // captions cannot be fast-forwarded anyway — the dwells only spent 82 % of
+  // the zone's pixels on 36 % of its frames (a ≈9× slope contrast), which read
+  // as "nothing happens" on a phone and made one flick worth 9× more clip in
+  // one place than in another.
   {
     const vh = (v: number) => v / SCROLL_TRACK_VH; // physical scroll → sp
     const slope = (sp: number, h = 0.005) =>
       (videoMasterTimeFor(sp + h, 0, "scroll") - videoMasterTimeFor(sp, 0, "scroll")) / h;
-    // Slope in clip-frac per 1000vh (the units of the dwell "0.5" dial).
+    // Slope in clip-frac per 1000vh (the units the old dwell "0.5" dial used).
     const slopePerKvh = (sp: number, h?: number) =>
       slope(sp, h) * (1000 / SCROLL_TRACK_VH);
-    const clouds = slopePerKvh(vh(546.5), 0.002); // caption 1 on screen but still IN the clouds
-    const cap1 = slopePerKvh(vh(650)); // inside caption-1's readable dwell [551.8, 769.8]vh
-    const scenic = slopePerKvh(vh(800)); // scenic run [769.8, 843.1]vh
-    const cap2 = slopePerKvh(vh(1000)); // inside caption-2's readable dwell [843.1, 1228.5]vh
-    ok(Math.abs(cap1 - 0.5) < 0.02, `caption-1 dwell slope ≈0.5 per 1000vh (got ${cap1.toFixed(3)})`);
-    ok(Math.abs(cap2 - 0.5) < 0.02, `caption-2 dwell slope ≈0.5 per 1000vh (got ${cap2.toFixed(3)})`);
-    ok(cap1 < scenic * 0.15, "caption 1 scrubs ≥6× slower than the scenic run");
-    ok(cap2 < scenic * 0.15, "caption 2 scrubs ≥6× slower than the scenic run");
-    ok(clouds > cap1 * 3, "NO dwell while caption 1 is still behind the clouds");
-    const cap1OnsetSp = 545.6 / SCROLL_TRACK_VH; // knot: clip frac 0.11 (caption 1 fades in, in clouds)
-    ok(cap1OnsetSp >= LOTTIE_END, "caption 1 onset after the zoom-through clears");
-    eq(videoMasterTimeFor(cap1OnsetSp, 0, "scroll"), 0.11, "caption-1 onset knot anchored");
-    // Readable-window anchors (measured on the frame sequence, see playback.ts).
-    eq(videoMasterTimeFor(vh(551.8), 0, "scroll"), 0.139, "caption-1 dwell starts out of the clouds");
-    eq(videoMasterTimeFor(vh(769.8), 0, "scroll"), 0.248, "caption-1 dwell releases at the camera dive");
-    eq(videoMasterTimeFor(vh(843.1), 0, "scroll"), 0.592, "caption-2 dwell starts when the text is readable");
-    eq(videoMasterTimeFor(vh(1228.5), 0, "scroll"), 0.786, "caption-2 dwell releases when too close to read");
-  }
 
-  // ── Caption rate factor (the clip itself runs at half speed there) ──────────
-  // The dwells buy the captions more SCROLL distance per clip-second, but under
-  // a flick the page pays that distance out at the full cap, so the caption
-  // still streamed past at 12.5 f/s — only with more pixels spent on it. The
-  // client wants the captions to keep MOVING and to stay slower than the rest
-  // ("не так швидко, як решта відео"), so inside the two caption knot spans the
-  // clip advances at CAPTION_RATE and at 1.0 everywhere else. The windows are
-  // derived from VIDEO_TIME_KNOTS by INDEX: re-authoring a knot retimes the
-  // brake with it instead of leaving a stale literal behind.
-  {
-    eq(CAPTION_RATE, 0.5, "captions run at half the clip rate");
-    eq(CAPTION_KNOT_SPANS.length, 2, "exactly two caption windows");
-    for (const [from, to] of CAPTION_KNOT_SPANS) {
-      const t0 = VIDEO_TIME_KNOTS[from][1];
-      const t1 = VIDEO_TIME_KNOTS[to][1];
-      ok(t1 > t0, `caption span ${from}->${to} is non-empty`);
-      eq(clipRateFactorAt(t0), CAPTION_RATE, `span ${from}->${to}: lower bound is inside`);
-      eq(clipRateFactorAt((t0 + t1) / 2), CAPTION_RATE, `span ${from}->${to}: midpoint is inside`);
-      eq(clipRateFactorAt(t1 - 1e-9), CAPTION_RATE, `span ${from}->${to}: just under the top`);
-      eq(clipRateFactorAt(t0 - 1e-6), 1, `span ${from}->${to}: just below is full rate`);
-      eq(clipRateFactorAt(t1), 1, `span ${from}->${to}: the top bound is already full rate`);
-      eq(clipRateFactorAt(t1 + 1e-6), 1, `span ${from}->${to}: just above is full rate`);
+    eq(VIDEO_TIME_KNOTS.length, 2, "the anim-track map is exactly two knots");
+    eq(VIDEO_TIME_KNOTS[0][0], VIDEO_START, "knot 0 sits at VIDEO_START");
+    eq(VIDEO_TIME_KNOTS[0][1], 0, "knot 0 is the clip's first frame");
+    eq(VIDEO_TIME_KNOTS[1][0], 1, "knot 1 sits at sp = 1");
+    eq(VIDEO_TIME_KNOTS[1][1], VIDEO_SPLIT, "knot 1 is the morph point");
+
+    // ONE slope, measured where the two dwells and the scenic run used to
+    // differ by ≈9×.
+    const uniform = (VIDEO_SPLIT / (1 - VIDEO_START)) * (1000 / SCROLL_TRACK_VH);
+    for (const at of [510, 546.5, 650, 800, 1000, 1228.5]) {
+      eq(slopePerKvh(vh(at)), uniform, `uniform slope at ${at}vh`, 1e-9);
     }
-    // The authored windows themselves (see VIDEO_TIME_KNOTS): caption 1 is
-    // readable over clip 0.139→0.248, caption 2 over 0.592→0.786.
-    eq(clipRateFactorAt(0.2), CAPTION_RATE, "caption 1 is half rate");
-    eq(clipRateFactorAt(0.65), CAPTION_RATE, "caption 2 is half rate");
-    eq(clipRateFactorAt(0), 1, "the clip start is full rate");
-    eq(clipRateFactorAt(0.05), 1, "the cloud approach is full rate");
-    eq(clipRateFactorAt(0.3), 1, "the bridge→lake scenic run is full rate");
-    eq(clipRateFactorAt(0.5), 1, "mid-scenic is full rate");
-    eq(clipRateFactorAt(0.9), 1, "the post-caption tail is full rate");
-    eq(clipRateFactorAt(1), 1, "the clip end is full rate");
-    eq(clipRateFactorAt(Number.NaN), 1, "a non-finite clip time is full rate");
+    ok(Math.abs(uniform - 1.141) < 0.005, `uniform slope = ${uniform.toFixed(4)} per 1000vh`);
+
+    // The old anchors are now plain interpolation — no dwell, no kink.
+    for (const at of [504, 545.6, 551.8, 769.8, 843.1, 1228.5, 1240]) {
+      const expected = ((vh(at) - VIDEO_START) / (1 - VIDEO_START)) * VIDEO_SPLIT;
+      eq(videoMasterTimeFor(vh(at), 0, "scroll"), expected, `uniform clip time at ${at}vh`, 1e-12);
+    }
+
+    // The number the phone feels: constant vh per SEQUENCE FRAME.
+    const vhPerFrame =
+      (SCROLL_TRACK_VH * (1 - VIDEO_START)) / (VIDEO_SPLIT * (FRAME_COUNT - 1));
+    ok(
+      Math.abs(vhPerFrame - 2.98) < 0.01,
+      `uniform scrub is ${vhPerFrame.toFixed(3)} vh per frame (want ≈2.98)`,
+    );
+
+    // videoTimelinePositionFor is the EXACT inverse, and has to keep working
+    // now that the array it walks has a single segment.
+    for (const t of [0, 1e-6, 0.11, 0.139, 0.248, 0.4, 0.592, 0.786, VIDEO_SPLIT]) {
+      const position = videoTimelinePositionFor(t);
+      eq(position.gp, 0, `inverse t=${t} stays on the anim track`);
+      eq(
+        position.sp,
+        VIDEO_START + (t / VIDEO_SPLIT) * (1 - VIDEO_START),
+        `inverse t=${t} is affine`,
+        1e-12,
+      );
+      eq(
+        videoMasterTimeFor(position.sp, position.gp, "scroll"),
+        t,
+        `inverse round-trip t=${t}`,
+        1e-12,
+      );
+    }
+    // Past the morph point the inverse still rides the video-card track.
+    eq(videoTimelinePositionFor(1).sp, 1, "inverse t=1 is the seam sp");
+    eq(videoTimelinePositionFor(1).gp, VID_FLY_END, "inverse t=1 is the fly-out gp");
+    eq(videoMasterTimeFor(VIDEO_START, 0, "scroll"), 0, "the ramp starts at the first frame");
+    eq(videoMasterTimeFor(1, 0, "scroll"), VIDEO_SPLIT, "the ramp ends at the morph point");
   }
 
   // imageGalleryProgress: 0 through the morph + hold, opens at IMAGE_GALLERY_START
@@ -2375,7 +2373,9 @@ for (const f of FIGURES) {
       "video-zone cap tick",
     );
     ok(
-      /capVirtualY\(previous, requested, dtSec, innerHeight\)/.test(capTickBody) &&
+      /capVirtualY\(previous, requested, dtSec, innerHeight, rateScale\)/.test(capTickBody) &&
+        /const coasting =\s*\n?\s*!touchActive &&/.test(capTickBody) &&
+        /coastRateScale\(/.test(capTickBody) &&
         /pendingDeltaPx = 0;/.test(capTickBody) &&
         /decodeBackpressuredY\(previous, next, now\)/.test(capTickBody) &&
         /movePhysicalScroll\(virtualY, CAP_WRITE_TOLERANCE_PX\)/.test(capTickBody),

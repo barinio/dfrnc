@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { MutableRefObject } from "react";
 import {
+  ACTIVE_SCRUB_DIALS,
   createScrollTimelineController,
   writeScrollTimelineRefs,
 } from "../scrollTimelineController";
@@ -33,6 +34,15 @@ interface ScrollTimelineDiagnostic {
   // reads it to prove a burst is BANKED (the page keeps moving after the input
   // stops) and that a reversal empties it on the next tick.
   bankPx: number;
+  // The scrub dials this page is actually running (defaults, or whatever
+  // ?bank= / ?fling= / ?ease= overrode — see src/scrubDials.ts), so a phone
+  // session can read back what it is feeling instead of guessing.
+  dials: {
+    bankMaxClipS: number;
+    flingTauMs: number;
+    easeWindowClipS: number;
+    overridden: boolean;
+  };
 }
 
 declare global {
@@ -72,7 +82,10 @@ export function useScrollTimelineRefs(
       reducedMotion: () => reducedMotionRef.current,
       onPublish: (publication: ScrollTimelinePublication) => {
         writeScrollTimelineRefs(timelineRefs, publication);
-        if (!import.meta.env.DEV) return;
+        // DEV always; a PRODUCTION build only when a dial is set in the URL —
+        // the phone-testing seat is a `vite preview` build, and a probe that
+        // cannot read back what it changed is not a test.
+        if (!import.meta.env.DEV && !ACTIVE_SCRUB_DIALS.overridden) return;
         diagnostic = {
           scrollY: publication.scrollY,
           sp: publication.sp,
@@ -83,6 +96,12 @@ export function useScrollTimelineRefs(
           virtualY: publication.virtualY,
           capActive: publication.capActive,
           bankPx: publication.bankPx,
+          dials: {
+            bankMaxClipS: ACTIVE_SCRUB_DIALS.bankMaxClipS,
+            flingTauMs: ACTIVE_SCRUB_DIALS.flingTauMs,
+            easeWindowClipS: ACTIVE_SCRUB_DIALS.easeWindowClipS,
+            overridden: ACTIVE_SCRUB_DIALS.overridden,
+          },
         };
         window.__sg = diagnostic;
       },
