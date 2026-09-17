@@ -21,6 +21,7 @@ import {
 import type { SourceWindow } from "../frames";
 import {
   advanceScrubFrame,
+  commitScrubFrame,
   getLastPaintedScrubFrame,
   setLastPaintedScrubFrame,
   scrubTargetFrameFor,
@@ -80,6 +81,21 @@ const SCRUB_SUBSTITUTE_WINDOW = 2;
 // the ±2 substitution window populated instead of starving into holds.
 const SCRUB_PREFETCH_RADIUS = 8;
 
+// The chase WAITS for a frame that has not decoded yet rather than walking past
+// it, so it needs one escape: a neighbourhood every one of whose frames failed
+// terminally (404, decode error, retries spent) is never going to arrive, and
+// waiting for it would freeze the page for the rest of the session. Five
+// lookups, no allocation — cheap enough for the render loop, and only reached
+// on the tick a hold actually starts.
+function strandedAt(loader: FrameSequenceLoader, center: number): boolean {
+  for (let d = -SCRUB_SUBSTITUTE_WINDOW; d <= SCRUB_SUBSTITUTE_WINDOW; d += 1) {
+    const i = center + d;
+    if (i < 0 || i >= FRAME_COUNT) continue;
+    if (!loader.isTerminal(i)) return false;
+  }
+  return true;
+}
+
 // The float frame position last painted lives in frameScrub.ts (module scope,
 // so a remount resumes the chase instead of snapping) — the scroll governor
 // reads the same value for decode backpressure, and must not import three.
@@ -106,6 +122,11 @@ export default function VideoPlane({
   const textureRef = useRef<THREE.Texture | null>(null);
   const loaderRef = useRef<FrameSequenceLoader | null>(null);
   const currentImgRef = useRef<HTMLImageElement | null>(null);
+  // DEV instrumentation only: which frame index the image currently BOUND to the
+  // texture came from (−1 = nothing bound yet). `displayed` is where the chase
+  // is; this is what the screen is actually showing, and the two are not the
+  // same thing while the loader is starved. Read by scripts/verify/starve.mjs.
+  const currentImgFrameRef = useRef(-1);
   // Float position of the frame actually being PAINTED. The scroll target is
   // still an exact function of scroll position; this chases it at the clip's
   // native rate (see frameScrub.ts). null = nothing painted yet ⇒ adopt the
@@ -262,29 +283,63 @@ export default function VideoPlane({
     // than it was shot. "done" (reduced motion) never scrubs: it holds the
     // static last frame, so it snaps rather than animating there.
     const targetFrame = scrubTargetFrameFor(t);
-    const displayed =
+    // Where the chase WANTS to be this tick — not yet where it IS. It is only
+    // committed below, once the loader can actually show it.
+    const wanted =
       phase === "done"
         ? targetFrame
         : advanceScrubFrame(displayedFrameRef.current, targetFrame, delta);
-    displayedFrameRef.current = displayed;
-    // Publish the painted position for the scroll governor's decode
-    // backpressure (and for a future remount). The timestamp is what lets a
-    // paused render loop be recognised as STALE instead of freezing the page.
-    setLastPaintedScrubFrame(displayed, performance.now());
-    // Request the DISPLAYED index — the slow, predictable chase — never the raw
-    // scroll target: that keeps both the foreground decode priority and the
-    // directional prefetch on frames that are actually about to be painted.
+    // Request the index the chase is HEADED for — the slow, predictable chase,
+    // never the raw scroll target: that keeps both the foreground decode
+    // priority and the directional prefetch on frames that are actually about
+    // to be painted. Deliberately `wanted` and not the held position: a hold is
+    // waiting on exactly this decode, so pointing the priority back at the
+    // frame already on screen would starve the fix with its own hold.
     // Substitution is capped at ±SCRUB_SUBSTITUTE_WINDOW; a null result means
     // nothing that close is decoded yet, and the plane holds its last texture
     // rather than jumping to a frame the chase never reached.
-    const idx = Math.round(displayed);
+    const idx = Math.round(wanted);
     const img = readyRef.current
       ? loader.get(
           idx,
           SCRUB_SUBSTITUTE_WINDOW,
-          Math.sign(targetFrame - displayed),
+          Math.sign(targetFrame - wanted),
         )
       : null;
+    if (img && img !== currentImgRef.current) {
+      currentImgRef.current = img;
+      currentImgFrameRef.current = loader.lastResolved;
+      texture.image = img;
+      texture.needsUpdate = true;
+      if (mat.map !== texture) {
+        mat.map = texture;
+        mat.needsUpdate = true;
+      }
+    }
+    // COMMIT only what the eye is being shown. A null `img` means nothing
+    // within ±SCRUB_SUBSTITUTE_WINDOW of `idx` has decoded, so the picture
+    // holds — and the chase holds with it, which (through the painted frame
+    // published below) makes the PAGE hold too. Picture, chase and page pause
+    // together and resume together at the cap, so no gap builds up and nothing
+    // is ever paid off in one step. Before the startup barrier and in "done"
+    // there is no chase to gate; a terminally dead neighbourhood is stepped
+    // over rather than waited for.
+    const shown =
+      img !== null ||
+      !readyRef.current ||
+      phase === "done" ||
+      strandedAt(loader, idx);
+    const displayed = commitScrubFrame(displayedFrameRef.current, wanted, shown);
+    displayedFrameRef.current = displayed;
+    // Publish the frame that is REALLY on the texture — NOT the chase index —
+    // for the scroll governor's decode backpressure (and for a future remount).
+    // −1 (nothing bound yet) is dropped by the setter, so backpressure stays
+    // off until there is a picture to be behind. The timestamp is what lets a
+    // paused render loop be recognised as STALE instead of freezing the page;
+    // a HELD picture is republished fresh every tick, so a starved loader makes
+    // the page wait for as long as the frames take.
+    setLastPaintedScrubFrame(currentImgFrameRef.current, performance.now());
+
     if (import.meta.env.DEV) {
       (window as unknown as { __fp?: unknown }).__fp = {
         idx,
@@ -295,6 +350,9 @@ export default function VideoPlane({
         loadedCount: loader.loadedCount,
         loadedHere: loader.isLoaded(idx),
         imgNull: img === null,
+        // What is REALLY on the texture right now (−1 = nothing yet). Under a
+        // starved loader this stops while `displayed` keeps walking.
+        textureFrame: currentImgFrameRef.current,
         startupReady: loader.startupReady,
         startupLoadedCount: loader.startupLoadedCount,
         inFlight: loader.inFlightCount,
@@ -303,16 +361,6 @@ export default function VideoPlane({
         t: Math.round(t * 1000) / 1000,
       };
     }
-    if (img && img !== currentImgRef.current) {
-      currentImgRef.current = img;
-      texture.image = img;
-      texture.needsUpdate = true;
-      if (mat.map !== texture) {
-        mat.map = texture;
-        mat.needsUpdate = true;
-      }
-    }
-
     // Never show the plane before a frame is ready (an empty texture is black).
     mesh.visible =
       readyRef.current &&

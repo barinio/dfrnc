@@ -111,12 +111,42 @@ export function advanceScrubFrame(
   return clamp(from + Math.sign(gap) * step, 0, last);
 }
 
+// ── Showable-frame gate ──────────────────────────────────────────────────────
+// `advanceScrubFrame` says where the chase WANTS to be; this says where it is
+// allowed to actually go. The chase may only commit to a position the loader
+// can put on screen — `shown` is "get() returned an image for this position"
+// (including its ±window substitute), or "waiting is pointless because that
+// neighbourhood is terminally dead".
+//
+// This is the rule that keeps the page and the picture together. Before it, the
+// chase walked on through undecoded frames, the index it walked to was reported
+// as PAINTED, and the decode backpressure below therefore saw a healthy lead
+// and let the page run — while the texture sat on the last image that actually
+// arrived. The gap was invisible until the frames landed, and then it was paid
+// off in ONE step: the jump at the end of a flick. Holding the index instead
+// holds the picture, the reported paint and the page together; they resume
+// together at the cap, so there is nothing to catch up.
+export function commitScrubFrame(
+  held: number | null,
+  wanted: number,
+  shown: boolean,
+): number {
+  if (shown) return wanted;
+  if (held === null || !Number.isFinite(held)) return wanted;
+  return held;
+}
+
 // ── Painted-frame bridge ─────────────────────────────────────────────────────
-// The float frame position VideoPlane last PAINTED, at module scope so that a
+// The frame VideoPlane currently has ON THE TEXTURE, at module scope so that a
 // VideoPlane remount inside a live session (a Scene re-key, a fast-refresh, a
 // tier swap) resumes the chase where it left off instead of treating itself as
 // a first paint and adopting the scroll target outright — which would be the one
 // remaining way to paint a jump faster than the clip runs.
+//
+// It is the BOUND frame, not the chase index: an index nobody has seen is not a
+// paint, and publishing one is exactly how the page used to run away from the
+// picture. Negative values (−1 = nothing bound yet) are therefore not paints
+// either and leave the survivor null.
 //
 // It lives HERE rather than inside the component so the scroll governor can read
 // it for decode BACKPRESSURE without importing three/R3F: the page refuses to
@@ -125,26 +155,39 @@ export function advanceScrubFrame(
 // null = nothing has ever been painted in this session (the one legitimate
 // snap) — and also, deliberately, whenever the last paint is STALE: a paused or
 // throttled render loop (hidden tab, lost context) must never be able to
-// deadlock the page.
+// deadlock the page. Staleness is ONLY about a stopped render loop: a held
+// picture is republished with a fresh timestamp every rendered frame, so a
+// starved loader makes the page wait for as long as it takes.
 export const PAINTED_FRAME_STALE_MS = 500;
 
 let lastPaintedScrubFrame: number | null = null;
 let lastPaintedScrubAtMs = 0;
 
 export function setLastPaintedScrubFrame(frame: number, atMs: number): void {
-  if (!Number.isFinite(frame)) return;
+  if (!Number.isFinite(frame) || frame < 0) return;
   lastPaintedScrubFrame = frame;
   lastPaintedScrubAtMs = Number.isFinite(atMs) ? atMs : 0;
 }
 
 // `nowMs` omitted → no staleness test (the plain survivor used for remounts).
+//
+// A NEGATIVE age is the freshest state there is, not a stale one, and treating
+// it as stale disabled decode backpressure completely. The two sides read the
+// clock differently by construction: VideoPlane stamps performance.now() from
+// inside R3F's animation-frame callback, while the scroll controller's tick is
+// handed the requestAnimationFrame TIMESTAMP — the start of the very same
+// frame, up to a frame earlier. R3F's callback is registered first and so runs
+// first, so every single query arrived "before" the paint it was asking about
+// (measured: 466 of 466, worst −18 ms) and the governor never saw a painted
+// frame at all. Only genuine age is a staleness signal, so only genuine age is
+// tested; the 500 ms rule keeps its one job, catching a STOPPED render loop.
 export function getLastPaintedScrubFrame(nowMs?: number): number | null {
   if (lastPaintedScrubFrame === null) return null;
   if (nowMs === undefined || !Number.isFinite(nowMs)) {
     return lastPaintedScrubFrame;
   }
   const age = nowMs - lastPaintedScrubAtMs;
-  if (!Number.isFinite(age) || age < 0 || age > PAINTED_FRAME_STALE_MS) {
+  if (!Number.isFinite(age) || age > PAINTED_FRAME_STALE_MS) {
     return null;
   }
   return lastPaintedScrubFrame;

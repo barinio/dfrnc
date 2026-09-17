@@ -12,9 +12,14 @@
 // and the range clamp.
 import {
   advanceScrubFrame,
+  commitScrubFrame,
   scrubTargetFrameFor,
+  setLastPaintedScrubFrame,
+  getLastPaintedScrubFrame,
+  resetLastPaintedScrubFrame,
   NATIVE_SCRUB_FPS,
   MAX_SCRUB_DELTA_S,
+  PAINTED_FRAME_STALE_MS,
 } from "../src/frameScrub";
 import { FRAME_MANIFEST } from "../src/frameManifest";
 import { FRAME_COUNT } from "../src/frames";
@@ -287,6 +292,89 @@ const opts = { count: COUNT };
   eq(painted, Math.round(target), "backward flick fully catches up");
   ok(maxJump <= perTick, `painted index moves ≤ ${perTick} frame/tick (was ${maxJump})`);
   console.log("✓ flick never jumps");
+}
+
+// ── The chase WAITS for the picture ───────────────────────────────────────
+// The starvation bug, as arithmetic. The chase used to walk on through frames
+// the loader had not decoded, that index was published as "painted", the page's
+// decode backpressure saw a healthy lead and ran — and when the images landed
+// the texture jumped the whole accumulated gap in one step (measured: 9 frames
+// inside one 50 ms sample, after a 1000 ms freeze). commitScrubFrame is the
+// rule that stops it: an index nobody can be shown is not committed, so the
+// picture, the chase and the page hold together and resume together.
+{
+  const held = 100;
+  // Shown ⇒ the chase goes where advanceScrubFrame wanted, unchanged.
+  eq(commitScrubFrame(held, 100.4, true), 100.4, "a showable frame is committed");
+  // Not shown ⇒ the chase HOLDS. This is the whole fix in one line.
+  eq(commitScrubFrame(held, 100.4, false), held, "an undecoded frame is not committed");
+  // …and it holds however long the starvation lasts: the gap cannot grow,
+  // because `wanted` is always recomputed from the HELD position.
+  let displayed: number | null = held;
+  const target = 200; // the page asking for 100 frames it cannot have
+  for (let i = 0; i < 600; i++) {
+    const wanted = advanceScrubFrame(displayed, target, TICK, opts);
+    displayed = commitScrubFrame(displayed, wanted, false);
+  }
+  eq(displayed as number, held, "10 s of starvation advances the chase by nothing");
+  // First paint is never gated: with nothing painted yet there is no picture to
+  // be behind, so a deep link still adopts its scroll target outright.
+  eq(commitScrubFrame(null, 87, false), 87, "the first paint still adopts the target");
+  // Once the frames arrive the chase resumes AT THE CAP — it never pays off the
+  // wait in one step.
+  displayed = held;
+  let maxStep = 0;
+  for (let i = 0; i < 600; i++) {
+    const wanted = advanceScrubFrame(displayed, target, TICK, opts);
+    const next = commitScrubFrame(displayed, wanted, true);
+    maxStep = Math.max(maxStep, Math.abs(Math.round(next) - Math.round(displayed as number)));
+    displayed = next;
+  }
+  ok(
+    maxStep <= Math.ceil(NATIVE_SCRUB_FPS * TICK),
+    `resuming after a hold still moves ≤ 1 frame/tick (was ${maxStep})`,
+  );
+  eq(Math.round(displayed as number), target, "and it still arrives");
+  console.log("✓ the chase holds on an undecoded frame and resumes at the cap");
+}
+
+// ── The published paint is the frame ON SCREEN, and freshness is one-sided ──
+// Two rules the scroll governor's decode backpressure depends on. −1 means "no
+// image bound yet", which is not a paint. And a NEGATIVE age means the paint is
+// NEWER than the query, which is the freshest state there is: VideoPlane stamps
+// performance.now() inside R3F's animation-frame callback while the controller
+// is handed that same frame's requestAnimationFrame TIMESTAMP, so the query is
+// always microseconds-to-milliseconds "before" the paint. Rejecting that as
+// stale disabled backpressure completely — measured 466 of 466 queries, worst
+// age −18 ms.
+{
+  resetLastPaintedScrubFrame();
+  eq(getLastPaintedScrubFrame() as unknown as number, null as unknown as number,
+    "nothing painted yet ⇒ null");
+  setLastPaintedScrubFrame(-1, 1000);
+  ok(
+    getLastPaintedScrubFrame() === null,
+    "−1 (no image bound) is not a paint and leaves the survivor null",
+  );
+  setLastPaintedScrubFrame(140, 1000);
+  eq(getLastPaintedScrubFrame() as number, 140, "a bound frame is published");
+  eq(getLastPaintedScrubFrame(1000) as number, 140, "age 0 is fresh");
+  eq(
+    getLastPaintedScrubFrame(1000 - 18) as number,
+    140,
+    "an 18 ms NEGATIVE age (rAF timestamp vs performance.now) is fresh",
+  );
+  eq(
+    getLastPaintedScrubFrame(1000 + PAINTED_FRAME_STALE_MS) as number,
+    140,
+    "exactly at the staleness horizon is still fresh",
+  );
+  ok(
+    getLastPaintedScrubFrame(1000 + PAINTED_FRAME_STALE_MS + 1) === null,
+    "past the horizon (a STOPPED render loop) is stale, so scrolling cannot deadlock",
+  );
+  resetLastPaintedScrubFrame();
+  console.log("✓ the painted survivor publishes the bound frame and only ages forwards");
 }
 
 // ── Synthetic ride: the painted frame NEVER outruns the clip ──────────────

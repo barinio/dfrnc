@@ -362,6 +362,14 @@ export class FrameSequenceLoader {
     return this.loaded[i] ?? false;
   }
 
+  // True when `i` is never coming: every attempt failed and the retries are
+  // spent. The scrub WAITS for an undecoded frame (see VideoPlane) rather than
+  // painting past it, so it has to be able to tell "not yet" from "never" —
+  // otherwise a hole in the sequence would freeze the page for good.
+  isTerminal(i: number): boolean {
+    return this.terminal[i] ?? false;
+  }
+
   constructor(tier: FrameTier, count: number, opts: FrameLoaderOptions = {}) {
     this.tier = tier;
     this.count = normalizedCount(count);

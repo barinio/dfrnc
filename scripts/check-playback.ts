@@ -1423,20 +1423,37 @@ for (const f of FIGURES) {
     "VideoPlane scrubs the frame sequence (no <video> element / currentTime seeking)",
   );
   // The clip may never play faster than it was shot. Three shapes hold that up:
-  // the chase asks the loader for the DISPLAYED index with a TIGHT substitution
-  // window (a far substitute paints a frame the chase never reached — read as a
-  // speed-up), the prefetch radius is widened so that window stays populated,
-  // and the last painted position survives a remount so a remount cannot snap.
-  // The survivor now lives in frameScrub.ts (module scope, same lifetime) so
-  // the scroll governor can read it for decode BACKPRESSURE without importing
-  // three/R3F — VideoPlane publishes it, the controller consumes it.
+  // the chase asks the loader for the index it is HEADED for with a TIGHT
+  // substitution window (a far substitute paints a frame the chase never
+  // reached — read as a speed-up), the prefetch radius is widened so that
+  // window stays populated, and the last painted position survives a remount so
+  // a remount cannot snap. The survivor now lives in frameScrub.ts (module
+  // scope, same lifetime) so the scroll governor can read it for decode
+  // BACKPRESSURE without importing three/R3F — VideoPlane publishes it, the
+  // controller consumes it.
   ok(
     /const SCRUB_SUBSTITUTE_WINDOW = 2;/.test(videoPlaneSource) &&
       /loader\.get\(\s*idx,\s*SCRUB_SUBSTITUTE_WINDOW/.test(videoPlaneSource) &&
+      /const idx = Math\.round\(wanted\);/.test(videoPlaneSource) &&
       /neighborRadius: SCRUB_PREFETCH_RADIUS/.test(videoPlaneSource) &&
-      /useRef<number \| null>\(getLastPaintedScrubFrame\(\)\)/.test(videoPlaneSource) &&
-      /setLastPaintedScrubFrame\(displayed, performance\.now\(\)\)/.test(videoPlaneSource),
+      /useRef<number \| null>\(getLastPaintedScrubFrame\(\)\)/.test(videoPlaneSource),
     "VideoPlane holds undecoded frames, prefetches ahead and survives a remount",
+  );
+  // …and it PUBLISHES the frame that is really on the texture, never the chase
+  // index. Reporting the chase was the starvation jump: the index walked on
+  // through undecoded frames, decode backpressure below trusted it and let the
+  // page run, and the picture paid the whole gap off in one step when the
+  // images landed. The chase now commits only what can be shown
+  // (commitScrubFrame), so picture, chase and page wait together.
+  ok(
+    /const displayed = commitScrubFrame\(displayedFrameRef\.current, wanted, shown\);/.test(
+      videoPlaneSource,
+    ) &&
+      /setLastPaintedScrubFrame\(currentImgFrameRef\.current, performance\.now\(\)\)/.test(
+        videoPlaneSource,
+      ) &&
+      /strandedAt\(loader, idx\)/.test(videoPlaneSource),
+    "VideoPlane publishes the BOUND frame and waits for it (with a terminal-frame escape)",
   );
   {
     const frameScrubSource = readFileSync(
@@ -1450,9 +1467,20 @@ for (const f of FIGURES) {
       "the painted-frame survivor lives in frameScrub (shared with the governor)",
     );
     // Staleness is what keeps decode backpressure from deadlocking the page
-    // when the render loop is paused (hidden tab, lost context).
+    // when the render loop is paused (hidden tab, lost context) — and ONLY
+    // that. It is a one-sided test: a NEGATIVE age means the paint is newer
+    // than the query, which is what happens every frame (VideoPlane stamps
+    // performance.now() inside R3F's callback; the controller is handed that
+    // same frame's rAF timestamp), and rejecting it turned backpressure off
+    // entirely. −1 is "no image bound", not a paint.
     ok(
-      /PAINTED_FRAME_STALE_MS/.test(frameScrubSource),
+      /PAINTED_FRAME_STALE_MS/.test(frameScrubSource) &&
+        /if \(!Number\.isFinite\(age\) \|\| age > PAINTED_FRAME_STALE_MS\)/.test(
+          frameScrubSource,
+        ) &&
+        /if \(!Number\.isFinite\(frame\) \|\| frame < 0\) return;/.test(
+          frameScrubSource,
+        ),
       "the painted-frame survivor expires so a paused render loop cannot freeze scrolling",
     );
   }
