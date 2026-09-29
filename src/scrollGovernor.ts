@@ -9,7 +9,7 @@ import {
   videoMasterTimeFor,
   videoTimelinePositionFor,
 } from "./playback";
-import { NATIVE_CLIP_RATE_PER_S } from "./frameScrub";
+import { SCRUB_CLIP_RATE_PER_S } from "./frameScrub";
 
 export interface TimelineProgress {
   sp: number;
@@ -103,12 +103,12 @@ export function videoGovernorBounds(innerHeight: number): {
 // Everything above maps a position to a progress. This is the one place that
 // limits how fast that position may CHANGE, and it is deliberately expressed in
 // CLIP TIME, not pixels: inside videoGovernorBounds the page may advance the
-// clip by at most NATIVE_CLIP_RATE_PER_S per wall second (= the same 12.5
+// clip by at most SCRUB_CLIP_RATE_PER_S per wall second (= the same 16.25
 // sequence-frames/s the painted chase runs at), then inverts that clip time back
 // through the very same VIDEO_TIME_KNOTS to a scroll position. So the cap is
 // automatically correct at every knot slope — and since 2026-09-16 there is
-// only ONE slope: the uniform ramp gives ≈289 px/s of page at innerHeight 844
-// and ≈370 px/s at 1080, everywhere inside the anim track, plus ≈314 px/s on
+// only ONE slope: the uniform ramp gives ≈376 px/s of page at innerHeight 844
+// and ≈481 px/s at 1080, everywhere inside the anim track, plus ≈408 px/s on
 // the video-card tail. The published progress can never outrun the picture.
 //
 // `rateScale` is the one caller-supplied modifier: the controller passes < 1
@@ -151,7 +151,7 @@ export function capVirtualY(
   const scale =
     Number.isFinite(rateScale) ? Math.min(Math.max(rateScale, 0), 1) : 1;
   const budget =
-    NATIVE_CLIP_RATE_PER_S *
+    SCRUB_CLIP_RATE_PER_S *
     scale *
     (Number.isFinite(dtSec) ? Math.max(dtSec, 0) : 0);
   const tRequested = videoTimeForY(b, innerHeight);
@@ -167,7 +167,7 @@ export function capVirtualY(
 // the client complained about: "how much of a gesture may still be OWED". The
 // cap used to DROP whatever it could not spend in a 16 ms tick — a 100 px wheel
 // notch bought the ~1.5 px a scenic stretch allows and the other 98.5 px
-// evaporated, so riding the 23.5 s zone meant ~150 notches of continuous
+// evaporated, so riding the (then 23.5 s) zone meant ~150 notches of continuous
 // cranking (and on a phone a 0.3 s swipe bought ~20 px). The controller now
 // BANKS the remainder and keeps paying it out at the cap after the input stops.
 //
@@ -186,16 +186,16 @@ export function capVirtualY(
 //   FINGER — one burst, then nothing at all. Inside the zone every touchmove is
 //   preventDefault-ed, so the browser's own fling never runs; the backlog IS
 //   the coast, and without it a flick dies dead on touchend ("зависає").
-//   1.2 s of clip is 15 frames ≈ 345 px at innerHeight 844 — a 400 px swipe is
-//   worth ~1.4 s of clip here, so most of it is paid DURING the gesture and the
-//   remainder is a short, native-looking glide.
+//   1.2 s at the cap is 19.5 frames ≈ 450 px at innerHeight 844 — a 400 px
+//   swipe is worth ~1.1 s at the cap here, so most of it is paid DURING the
+//   gesture and the remainder is a short, native-looking glide.
 //
 //   TRACKPAD / WHEEL — the OS keeps FEEDING momentum wheel events for 1–2 s
 //   after the fingers lift, and every one of them is fresh input that refills
 //   the bank. A 1.2 s backlog standing on top of that tail is still being paid
 //   out long after the hand stopped, which is exactly the overshoot the user
-//   felt on the MacBook. So this backlog must be SHORT: 0.4 s of clip, 5 frames
-//   ≈ 115 px at 844, i.e. the page comes to rest within half a second of the
+//   felt on the MacBook. So this backlog must be SHORT: 0.4 s at the cap, 6.5
+//   frames ≈ 150 px at 844, i.e. the page comes to rest within half a second of the
 //   OS's own momentum stream running dry.
 export const SCROLL_BANK_MAX_CLIP_S_TOUCH = 1.2;
 export const SCROLL_BANK_MAX_CLIP_S_WHEEL = 0.4;
@@ -248,7 +248,7 @@ export function bankClipSeconds(
   if (!validHeight(innerHeight)) return 0;
   const from = videoTimeForY(virtualY, innerHeight);
   const to = videoTimeForY(virtualY + bankPx, innerHeight);
-  return Math.abs(to - from) / NATIVE_CLIP_RATE_PER_S;
+  return Math.abs(to - from) / SCRUB_CLIP_RATE_PER_S;
 }
 
 // Ceiling for a signed bank held at `virtualY`, in pixels. Unbounded on a side
@@ -274,7 +274,7 @@ export function clampBankPx(
   if (!validHeight(innerHeight)) return bankPx;
   if (!Number.isFinite(maxClipS) || maxClipS < 0) return bankPx;
 
-  const budget = maxClipS * NATIVE_CLIP_RATE_PER_S;
+  const budget = maxClipS * SCRUB_CLIP_RATE_PER_S;
   const t = videoTimeForY(virtualY, innerHeight);
 
   if (bankPx > 0) {

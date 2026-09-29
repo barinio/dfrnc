@@ -3,8 +3,8 @@
 import "./check-scroll-lifecycle";
 import { readFileSync } from "node:fs";
 import {
-  NATIVE_CLIP_RATE_PER_S,
-  NATIVE_SCRUB_FPS,
+  SCRUB_CLIP_RATE_PER_S,
+  SCRUB_FPS,
 } from "../src/frameScrub";
 import { createHash } from "node:crypto";
 import {
@@ -995,7 +995,7 @@ for (const f of FIGURES) {
   // ── UNIFORM SCRUB (2026-09-16) ─────────────────────────────────────────────
   // The anim track is ONE linear ramp now. The five caption-dwell knots
   // (545.6 / 551.8 / 769.8 / 843.1 / 1228.5 vh) are gone: they were authored
-  // when scroll was UNCAPPED, and under the soft pin's 12.5 f/s cap the
+  // when scroll was UNCAPPED, and under the soft pin's scrub cap the
   // captions cannot be fast-forwarded anyway — the dwells only spent 82 % of
   // the zone's pixels on 36 % of its frames (a ≈9× slope contrast), which read
   // as "nothing happens" on a phone and made one flick worth 9× more clip in
@@ -1488,8 +1488,8 @@ for (const f of FIGURES) {
     // The rate the governor caps the PAGE with must be the very rate the chase
     // paints at — one definition, derived, never a second hardcoded number.
     ok(
-      NATIVE_CLIP_RATE_PER_S === NATIVE_SCRUB_FPS / 294,
-      "the page cap and the paint chase share one native rate",
+      SCRUB_CLIP_RATE_PER_S === SCRUB_FPS / 294,
+      "the page cap and the paint chase share one scrub rate",
     );
   }
   const scrollHookSrc = readFileSync(
@@ -2412,7 +2412,7 @@ for (const f of FIGURES) {
     ok(
       /const scrollY = capActive \? virtualY : rawY;/.test(scrollControllerCode) &&
         /export function capVirtualY\(/.test(scrollGovernorCode) &&
-        /NATIVE_CLIP_RATE_PER_S/.test(scrollGovernorCode),
+        /SCRUB_CLIP_RATE_PER_S/.test(scrollGovernorCode),
       "progress is published from the virtual position, capped in clip time",
     );
     ok(

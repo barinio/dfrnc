@@ -121,7 +121,13 @@ try {
   console.log(
     `final: displayed=${last.displayed} target=${last.target} resolved=${last.resolved} loaded=${last.loaded}/295`,
   );
-  console.log(maxRate <= 13.5 ? "PASS — never outran the native 12.5 f/s" : "FAIL — outran the clip");
+  // The cap is SCRUB_SPEED × the native 12.5 f/s (src/frameScrub.ts); +1 for rounding.
+  const CAP_FPS = 12.5 * 1.3;
+  console.log(
+    maxRate <= CAP_FPS + 1
+      ? `PASS — never outran the ${CAP_FPS} f/s scrub cap`
+      : "FAIL — outran the cap",
+  );
 } finally {
   await browser.close();
 }

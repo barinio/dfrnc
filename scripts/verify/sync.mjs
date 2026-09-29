@@ -50,7 +50,11 @@ const VID_FLY_END = 0.4;
 const VIDEO_SPLIT = 0.84;
 const FRAME_COUNT = 295;
 const FRAME_SPAN = FRAME_COUNT - 1;
+// The clip's physical 1× pace, and the cap the page/picture actually run at —
+// mirrored from src/frameScrub.ts (SCRUB_SPEED, 2026-09-29: 30 % faster).
 const NATIVE_FPS = 12.5;
+const SCRUB_SPEED = 1.3;
+const CAP_FPS = NATIVE_FPS * SCRUB_SPEED;
 // Mirrored from src/scrollGovernor.ts / src/scrollTimelineController.ts: how
 // much playback one gesture may bank, and how long the zone absorbs a crossing.
 // TWO ceilings since 2026-09-16, one per input source. A FINGER delivers one
@@ -63,7 +67,7 @@ const SCROLL_BANK_MAX_CLIP_S_TOUCH = 1.2;
 const SCROLL_BANK_MAX_CLIP_S_WHEEL = 0.4;
 const WHEEL_ENTRY_GRACE_MS = 250;
 // UNIFORM since 2026-09-16: two knots, one linear ramp over the anim track.
-// The five caption-dwell knots are gone — under the 12.5 f/s cap the captions
+// The five caption-dwell knots are gone — under the scrub cap the captions
 // could not be fast-forwarded anyway, and their 9x slope contrast was what made
 // one flick worth 5.7 s of clip in one place and 0.6 s in another.
 const VIDEO_TIME_KNOTS = [
@@ -116,11 +120,11 @@ const PINNED_MODES = new Set(["gallery-idle", "gallery-transitioning"]);
 // SwiftShader frame times swing between ~10 ms and ~80 ms. Two window endpoints
 // with different frame ages skew the measured span by up to one frame time,
 // which at the native pace is about one frame of clip. So the per-window
-// allowance is the contract's 12.5·Δt + 1 plus one frame of sampling skew; the
+// allowance is the contract's CAP_FPS·Δt + 1 plus one frame of sampling skew; the
 // RAW rate is printed either way, and the whole-phase average — immune to that
-// skew because its span is tens of seconds — is checked against the bare 12.5.
+// skew because its span is tens of seconds — is checked against the bare CAP_FPS.
 const JITTER_FRAMES = 2;
-const OVERALL_CEILING = NATIVE_FPS + 0.1;
+const OVERALL_CEILING = CAP_FPS + 0.1;
 
 const bounds = (innerHeight) => {
   const animY = ((SCROLL_TRACK_VH - 100) / 100) * innerHeight;
@@ -132,7 +136,7 @@ const bounds = (innerHeight) => {
 // everywhere now, so this is a straight conversion — plus the ease-out tail,
 // which is 0 while the ease is off.
 function wallSecondsForClipSpan(a, b) {
-  return (Math.abs(b - a) * FRAME_SPAN) / NATIVE_FPS + EASE_TAIL_EXCESS_MS / 1000;
+  return (Math.abs(b - a) * FRAME_SPAN) / CAP_FPS + EASE_TAIL_EXCESS_MS / 1000;
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -406,7 +410,7 @@ function analyse(samples, label, { rateOnly = false } = {}) {
     for (let i = 0; i < j; i += 1) {
       const span = (samples[j].ms - samples[i].ms) / 1000;
       if (span < 1) continue;
-      const allowance = NATIVE_FPS * span + 1 + JITTER_FRAMES;
+      const allowance = CAP_FPS * span + 1 + JITTER_FRAMES;
       const dTarget =
         Math.abs(samples[j].clipT - samples[i].clipT) * FRAME_SPAN;
       const dDisplayed = Math.abs(samples[j].displayed - samples[i].displayed);
@@ -448,7 +452,7 @@ function analyse(samples, label, { rateOnly = false } = {}) {
   const overallRate = phaseSpan > 0 ? phaseFrames / phaseSpan : 0;
   if (overallRate > OVERALL_CEILING) {
     failures.push(
-      `${label} (i): whole-phase average ${fmt(overallRate, 3)} frames/s exceeds the native ${NATIVE_FPS}`,
+      `${label} (i): whole-phase average ${fmt(overallRate, 3)} frames/s exceeds the cap ${CAP_FPS}`,
     );
   }
 
@@ -519,8 +523,8 @@ function report(label, a) {
   console.log(`  ${label}`);
   console.log(
     `    (i)   max 1s-window rate: target ${fmt(a.targetRate, 3)} f/s, ` +
-      `painted ${fmt(a.displayedRate, 3)} f/s  (native ${NATIVE_FPS}, ` +
-      `allowance 12.5·Δt+${1 + JITTER_FRAMES})`,
+      `painted ${fmt(a.displayedRate, 3)} f/s  (cap ${CAP_FPS}, ` +
+      `allowance ${CAP_FPS}·Δt+${1 + JITTER_FRAMES})`,
   );
   console.log(
     `          whole phase: ${fmt(a.phaseFrames, 1)} frames in ${fmt(a.phaseSpan)} s ` +
@@ -638,7 +642,7 @@ async function runProfile(browser, profile) {
   // The client's complaint in one phase. Input used to be dropped every tick,
   // so the page only moved while the user kept cranking (~150 notches for the
   // 23.5 s zone). One burst must now keep the page running ON ITS OWN — at the
-  // very same 12.5 f/s — and one reverse event must still be felt immediately.
+  // very same CAP_FPS — and one reverse event must still be felt immediately.
   //
   // FOR HOW LONG depends on the device. This profile's burst is a trackpad
   // burst on desktop (ceiling 0.4 s of clip ≈ 5 frames, so the page carries
@@ -702,7 +706,7 @@ async function runProfile(browser, profile) {
   }
   await sleep(WHEEL_ENTRY_GRACE_MS + 250);
   // Ride into the middle of the zone. Every part of it runs at the same
-  // ~289 px/s now, so one place is as good as another — this one just leaves
+  // ~376 px/s at 844 now, so one place is as good as another — this one just leaves
   // room on both sides for the coast and the reversal probe below.
   for (let i = 0; i < 300; i += 1) {
     if ((await page.evaluate(() => window.__sg.clipT)) >= 0.26) break;
@@ -734,7 +738,7 @@ async function runProfile(browser, profile) {
   // The ceiling is in CLIP seconds, so it is checked in FRAMES; the wall-clock
   // bound is that same clip span played at the cap plus the ease-out tail
   // (which is 0 now that the ease is off).
-  const BANK_CEILING_FRAMES = bankCeilingClipS * NATIVE_FPS;
+  const BANK_CEILING_FRAMES = bankCeilingClipS * CAP_FPS;
   if (!(tail.movedFrames <= BANK_CEILING_FRAMES + 2)) {
     failures.push(
       `${profile.name} (bank ii): one burst bought ${fmt(tail.movedFrames, 1)} ` +
@@ -924,17 +928,17 @@ async function runProfile(browser, profile) {
         `${profile.name} (flick iii): only ${coastSamples.length} samples of coast`,
       );
     }
-    if (worstFlickRate > NATIVE_FPS + 0.4) {
+    if (worstFlickRate > CAP_FPS + 0.4) {
       failures.push(
         `${profile.name} (flick iii): the coast ran ${fmt(worstFlickRate, 3)} ` +
-          `frames/s over a ${fmt(worstFlickSpan)} s window (cap ${NATIVE_FPS})`,
+          `frames/s over a ${fmt(worstFlickSpan)} s window (cap ${CAP_FPS})`,
       );
     }
     // (d) the ceiling, in the unit it is written in.
-    if (!(flickTail.movedFrames <= SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_FPS + 3)) {
+    if (!(flickTail.movedFrames <= SCROLL_BANK_MAX_CLIP_S_TOUCH * CAP_FPS + 3)) {
       failures.push(
         `${profile.name} (flick iv): one flick bought ${fmt(flickTail.movedFrames, 1)} ` +
-          `frames, past the ${SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_FPS}-frame ` +
+          `frames, past the ${SCROLL_BANK_MAX_CLIP_S_TOUCH * CAP_FPS}-frame ` +
           `finger ceiling`,
       );
     }
@@ -946,10 +950,10 @@ async function runProfile(browser, profile) {
         `frames / ${fmt(flickTail.movedPx, 0)} px on its own, then stopped ` +
         `(fling budget ${TOUCH_FLING_TAU_MS} ms of release velocity, finger bank ` +
         `ceiling ${SCROLL_BANK_MAX_CLIP_S_TOUCH} s of clip = ` +
-        `${SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_FPS} frames, ease off)` +
+        `${SCROLL_BANK_MAX_CLIP_S_TOUCH * CAP_FPS} frames, ease off)` +
         `\n    max 1s-window clip rate during the coast: ` +
         `${fmt(worstFlickRate, 3)} f/s over ${coastSamples.length} samples ` +
-        `(cap ${NATIVE_FPS})`,
+        `(cap ${CAP_FPS})`,
     );
 
     // (e) a SLOW drag is "just a bit": it must move the finger's travel and
@@ -995,12 +999,13 @@ async function runProfile(browser, profile) {
     );
   }
   const forwardSeconds = (Date.now() - forwardStart) / 1000;
-  // Uniform map: a full-demand ride IS the clip's runtime (23.52 s). Nothing
+  // Uniform map: a full-demand ride IS the clip's runtime at the cap
+  // (23.52 s / 1.3 ≈ 18.09 s). Nothing
   // may make it shorter; the caption dwells used to make it ~35 s.
-  if (forwardSeconds < FRAME_SPAN / NATIVE_FPS - 1) {
+  if (forwardSeconds < FRAME_SPAN / CAP_FPS - 1) {
     failures.push(
       `${profile.name}: the forward ride crossed the zone in ${fmt(forwardSeconds)} s, ` +
-        `faster than the clip's ${fmt(FRAME_SPAN / NATIVE_FPS)} s`,
+        `faster than the clip at the cap, ${fmt(FRAME_SPAN / CAP_FPS)} s`,
     );
   }
   await sleep(8000); // 8 s of quiet, still sampling
@@ -1013,7 +1018,7 @@ async function runProfile(browser, profile) {
   console.log(
     `  forward flick: requested ~unbounded, took ${fmt(forwardSeconds)} s to ` +
       `cross the ${fmt(zone.endY - zone.startY, 0)} px zone ` +
-      `(clip runtime ${fmt(FRAME_SPAN / NATIVE_FPS)} s), reached the pin: ${pinned}`,
+      `(clip runtime at the cap ${fmt(FRAME_SPAN / CAP_FPS)} s), reached the pin: ${pinned}`,
   );
   report("forward", forward);
 

@@ -40,7 +40,11 @@ import {
   videoGovernorBounds,
   videoTimeForY,
 } from "../src/scrollGovernor";
-import { NATIVE_SCRUB_FPS, scrubTargetFrameFor } from "../src/frameScrub";
+import {
+  SCRUB_CLIP_RATE_PER_S,
+  SCRUB_FPS,
+  scrubTargetFrameFor,
+} from "../src/frameScrub";
 import { FRAME_COUNT } from "../src/frames";
 import { galleryStepTargets } from "../src/galleryGestureStepper";
 import { SCROLL_TRACK_VH, VID_FLY_END } from "../src/constants";
@@ -346,9 +350,12 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
   environment.clock.advance(TICK_MS * 4);
   const flickFrames = frameAt(latest().virtualY) - startFrame;
   ok(flickFrames > 0, "the flick still moves the page forward");
+  // Four ticks at the cap = 4/60 s × SCRUB_FPS ≈ 1.08 frames (was ≤ 1 at 1×).
+  const fourTickFrames = (SCRUB_FPS * 4 * TICK_MS) / 1000;
   ok(
-    flickFrames <= 1,
-    `a banked flick still advances at most one frame in four ticks (got ${flickFrames.toFixed(3)})`,
+    flickFrames <= fourTickFrames + 1e-9,
+    `a banked flick still advances at most four ticks of clip ` +
+      `(${fourTickFrames.toFixed(3)} frames; got ${flickFrames.toFixed(3)})`,
   );
 
   // Sustained maximum input for a full second: the clip's own rate, and since
@@ -359,7 +366,7 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
     environment.clock.advance(TICK_MS);
   }
   const advanced = frameAt(latest().virtualY) - before;
-  const seatFps = NATIVE_SCRUB_FPS;
+  const seatFps = SCRUB_FPS;
   ok(
     advanced <= seatFps + 1,
     `one second of 4000 px wheel events advanced ${advanced.toFixed(2)} frames ` +
@@ -397,12 +404,12 @@ function rideCapToSeam(harness: Harness, pxPerEvent = 200, maxTicks = 2000): num
 
 // ── The video zone BANKS what the cap cannot spend ──────────────────────────
 // The cap used to drop the excess of every tick, so a 100 px notch bought the
-// ~1.5 px a scenic stretch allows and the rest evaporated: crossing the 23.5 s
+// ~1.5 px a scenic stretch allows and the rest evaporated: crossing the (then 23.5 s)
 // zone took ~150 notches of continuous cranking. The remainder is now banked
 // and paid out at the very same cap after the input stops — bounded by the
 // ceiling of whichever input last fed it (finger 1.2 s of clip, trackpad/keys
 // 0.4 s), so one flick can never buy the whole zone and never plays it faster
-// than 1×.
+// than the cap (SCRUB_SPEED × real time).
 
 // Tick a harness with ZERO further input until the page comes to rest, watching
 // that no single tick ever outruns the clip.
@@ -439,12 +446,12 @@ function coastToRest(harness: Harness, maxTicks = 900) {
 // Reported for the record: what a flick actually buys, in the numbers the
 // client feels (px of page, frames of clip, seconds of coasting).
 const bankReport: string[] = [];
-const MAX_TICK_FRAMES = (NATIVE_SCRUB_FPS * TICK_MS) / 1000;
+const MAX_TICK_FRAMES = (SCRUB_FPS * TICK_MS) / 1000;
 // TWO ceilings since 2026-09-16, one per input source: a finger delivers one
 // burst and nothing after (its backlog IS the coast), a trackpad keeps being
 // fed OS momentum for another 1-2 s (so its backlog must be short).
-const TOUCH_BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_SCRUB_FPS;
-const WHEEL_BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S_WHEEL * NATIVE_SCRUB_FPS;
+const TOUCH_BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S_TOUCH * SCRUB_FPS;
+const WHEEL_BANK_FRAMES = SCROLL_BANK_MAX_CLIP_S_WHEEL * SCRUB_FPS;
 const SCENIC_Y = scrollYForVideoTime(0.4, IH);
 // What each ceiling is worth in PIXELS mid-clip at 390x844 — the number the
 // hand feels: one gesture can never owe more page than its own ceiling.
@@ -454,6 +461,11 @@ const TOUCH_CEILING_PX = clampBankPx(
   IH,
   SCROLL_BANK_MAX_CLIP_S_TOUCH,
 );
+// One 60 Hz tick of the page cap mid-clip at 390x844 (≈376 px/s ⇒ ≈6.3 px;
+// was ≈4.8 px at 1×): the payout that happens on the very tick being observed.
+const CAP_PX_PER_S =
+  scrollYForVideoTime(0.4 + SCRUB_CLIP_RATE_PER_S, IH) - SCENIC_Y;
+const ONE_TICK_CAP_PX = (CAP_PX_PER_S * TICK_MS) / 1000;
 const WHEEL_CEILING_PX = clampBankPx(
   SCENIC_Y,
   1e6,
@@ -516,7 +528,7 @@ const WHEEL_CEILING_PX = clampBankPx(
 
 // (G3b) The bank NEVER buys speed: a single 1e6 px WHEEL flick still moves at
 // the cap, still for only the wheel ceiling, and never a frame more per tick
-// than 12.5 f/s.
+// than the SCRUB_FPS cap.
 {
   const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
@@ -716,7 +728,7 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
     "an ordinary thumb flick alone already saturates the touch ceiling",
   );
   ok(
-    Math.abs(latest().bankPx - TOUCH_CEILING_PX) <= 6, // one tick of payout
+    Math.abs(latest().bankPx - TOUCH_CEILING_PX) <= ONE_TICK_CAP_PX + 1, // one tick of payout
     `a 400 px flick should owe exactly the TOUCH ceiling ` +
       `${TOUCH_CEILING_PX.toFixed(1)} px (owes ${latest().bankPx.toFixed(1)})`,
   );
@@ -775,7 +787,7 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   liftFlingPx(harness, fingerY);
   const touchBank = latest().bankPx;
   ok(
-    Math.abs(touchBank - TOUCH_CEILING_PX) <= 6,
+    Math.abs(touchBank - TOUCH_CEILING_PX) <= ONE_TICK_CAP_PX + 1,
     `the finger's bank should sit on the touch ceiling (owes ${touchBank.toFixed(1)})`,
   );
   ok(
@@ -915,8 +927,9 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   }
   ok(10 / 50 < TOUCH_FLING_VELOCITY_PX_MS, "the probe drag is below the threshold");
   // One tick of the cap is the whole tolerance: the page is never further than
-  // that behind the finger, because 0.2 px/ms is well inside the 289 px/s cap.
-  const oneTickPx = (289 * TICK_MS) / 1000;
+  // that behind the finger, because 0.2 px/ms is well inside the ≈376 px/s cap
+  // (uniform map: the page cap anywhere in the anim track, derived).
+  const oneTickPx = ONE_TICK_CAP_PX;
   ok(
     worstLagPx <= oneTickPx + 1,
     `the page fell ${worstLagPx.toFixed(2)} px behind the finger (one tick is ` +
@@ -1011,7 +1024,7 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
 }
 
 // (G5) The ease-out may NEVER touch a live gesture. Sustained input for a full
-// second still runs at the whole 12.5 f/s, never at the 0.15× floor.
+// second still runs at the whole SCRUB_FPS cap, never at the 0.15× floor.
 {
   const harness = createHarness(SCENIC_Y);
   const { environment, latest, controller } = harness;
@@ -1022,8 +1035,8 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   }
   const advanced = frameAt(latest().virtualY) - before;
   ok(
-    advanced > NATIVE_SCRUB_FPS - 1 && advanced <= NATIVE_SCRUB_FPS + 1,
-    `a second of live input advanced ${advanced.toFixed(2)} frames (want ${NATIVE_SCRUB_FPS})`,
+    advanced > SCRUB_FPS - 1 && advanced <= SCRUB_FPS + 1,
+    `a second of live input advanced ${advanced.toFixed(2)} frames (want ${SCRUB_FPS})`,
   );
   bankReport.push(
     `  (G5) 1 s of live wheel input: ${advanced.toFixed(2)} frames — the ease-out ` +
@@ -1133,7 +1146,7 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
     worst = Math.max(worst, publications[i].clipT - publications[i - 1].clipT);
   }
   ok(
-    worst * (FRAME_COUNT - 1) <= (NATIVE_SCRUB_FPS * TICK_MS) / 1000 + 1e-6,
+    worst * (FRAME_COUNT - 1) <= (SCRUB_FPS * TICK_MS) / 1000 + 1e-6,
     `the ride never published more than one tick of clip time (got ${(worst * (FRAME_COUNT - 1)).toFixed(4)} frames)`,
   );
   controller.dispose();
@@ -1178,7 +1191,11 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   const harness = createHarness(seamY - 40);
   const { environment, latest, controller } = harness;
   rideCapToSeam(harness);
-  eq(environment.scrollY, seamY, "physical scroll lands at seam");
+  // Within the controller's 1 px BOUNDARY_TOLERANCE_PX: whether the last cap
+  // tick left the physical scroll exactly on the seam or a sub-pixel short of
+  // it is a phase accident of the per-tick step (it already happened at 1× for
+  // starts of seamY − 41 / − 46; at 1.3× it happens for − 40).
+  eq(environment.scrollY, seamY, "physical scroll lands at seam", 1);
   eq(latest().gp, VID_FLY_END, "entry lands at first photo-ready state");
   eq(latest().galleryStep, 0, "entry does not advance a photo");
   ok(environment.wheel(500), "entry momentum remains cancelled");
@@ -1376,7 +1393,7 @@ function liftFlingPx(harness: Harness, fingerY: number): number {
   const rewound = (rewindFrom - before.latest().clipT) * (FRAME_COUNT - 1);
   ok(rewound > 0, "the capped zone rewinds");
   ok(
-    rewound <= (NATIVE_SCRUB_FPS * 30 * TICK_MS) / 1000 + 1,
+    rewound <= (SCRUB_FPS * 30 * TICK_MS) / 1000 + 1,
     `a rewind cannot outrun the clip either (got ${rewound.toFixed(2)} frames)`,
   );
   before.controller.dispose();

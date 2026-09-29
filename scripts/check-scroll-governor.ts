@@ -32,8 +32,10 @@ import {
 } from "../src/scrollGovernor";
 import { parseScrubDials } from "../src/scrubDials";
 import {
-  NATIVE_CLIP_RATE_PER_S,
   NATIVE_SCRUB_FPS,
+  SCRUB_CLIP_RATE_PER_S,
+  SCRUB_FPS,
+  SCRUB_SPEED,
   scrubTargetFrameFor,
 } from "../src/frameScrub";
 import { FRAME_COUNT } from "../src/frames";
@@ -140,9 +142,9 @@ const FLICK_PX_PER_S = 10000;
 const FRAME_SPAN = FRAME_COUNT - 1;
 
 eq(
-  NATIVE_CLIP_RATE_PER_S,
-  NATIVE_SCRUB_FPS / FRAME_SPAN,
-  "clip rate is the native fps expressed in clip units",
+  SCRUB_CLIP_RATE_PER_S,
+  SCRUB_FPS / FRAME_SPAN,
+  "clip rate is the scrub cap expressed in clip units",
   1e-15,
 );
 
@@ -173,7 +175,7 @@ function maxFramesPerSecond(frames: number[]): number {
   return worst;
 }
 
-const RATE_CEILING = NATIVE_SCRUB_FPS + 1;
+const RATE_CEILING = SCRUB_FPS + 1;
 
 // Every authored knot, both directions, at 10 000 px/s of demand.
 for (const [knotSp, knotT] of VIDEO_TIME_KNOTS) {
@@ -184,7 +186,7 @@ for (const [knotSp, knotT] of VIDEO_TIME_KNOTS) {
     ok(
       worst <= RATE_CEILING,
       `knot sp=${knotSp.toFixed(4)} t=${knotT} dir=${sign}: ` +
-        `${worst.toFixed(3)} frames/s exceeds the native ${RATE_CEILING}`,
+        `${worst.toFixed(3)} frames/s exceeds the cap ${RATE_CEILING}`,
     );
   }
 }
@@ -220,12 +222,13 @@ for (const t of [0.85, 0.92, 0.99]) {
 }
 
 // Whole-zone traversal at unlimited demand is now EXACTLY the clip's own
-// running time: one uniform slope, one rate, nothing stretched.
-const EXPECTED_TRAVERSAL_S = 1 / NATIVE_CLIP_RATE_PER_S;
+// running time divided by SCRUB_SPEED (23.52 s / 1.3 ≈ 18.09 s): one uniform
+// slope, one rate, nothing stretched.
+const EXPECTED_TRAVERSAL_S = 1 / SCRUB_CLIP_RATE_PER_S;
 eq(
   EXPECTED_TRAVERSAL_S,
-  FRAME_SPAN / NATIVE_SCRUB_FPS,
-  "a full-demand ride is the clip's runtime, with no caption stretching",
+  FRAME_SPAN / SCRUB_FPS,
+  "a full-demand ride is the clip's runtime at the scrub cap, with no caption stretching",
   1e-9,
 );
 {
@@ -247,11 +250,11 @@ eq(
     `full-demand traversal took ${seconds.toFixed(2)} s, past the expected ` +
       `${EXPECTED_TRAVERSAL_S.toFixed(2)} s`,
   );
-  // Nothing lengthens the ride any more: it IS the clip.
+  // Nothing lengthens the ride any more: it IS the clip, at SCRUB_SPEED×.
   ok(
-    Math.abs(seconds - FRAME_SPAN / NATIVE_SCRUB_FPS) <= 0.5,
-    `a full-demand ride is ${seconds.toFixed(2)} s, the clip is ` +
-      `${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s`,
+    Math.abs(seconds - FRAME_SPAN / SCRUB_FPS) <= 0.5,
+    `a full-demand ride is ${seconds.toFixed(2)} s, the clip at the cap is ` +
+      `${(FRAME_SPAN / SCRUB_FPS).toFixed(2)} s`,
   );
 }
 
@@ -262,7 +265,7 @@ eq(
 // 52 px/frame in a caption dwell at 844 — a 9× asymmetry that made the same
 // swipe buy 5.7 s of clip in one place and 0.6 s in another.)
 function pxPerFrameAt(t: number, height: number): number {
-  const step = NATIVE_CLIP_RATE_PER_S / NATIVE_SCRUB_FPS; // one frame of clip
+  const step = SCRUB_CLIP_RATE_PER_S / SCRUB_FPS; // one frame of clip
   const lo = Math.max(t - step / 2, 0);
   const hi = Math.min(t + step / 2, VIDEO_SPLIT);
   return (
@@ -300,18 +303,22 @@ function pageCapPxPerS(height: number): number {
   const y1 = capVirtualY(y0, y0 + 1e6, 1, height);
   return y1 - y0;
 }
+// = uniform px/frame × SCRUB_FPS: ≈376 px/s at 844, ≈481 at 1080 (was 289 /
+// 370 at 1×).
 ok(
-  Math.abs(pageCapPxPerS(IH) - 289) < 4,
-  `page cap at 844 = ${pageCapPxPerS(IH).toFixed(1)} px/s (want ≈289)`,
+  Math.abs(pageCapPxPerS(IH) - UNIFORM_PX_PER_FRAME[IH] * SCRUB_FPS) < 1e-6 &&
+    Math.abs(pageCapPxPerS(IH) - 376) < 4,
+  `page cap at 844 = ${pageCapPxPerS(IH).toFixed(1)} px/s (want ≈376)`,
 );
 ok(
-  Math.abs(pageCapPxPerS(1080) - 370) < 4,
-  `page cap at 1080 = ${pageCapPxPerS(1080).toFixed(1)} px/s (want ≈370)`,
+  Math.abs(pageCapPxPerS(1080) - UNIFORM_PX_PER_FRAME[1080] * SCRUB_FPS) < 1e-6 &&
+    Math.abs(pageCapPxPerS(1080) - 481) < 4,
+  `page cap at 1080 = ${pageCapPxPerS(1080).toFixed(1)} px/s (want ≈481)`,
 );
 
 // A tick at full demand spends exactly one tick of clip, anywhere.
 {
-  const FULL_TICK_T = NATIVE_CLIP_RATE_PER_S * TICK_S;
+  const FULL_TICK_T = SCRUB_CLIP_RATE_PER_S * TICK_S;
   const spend = (t: number, sign: number) =>
     Math.abs(
       videoTimeForY(
@@ -410,7 +417,7 @@ for (const badWindow of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
 // bankClipSeconds: the debt in the unit the ease-out reasons about.
 {
   const y = scrollYForVideoTime(0.4, IH);
-  const oneSecond = scrollYForVideoTime(0.4 + NATIVE_CLIP_RATE_PER_S, IH) - y;
+  const oneSecond = scrollYForVideoTime(0.4 + SCRUB_CLIP_RATE_PER_S, IH) - y;
   eq(bankClipSeconds(y, oneSecond, IH), 1, "one second of clip owed", 1e-9);
   eq(bankClipSeconds(y, -oneSecond, IH), 1, "a rewind owes the same magnitude", 1e-9);
   eq(bankClipSeconds(y, 0, IH), 0, "an empty bank owes nothing");
@@ -466,7 +473,7 @@ for (const badWindow of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
   );
   eq(
     videoTimeForY(forward, IH) - videoTimeForY(midY, IH),
-    NATIVE_CLIP_RATE_PER_S * TICK_S,
+    SCRUB_CLIP_RATE_PER_S * TICK_S,
     "one tick spends exactly one tick of clip time",
     1e-12,
   );
@@ -504,7 +511,7 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
   ok(next > bounds.startY, "entering residue crosses the zone start");
   eq(
     videoTimeForY(next, IH),
-    NATIVE_CLIP_RATE_PER_S * TICK_S,
+    SCRUB_CLIP_RATE_PER_S * TICK_S,
     "entering spends exactly one tick inside the zone",
     1e-12,
   );
@@ -513,7 +520,7 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
   // Leaving forward: the last in-zone sliver fits the budget, so the whole
   // request lands past the seam and the pinned gallery takes over.
   const budgetY =
-    bounds.endY - scrollYForVideoTime(1 - NATIVE_CLIP_RATE_PER_S * TICK_S, IH);
+    bounds.endY - scrollYForVideoTime(1 - SCRUB_CLIP_RATE_PER_S * TICK_S, IH);
   ok(budgetY > 0, "the seam edge has a measurable per-tick budget");
   const from = bounds.endY - budgetY * 0.5;
   eq(
@@ -526,7 +533,7 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
 }
 {
   // Leaving backward: symmetric.
-  const budgetY = scrollYForVideoTime(NATIVE_CLIP_RATE_PER_S * TICK_S, IH) - bounds.startY;
+  const budgetY = scrollYForVideoTime(SCRUB_CLIP_RATE_PER_S * TICK_S, IH) - bounds.startY;
   const from = bounds.startY + budgetY * 0.5;
   eq(
     capVirtualY(from, from - 500, TICK_S, IH),
@@ -551,13 +558,13 @@ for (const invalidHeight of [0, -1, Number.NaN]) {
 // may still be owed. Its ceiling is in CLIP TIME for the same reason the cap is,
 // and since 2026-09-16 there are TWO of them, because the devices deliver a
 // gesture in opposite shapes: a FINGER gives one burst and nothing after, so its
-// backlog IS the coast (1.2 s of clip = 15 frames); a TRACKPAD keeps feeding OS
+// backlog IS the coast (1.2 s at the cap = 19.5 frames); a TRACKPAD keeps feeding OS
 // momentum wheel events for another 1-2 s, so its backlog has to be short or the
-// page overshoots the hand (0.4 s = 5 frames). The pure function takes the
+// page overshoots the hand (0.4 s = 6.5 frames). The pure function takes the
 // ceiling as a parameter and defaults to the permissive, touch one.
-const BANK_BUDGET_T = SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_CLIP_RATE_PER_S;
+const BANK_BUDGET_T = SCROLL_BANK_MAX_CLIP_S_TOUCH * SCRUB_CLIP_RATE_PER_S;
 const BANK_BUDGET_FRAMES = BANK_BUDGET_T * FRAME_SPAN;
-const WHEEL_BUDGET_T = SCROLL_BANK_MAX_CLIP_S_WHEEL * NATIVE_CLIP_RATE_PER_S;
+const WHEEL_BUDGET_T = SCROLL_BANK_MAX_CLIP_S_WHEEL * SCRUB_CLIP_RATE_PER_S;
 const WHEEL_BUDGET_FRAMES = WHEEL_BUDGET_T * FRAME_SPAN;
 const HUGE_BANK_PX = 1e6;
 
@@ -569,12 +576,12 @@ ok(
 );
 eq(
   BANK_BUDGET_FRAMES,
-  SCROLL_BANK_MAX_CLIP_S_TOUCH * NATIVE_SCRUB_FPS,
-  "the touch ceiling is exactly 1.2 s of native frames",
+  SCROLL_BANK_MAX_CLIP_S_TOUCH * SCRUB_FPS,
+  "the touch ceiling is exactly 1.2 s of frames at the cap",
   1e-9,
 );
-eq(BANK_BUDGET_FRAMES, 15, "1.2 s at 12.5 f/s is 15 sequence frames", 1e-9);
-eq(WHEEL_BUDGET_FRAMES, 5, "0.4 s at 12.5 f/s is 5 sequence frames", 1e-9);
+eq(BANK_BUDGET_FRAMES, 19.5, "1.2 s at 16.25 f/s is 19.5 sequence frames", 1e-9);
+eq(WHEEL_BUDGET_FRAMES, 6.5, "0.4 s at 16.25 f/s is 6.5 sequence frames", 1e-9);
 
 // PARAMETERISED: the pure function takes the ceiling, so the ?bank= dial moves
 // it without this module (or these tests) knowing about a URL.
@@ -584,7 +591,7 @@ eq(WHEEL_BUDGET_FRAMES, 5, "0.4 s at 12.5 f/s is 5 sequence frames", 1e-9);
     const px = clampBankPx(y, HUGE_BANK_PX, IH, clipS);
     eq(
       videoTimeForY(y + px, IH) - 0.4,
-      clipS * NATIVE_CLIP_RATE_PER_S,
+      clipS * SCRUB_CLIP_RATE_PER_S,
       `an explicit ${clipS} s ceiling buys ${clipS} s of clip`,
       1e-12,
     );
@@ -714,7 +721,7 @@ eq(WHEEL_BUDGET_FRAMES, 5, "0.4 s at 12.5 f/s is 5 sequence frames", 1e-9);
   );
 }
 
-// Both edges at once can never happen (the clip is 23.5 s long), but a degenerate
+// Both edges at once can never happen (the clip is ≥18 s long at the cap), but a degenerate
 // viewport must still pass the bank through untouched rather than zero it.
 for (const invalidHeight of [0, -1, Number.NaN]) {
   eq(
@@ -732,7 +739,7 @@ function segmentSpeed(segment: number, height: number): number {
   const [, t1] = VIDEO_TIME_KNOTS[segment];
   const y0 = scrollYForVideoTime(t0, height);
   const y1 = scrollYForVideoTime(t1, height);
-  return ((y1 - y0) / (t1 - t0)) * NATIVE_CLIP_RATE_PER_S;
+  return ((y1 - y0) / (t1 - t0)) * SCRUB_CLIP_RATE_PER_S;
 }
 
 for (const height of [IH, 1080]) {
@@ -742,18 +749,19 @@ for (const height of [IH, 1080]) {
   console.log(
     `${label}: uniform ${UNIFORM_PX_PER_FRAME[height].toFixed(2)} px/frame, ` +
       `page cap ${segmentSpeed(1, height).toFixed(1)} px/s ` +
-      `(video-card tail ${(((tailEnd - tailY0) / (1 - VIDEO_SPLIT)) * NATIVE_CLIP_RATE_PER_S).toFixed(1)} px/s)`,
+      `(video-card tail ${(((tailEnd - tailY0) / (1 - VIDEO_SPLIT)) * SCRUB_CLIP_RATE_PER_S).toFixed(1)} px/s)`,
   );
 }
 console.log(
   `zone = ${(bounds.endY - bounds.startY).toFixed(1)} px, ` +
-    `clip runtime = ${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s, ` +
+    `clip runtime = ${(FRAME_SPAN / NATIVE_SCRUB_FPS).toFixed(2)} s at 1×, ` +
+    `scrub ${SCRUB_SPEED}× = ${SCRUB_FPS} f/s, ` +
     `min traversal = ${EXPECTED_TRAVERSAL_S.toFixed(2)} s (uniform: no dwells)`,
 );
 console.log(
   `bank ceilings: finger ${SCROLL_BANK_MAX_CLIP_S_TOUCH} s of clip = ` +
-    `${BANK_BUDGET_FRAMES.toFixed(0)} frames, trackpad/wheel/keys ` +
-    `${SCROLL_BANK_MAX_CLIP_S_WHEEL} s = ${WHEEL_BUDGET_FRAMES.toFixed(0)} frames; ` +
+    `${BANK_BUDGET_FRAMES.toFixed(1)} frames, trackpad/wheel/keys ` +
+    `${SCROLL_BANK_MAX_CLIP_S_WHEEL} s = ${WHEEL_BUDGET_FRAMES.toFixed(1)} frames; ` +
     `ease-out ${BANK_EASE_OUT_CLIP_S} s of clip (0 = OFF, floor ` +
     `${BANK_EASE_OUT_FLOOR}x kept for the ?ease= dial):`,
 );

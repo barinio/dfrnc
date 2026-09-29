@@ -18,6 +18,8 @@ import {
   getLastPaintedScrubFrame,
   resetLastPaintedScrubFrame,
   NATIVE_SCRUB_FPS,
+  SCRUB_FPS,
+  SCRUB_SPEED,
   MAX_SCRUB_DELTA_S,
   PAINTED_FRAME_STALE_MS,
 } from "../src/frameScrub";
@@ -49,6 +51,8 @@ const TICK = 1 / 60; // one rAF tick at 60 Hz
 const COUNT = 295;
 const LAST = COUNT - 1;
 const opts = { count: COUNT };
+// 40 frames walked at the cap: 40 / 16.25 ≈ 2.46 s ≈ 148 ticks (was 192 at 1×).
+const CATCHUP_40_TICKS = Math.ceil(40 / (SCRUB_FPS * TICK));
 
 // ── Tuning constants ──────────────────────────────────────────────────────
 {
@@ -59,6 +63,13 @@ const opts = { count: COUNT };
     NATIVE_SCRUB_FPS,
     FRAME_MANIFEST.sourceFps / FRAME_MANIFEST.stride,
     "native cap = manifest sourceFps / stride",
+  );
+  // The client-requested speed-up (2026-09-29): the cap is SCRUB_SPEED × real time.
+  eq(SCRUB_SPEED, 1.3, "scrub runs at 1.3× real time");
+  near(SCRUB_FPS, 16.25, "scrub cap is 16.25 sequence-frames/s", 1e-9);
+  ok(
+    SCRUB_FPS === NATIVE_SCRUB_FPS * SCRUB_SPEED,
+    "scrub cap = native pace × SCRUB_SPEED",
   );
   eq(FRAME_MANIFEST.sourceFps, 25, "master clip is 25 fps");
   eq(FRAME_MANIFEST.stride, 2, "sequence keeps every second source frame");
@@ -96,7 +107,7 @@ const opts = { count: COUNT };
   // A real (non-null) position NEVER snaps, however far the target is.
   near(
     advanceScrubFrame(0, LAST, TICK, opts),
-    NATIVE_SCRUB_FPS * TICK,
+    SCRUB_FPS * TICK,
     "an established position never snaps, whatever the gap",
   );
   console.log("✓ initialization");
@@ -104,7 +115,7 @@ const opts = { count: COUNT };
 
 // ── Slow scroll: pure binding, displayed === target ───────────────────────
 {
-  // A per-tick target step BELOW the cap (12.5/60 ≈ 0.208 frames) must be
+  // A per-tick target step BELOW the cap (16.25/60 ≈ 0.271 frames) must be
   // followed exactly — the rate limit must not add lag to ordinary scrolling.
   let displayed: number | null = 40;
   let target = 40;
@@ -123,14 +134,14 @@ const opts = { count: COUNT };
   console.log("✓ slow scroll is exact binding");
 }
 
-// ── Fast forward jump is capped at the native rate ────────────────────────
+// ── Fast forward jump is capped at the scrub rate ──────────────────────────
 {
   const stepped = advanceScrubFrame(100, 140, TICK, opts);
-  near(stepped, 100 + NATIVE_SCRUB_FPS * TICK, "forward step = fps * dt");
+  near(stepped, 100 + SCRUB_FPS * TICK, "forward step = fps * dt");
   ok(stepped < 140, "forward step does not reach a far target");
 
   // A flick that lands 40 frames ahead and stops: every tick moves at most the
-  // cap, and the catch-up takes 40 / 12.5 = 3.2 s ≈ 192 ticks.
+  // cap, and the catch-up takes 40 / 16.25 ≈ 2.46 s ≈ 148 ticks.
   let displayed: number | null = 20;
   const target = 60;
   let maxTickDelta = 0;
@@ -142,21 +153,21 @@ const opts = { count: COUNT };
     ticks++;
   }
   ok(
-    maxTickDelta <= NATIVE_SCRUB_FPS * TICK + 1e-9,
+    maxTickDelta <= SCRUB_FPS * TICK + 1e-9,
     `forward per-tick delta capped (was ${maxTickDelta})`,
   );
   eq(displayed, target, "forward catch-up finally lands on the target");
   ok(
-    ticks >= 190 && ticks <= 195,
-    `forward catch-up takes ≈192 ticks (was ${ticks})`,
+    Math.abs(ticks - CATCHUP_40_TICKS) <= 2,
+    `forward catch-up takes ≈${CATCHUP_40_TICKS} ticks (was ${ticks})`,
   );
   console.log("✓ forward cap");
 }
 
-// ── Fast backward jump is capped at the same native rate ──────────────────
+// ── Fast backward jump is capped at the same scrub rate ────────────────────
 {
   const stepped = advanceScrubFrame(140, 100, TICK, opts);
-  near(stepped, 140 - NATIVE_SCRUB_FPS * TICK, "backward step = fps * dt");
+  near(stepped, 140 - SCRUB_FPS * TICK, "backward step = fps * dt");
   ok(stepped > 100, "backward step does not reach a far target");
 
   let displayed: number | null = 60;
@@ -170,13 +181,13 @@ const opts = { count: COUNT };
     ticks++;
   }
   ok(
-    maxTickDelta <= NATIVE_SCRUB_FPS * TICK + 1e-9,
+    maxTickDelta <= SCRUB_FPS * TICK + 1e-9,
     `backward per-tick delta capped (was ${maxTickDelta})`,
   );
   eq(displayed, target, "backward catch-up finally lands on the target");
   ok(
-    ticks >= 190 && ticks <= 195,
-    `backward catch-up takes ≈192 ticks (was ${ticks})`,
+    Math.abs(ticks - CATCHUP_40_TICKS) <= 2,
+    `backward catch-up takes ≈${CATCHUP_40_TICKS} ticks (was ${ticks})`,
   );
   console.log("✓ backward cap");
 }
@@ -209,15 +220,15 @@ const opts = { count: COUNT };
   // first step after any gap is exactly one capped step.
   near(
     advanceScrubFrame(10, 200, TICK, opts),
-    10 + NATIVE_SCRUB_FPS * TICK,
+    10 + SCRUB_FPS * TICK,
     "a 190-frame gap still moves one capped step",
   );
   near(
     advanceScrubFrame(250, 10, TICK, opts),
-    250 - NATIVE_SCRUB_FPS * TICK,
+    250 - SCRUB_FPS * TICK,
     "a 240-frame backward gap still moves one capped step",
   );
-  // Worst case: the whole clip, walked at the native rate — 294 / 12.5 ≈ 23.5 s.
+  // Worst case: the whole clip, walked at the cap — 294 / 16.25 ≈ 18.1 s.
   let displayed: number | null = 0;
   let ticks = 0;
   while (displayed !== LAST && ticks < 100000) {
@@ -226,7 +237,7 @@ const opts = { count: COUNT };
   }
   const seconds = ticks * TICK;
   ok(
-    Math.abs(seconds - LAST / NATIVE_SCRUB_FPS) <= 2 * TICK,
+    Math.abs(seconds - LAST / SCRUB_FPS) <= 2 * TICK,
     `full-clip jump takes the clip's own running time (${seconds.toFixed(3)} s)`,
   );
   eq(displayed, LAST, "full-clip jump still arrives");
@@ -235,7 +246,7 @@ const opts = { count: COUNT };
 
 // ── Delta clamp: a backgrounded tab must not teleport the frame ───────────
 {
-  const clamped = 100 + NATIVE_SCRUB_FPS * MAX_SCRUB_DELTA_S;
+  const clamped = 100 + SCRUB_FPS * MAX_SCRUB_DELTA_S;
   near(advanceScrubFrame(100, 140, 5, opts), clamped, "huge dt is clamped");
   near(
     advanceScrubFrame(100, 280, 5, opts),
@@ -268,7 +279,7 @@ const opts = { count: COUNT };
   // 15 frames in a single rAF tick. Model a burst followed by the release,
   // forwards then back. The PAINTED (rounded) index must never move more than
   // ~1 frame per tick.
-  const perTick = Math.ceil(NATIVE_SCRUB_FPS * TICK); // 12.5/60 ≈ 0.21 ⇒ ≤ 1
+  const perTick = Math.ceil(SCRUB_FPS * TICK); // 16.25/60 ≈ 0.27 ⇒ ≤ 1
   let displayed: number | null = null;
   let target = 100;
   let painted = 100;
@@ -285,7 +296,7 @@ const opts = { count: COUNT };
   };
   run(0, 1); // settle: first tick adopts the target
   run(15, 3); // flick forward: +45 frames of scroll in 3 ticks
-  run(0, 300); // release: the frame chases at the native rate (45/12.5 = 3.6 s)
+  run(0, 300); // release: the frame chases at the cap (45/16.25 ≈ 2.8 s)
   eq(painted, Math.round(target), "forward flick fully catches up");
   run(-15, 3); // flick back
   run(0, 300);
@@ -331,7 +342,7 @@ const opts = { count: COUNT };
     displayed = next;
   }
   ok(
-    maxStep <= Math.ceil(NATIVE_SCRUB_FPS * TICK),
+    maxStep <= Math.ceil(SCRUB_FPS * TICK),
     `resuming after a hold still moves ≤ 1 frame/tick (was ${maxStep})`,
   );
   eq(Math.round(displayed as number), target, "and it still arrives");
@@ -380,7 +391,7 @@ const opts = { count: COUNT };
 // ── Synthetic ride: the painted frame NEVER outruns the clip ──────────────
 // The client-facing assertion. Scroll teleports the target across the whole clip
 // in 0.2 s and then holds. Whatever the rAF cadence, the PAINTED index may not
-// gain more than NATIVE_SCRUB_FPS frames per wall second (+1 for rounding) over
+// gain more than SCRUB_FPS frames per wall second (+1 for rounding) over
 // ANY interval of the ride — and it must still arrive, because nothing snaps.
 {
   interface Ride {
@@ -396,12 +407,12 @@ const opts = { count: COUNT };
   // so a running minimum checks every interval in one pass.
   function ride(dt: number, from: number, to: number, label: string): Ride {
     const rampSeconds = 0.2;
-    const holdSeconds = 40; // long enough for the whole clip at 12.5 f/s
+    const holdSeconds = 40; // long enough for the whole clip at the cap
     let displayed: number | null = from;
     let elapsed = 0;
     let painted = Math.round(from);
-    let minForward = painted - NATIVE_SCRUB_FPS * elapsed;
-    let minBackward = -painted - NATIVE_SCRUB_FPS * elapsed;
+    let minForward = painted - SCRUB_FPS * elapsed;
+    let minBackward = -painted - SCRUB_FPS * elapsed;
     let excessForward = 0;
     let excessBackward = 0;
     let arrivedAt: number | null = null;
@@ -420,8 +431,8 @@ const opts = { count: COUNT };
       displayed = advanceScrubFrame(displayed, target, dt, opts);
       painted = Math.round(displayed);
 
-      const u = painted - NATIVE_SCRUB_FPS * elapsed;
-      const v = -painted - NATIVE_SCRUB_FPS * elapsed;
+      const u = painted - SCRUB_FPS * elapsed;
+      const v = -painted - SCRUB_FPS * elapsed;
       excessForward = Math.max(excessForward, u - minForward);
       excessBackward = Math.max(excessBackward, v - minBackward);
       minForward = Math.min(minForward, u);
@@ -452,7 +463,7 @@ const opts = { count: COUNT };
     );
     ok(arrivedAt !== null, `${label}: the chase still reaches the target (no clamp)`);
     ok(
-      maxFloatRate <= NATIVE_SCRUB_FPS + 1e-9,
+      maxFloatRate <= SCRUB_FPS + 1e-9,
       `${label}: un-rounded chase rate never exceeds the native pace (${maxFloatRate})`,
     );
     return { maxForwardRate, maxBackwardRate, maxFloatRate, arrivedAt, seconds: elapsed };
@@ -470,7 +481,7 @@ const opts = { count: COUNT };
     worst = Math.max(worst, peak);
     // It cannot arrive sooner than the clip's own running time, either. The
     // painted index rounds, so it reads "arrived" half a frame early.
-    const soonest = (LAST - 0.5) / NATIVE_SCRUB_FPS - 2 * dt;
+    const soonest = (LAST - 0.5) / SCRUB_FPS - 2 * dt;
     ok(
       (fwd.arrivedAt as number) >= soonest,
       `ride forward @${hz}Hz arrives no sooner than the clip runs (${fwd.arrivedAt})`,
@@ -481,13 +492,13 @@ const opts = { count: COUNT };
     );
   }
   ok(
-    worst <= NATIVE_SCRUB_FPS + 1,
+    worst <= SCRUB_FPS + 1,
     `synthetic ride peak rate ${worst.toFixed(3)} f/s stays at the native pace`,
   );
   // The per-cadence peaks are measured over a ≥0.5 s window on the ROUNDED
   // index, so a coarse tick carries up to ±1 frame of rounding headroom.
   console.log(
-    `✓ synthetic ride never outruns the clip (cap ${NATIVE_SCRUB_FPS} f/s; ` +
+    `✓ synthetic ride never outruns the clip (cap ${SCRUB_FPS} f/s; ` +
       `windowed peaks ${peaks.join(", ")})`,
   );
 }

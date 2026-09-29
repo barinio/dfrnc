@@ -54,7 +54,7 @@ const CHROME =
 
 // Per-frame-request stall, ms. Foreground concurrency on a phone tier is 4 and
 // background 2, so ~6/delay frames per second reach the decoder; 700 ms leaves
-// roughly 8.5 f/s against the clip's 12.5 f/s — starved while the page moves,
+// roughly 8.5 f/s against the 16.25 f/s scrub cap — starved while the page moves,
 // able to catch up within about a second once it stops. That is the shape of
 // the reported bug, not an artificial freeze.
 const FRAME_DELAY_MS = Number(opt("delay", "700"));
@@ -71,7 +71,10 @@ const VIDEO_CARD_TRACK_VH = 140;
 const VIDEO_START = 504 / SCROLL_TRACK_VH;
 const FRAME_COUNT = 295;
 const FRAME_SPAN = FRAME_COUNT - 1;
+// Physical 1× pace and the scrub cap (src/frameScrub.ts SCRUB_SPEED, 2026-09-29).
 const NATIVE_FPS = 12.5;
+const SCRUB_SPEED = 1.3;
+const CAP_FPS = NATIVE_FPS * SCRUB_SPEED;
 
 // Where in the clip the flick is thrown from, and the flick itself.
 const ENTRY_CLIP_T = Number(opt("t", "0.40"));
@@ -506,7 +509,7 @@ try {
       (MODE === "frames"
         ? ` (each /frames/ request stalled ${FRAME_DELAY_MS} ms)`
         : ` (${NET_KBPS} kbit/s, ${NET_LATENCY_MS} ms latency, applied after boot)`) +
-      `, clip cap ${NATIVE_FPS} f/s`,
+      `, clip cap ${CAP_FPS} f/s`,
   );
 
   const runs = [];
